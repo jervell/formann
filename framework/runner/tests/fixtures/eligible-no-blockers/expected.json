@@ -1,0 +1,13 @@
+{
+  "feature": "eligible-no-blockers",
+  "issues": [
+    {
+      "ref": "eligible-no-blockers/01",
+      "status": "ready-for-agent",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": true
+    }
+  ]
+}

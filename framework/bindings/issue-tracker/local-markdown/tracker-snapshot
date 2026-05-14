@@ -1,0 +1,321 @@
+#!/usr/bin/env bash
+###
+### tracker-snapshot — local-markdown binding's machine-readable interface.
+###
+### Usage: tracker-snapshot <feature-slug>
+###
+### Emits a JSON document on stdout describing every issue under
+### `<scratch>/<feature-slug>/issues/`. See
+### `framework/bindings/issue-tracker/local-markdown/README.md` for the schema, eligibility
+### rule, and cross-feature / malformed-frontmatter semantics.
+###
+### Override the scratch root for tests via TRACKER_SCRATCH_ROOT.
+###
+### Bash 3.2 compatible (macOS default): no associative arrays.
+###
+
+set -eu
+set -o pipefail
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: tracker-snapshot <feature-slug> | tracker-snapshot --list" >&2
+  exit 2
+fi
+
+# Resolve the scratch root. Tests pass an override; production invocations
+# fall through to the repo's `.scratch/`, computed relative to this script.
+if [ -n "${TRACKER_SCRATCH_ROOT:-}" ]; then
+  scratch_root="$TRACKER_SCRATCH_ROOT"
+else
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  scratch_root="$here/../../../.scratch"
+fi
+
+# JSON-string escaper: backslashes, quotes, and control characters.
+json_escape() {
+  local s="$1" out="" i ch code
+  for ((i = 0; i < ${#s}; i++)); do
+    ch="${s:i:1}"
+    case "$ch" in
+      '\') out=$out'\\' ;;
+      '"') out=$out'\"' ;;
+      $'\b') out=$out'\b' ;;
+      $'\f') out=$out'\f' ;;
+      $'\n') out=$out'\n' ;;
+      $'\r') out=$out'\r' ;;
+      $'\t') out=$out'\t' ;;
+      *)
+        printf -v code '%d' "'$ch"
+        if [ "$code" -lt 32 ]; then
+          printf -v out '%s\\u%04x' "$out" "$code"
+        else
+          out=$out$ch
+        fi
+        ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# Emit a JSON array literal from the remaining positional args. Each arg is
+# escaped as a JSON string. With zero args, emits `[]`.
+json_string_array() {
+  if [ "$#" -eq 0 ]; then
+    printf '[]'
+    return
+  fi
+  local first=1 item
+  printf '['
+  for item in "$@"; do
+    if [ "$first" -eq 1 ]; then first=0; else printf ','; fi
+    printf '"%s"' "$(json_escape "$item")"
+  done
+  printf ']'
+}
+
+# --list mode: emit a JSON array of active feature slugs. Active means: a
+# direct subdirectory of scratch_root, excluding `done/`.
+if [ "$1" = "--list" ]; then
+  printf '['
+  first=1
+  if [ -d "$scratch_root" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      slug="$(basename "$d")"
+      [ "$slug" = "done" ] && continue
+      if [ "$first" -eq 1 ]; then first=0; else printf ','; fi
+      printf '"%s"' "$(json_escape "$slug")"
+    done < <(find "$scratch_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  fi
+  printf ']\n'
+  exit 0
+fi
+
+feature="$1"
+issues_dir="$scratch_root/$feature/issues"
+
+# Read the YAML frontmatter from $1. Sets globals fm_status, fm_category,
+# fm_type, fm_body (text after the closing `---`), and fm_error (non-empty
+# diagnostic on parse failure). The parser is intentionally strict and
+# matches `tracker/serve.py`'s rules: opener must be a bare `---`, every
+# subsequent line is `key: value`, closer is a bare `---`.
+parse_frontmatter() {
+  local file="$1"
+  fm_status=""
+  fm_category=""
+  fm_type=""
+  fm_body=""
+  fm_error=""
+
+  local opener_seen=0 closer_seen=0
+  local buf=""
+  local line key value
+
+  # `read -r` does not strip a trailing CR; a CRLF-saved file's `---\r`
+  # opener would never match the bare-`---` comparisons below, the
+  # parser would fall through to "no frontmatter" mode, and the issue
+  # would surface with empty fields and *no* parse_error — invisible to
+  # the runner. Strip `\r` from every line we read so CRLF endings are
+  # transparent.
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    if [ "$opener_seen" -eq 0 ]; then
+      if [ "$line" = "---" ]; then
+        opener_seen=1
+        continue
+      fi
+      # No frontmatter at all — body is the whole file. Treat as
+      # missing-but-not-malformed: empty fields, no parse_error.
+      buf=$line$'\n'
+      while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        buf=$buf$line$'\n'
+      done
+      fm_body="$buf"
+      return 0
+    fi
+
+    if [ "$closer_seen" -eq 0 ]; then
+      if [ "$line" = "---" ]; then
+        closer_seen=1
+        continue
+      fi
+      if [[ "$line" =~ ^([A-Za-z][A-Za-z0-9_-]*)[[:space:]]*:[[:space:]]*(.*)$ ]]; then
+        key="${BASH_REMATCH[1]}"
+        value="${BASH_REMATCH[2]}"
+        # Trim trailing whitespace from value.
+        value="${value%"${value##*[![:space:]]}"}"
+        case "$key" in
+          status)   fm_status="$value" ;;
+          category) fm_category="$value" ;;
+          type)     fm_type="$value" ;;
+        esac
+      else
+        fm_error="malformed frontmatter line"
+        return 1
+      fi
+    else
+      buf=$buf$line$'\n'
+    fi
+  done < "$file"
+
+  if [ "$opener_seen" -eq 1 ] && [ "$closer_seen" -eq 0 ]; then
+    fm_error="frontmatter block was not closed"
+    return 1
+  fi
+
+  fm_body="$buf"
+  return 0
+}
+
+# Extract the contents of the `## Blocked by` section from $1 (the body
+# text). The section runs from the heading until the next `## ` heading or
+# end-of-input. Output goes on stdout.
+extract_blocked_by_section() {
+  local body="$1"
+  awk '
+    /^## Blocked by[[:space:]]*$/ { in_section = 1; next }
+    in_section && /^## / { exit }
+    in_section { print }
+  ' <<< "$body"
+}
+
+# Print canonical refs found in stdin, one per line, in source order.
+extract_refs() {
+  grep -oE '[a-z][a-z0-9-]*/[0-9]+' || true
+}
+
+# Phase 1: collect issue files and their metadata. Each filled into parallel
+# arrays so we can compute eligibility in phase 2 once `done` statuses for
+# the feature are known. We flatten blocked_by refs into a single array
+# with per-issue counts, since bash 3.2 has no array-of-arrays.
+issue_paths=()
+issue_nums=()
+issue_statuses=()
+issue_categories=()
+issue_types=()
+issue_blocked_count=()
+issue_blocked_flat=()
+issue_parse_errors=()
+done_refs=""
+
+if [ -d "$issues_dir" ]; then
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    file="$(basename "$path")"
+    if [[ "$file" =~ ^([0-9]+)-[A-Za-z0-9-]+\.md$ ]]; then
+      num="${BASH_REMATCH[1]}"
+    else
+      continue
+    fi
+
+    if parse_frontmatter "$path"; then
+      parse_err=""
+    else
+      parse_err="$fm_error"
+      # Clear partials so a parse error never surfaces half-populated metadata.
+      fm_status=""
+      fm_category=""
+      fm_type=""
+      fm_body=""
+    fi
+
+    refs_text="$(extract_blocked_by_section "$fm_body" | extract_refs)"
+    refs=()
+    if [ -n "$refs_text" ]; then
+      while IFS= read -r r; do
+        [ -n "$r" ] && refs[${#refs[@]}]="$r"
+      done <<< "$refs_text"
+    fi
+
+    issue_paths[${#issue_paths[@]}]="$path"
+    issue_nums[${#issue_nums[@]}]="$num"
+    issue_statuses[${#issue_statuses[@]}]="$fm_status"
+    issue_categories[${#issue_categories[@]}]="$fm_category"
+    issue_types[${#issue_types[@]}]="$fm_type"
+    issue_parse_errors[${#issue_parse_errors[@]}]="$parse_err"
+    issue_blocked_count[${#issue_blocked_count[@]}]="${#refs[@]}"
+
+    if [ "${#refs[@]}" -gt 0 ]; then
+      for r in "${refs[@]}"; do
+        issue_blocked_flat[${#issue_blocked_flat[@]}]="$r"
+      done
+    fi
+
+    if [ -z "$parse_err" ] && [ "$fm_status" = "done" ]; then
+      done_refs="$done_refs $feature/$num"
+    fi
+  done < <(find "$issues_dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+fi
+
+# Linear lookup: is `ref` in the space-prefixed list `done_refs`?
+is_done_ref() {
+  case " $done_refs " in
+    *" $1 "*) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
+# Phase 2: emit JSON.
+printf '{"feature":"%s","issues":[' "$(json_escape "$feature")"
+
+flat_offset=0
+issue_count="${#issue_paths[@]}"
+for ((i = 0; i < issue_count; i++)); do
+  if [ "$i" -gt 0 ]; then printf ','; fi
+
+  num="${issue_nums[$i]}"
+  ref="$feature/$num"
+  status="${issue_statuses[$i]}"
+  category="${issue_categories[$i]}"
+  type="${issue_types[$i]}"
+  parse_err="${issue_parse_errors[$i]}"
+  count="${issue_blocked_count[$i]}"
+
+  refs=()
+  for ((k = 0; k < count; k++)); do
+    refs[${#refs[@]}]="${issue_blocked_flat[$((flat_offset + k))]}"
+  done
+  flat_offset=$((flat_offset + count))
+
+  # Eligibility.
+  if [ -n "$parse_err" ]; then
+    eligible="false"
+  elif [ "$status" != "ready-for-agent" ] || [ "$type" != "AFK" ]; then
+    eligible="false"
+  else
+    eligible="true"
+    if [ "${#refs[@]}" -gt 0 ]; then
+      for r in "${refs[@]}"; do
+        blocker_feature="${r%%/*}"
+        if [ "$blocker_feature" != "$feature" ]; then
+          eligible="false"
+          break
+        fi
+        if ! is_done_ref "$r"; then
+          eligible="false"
+          break
+        fi
+      done
+    fi
+  fi
+
+  printf '{'
+  printf '"ref":"%s",' "$(json_escape "$ref")"
+  printf '"status":"%s",' "$(json_escape "$status")"
+  printf '"category":"%s",' "$(json_escape "$category")"
+  printf '"type":"%s",' "$(json_escape "$type")"
+  printf '"blocked_by":'
+  if [ "${#refs[@]}" -eq 0 ]; then
+    json_string_array
+  else
+    json_string_array "${refs[@]}"
+  fi
+  printf ',"eligible":%s' "$eligible"
+  if [ -n "$parse_err" ]; then
+    printf ',"parse_error":"%s"' "$(json_escape "$parse_err")"
+  fi
+  printf '}'
+done
+
+printf ']}\n'

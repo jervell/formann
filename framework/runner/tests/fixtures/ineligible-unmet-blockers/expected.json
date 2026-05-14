@@ -1,0 +1,21 @@
+{
+  "feature": "ineligible-unmet-blockers",
+  "issues": [
+    {
+      "ref": "ineligible-unmet-blockers/01",
+      "status": "in-review",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": false
+    },
+    {
+      "ref": "ineligible-unmet-blockers/02",
+      "status": "ready-for-agent",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": ["ineligible-unmet-blockers/01"],
+      "eligible": false
+    }
+  ]
+}

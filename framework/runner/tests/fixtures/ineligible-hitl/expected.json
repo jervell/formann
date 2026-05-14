@@ -1,0 +1,13 @@
+{
+  "feature": "ineligible-hitl",
+  "issues": [
+    {
+      "ref": "ineligible-hitl/01",
+      "status": "ready-for-agent",
+      "category": "enhancement",
+      "type": "HITL",
+      "blocked_by": [],
+      "eligible": false
+    }
+  ]
+}

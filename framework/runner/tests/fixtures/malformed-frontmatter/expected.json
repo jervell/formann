@@ -1,0 +1,14 @@
+{
+  "feature": "malformed-frontmatter",
+  "issues": [
+    {
+      "ref": "malformed-frontmatter/01",
+      "status": "",
+      "category": "",
+      "type": "",
+      "blocked_by": [],
+      "eligible": false,
+      "parse_error": "frontmatter block was not closed"
+    }
+  ]
+}

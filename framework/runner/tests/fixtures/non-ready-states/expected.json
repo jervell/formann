@@ -1,0 +1,53 @@
+{
+  "feature": "non-ready-states",
+  "issues": [
+    {
+      "ref": "non-ready-states/01",
+      "status": "needs-triage",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": false
+    },
+    {
+      "ref": "non-ready-states/02",
+      "status": "needs-info",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": false
+    },
+    {
+      "ref": "non-ready-states/03",
+      "status": "ready-for-human",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": false
+    },
+    {
+      "ref": "non-ready-states/04",
+      "status": "in-review",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": false
+    },
+    {
+      "ref": "non-ready-states/05",
+      "status": "wontfix",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": false
+    },
+    {
+      "ref": "non-ready-states/06",
+      "status": "done",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": false
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "feature": "cross-feature-blocker",
+  "issues": [
+    {
+      "ref": "cross-feature-blocker/01",
+      "status": "ready-for-agent",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": ["other-feature/03"],
+      "eligible": false
+    }
+  ]
+}
