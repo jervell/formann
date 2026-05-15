@@ -772,10 +772,14 @@ release_lock() {
 # `<formann>/framework/runner/run-the-queue.sh` and is reached from a
 # consumer via `<consumer>/.formann/framework/runner/run-the-queue.sh`
 # (where `.formann -> <formann-root>` is a per-machine indirection
-# symlink kept out of git). We walk the unresolved BASH_SOURCE path so
-# the `.formann` symlink stays visible as a path component; the
-# consumer root is its parent. Walking `$HERE/../..` instead would
-# collapse the symlink and land inside Formann.
+# symlink kept out of git). We walk up from $PWD looking for a
+# directory that contains a `.formann` entry — same shape as git
+# finding its repo root, npm finding package.json. First match wins;
+# that directory is the consumer root. Hitting `/` is a loud failure.
+#
+# Filesystem-based, not path-string-based — so symlink resolution
+# (realpath, readlink -f, wrapper scripts that normalize paths) can't
+# break it. The contract is just "run me from inside the consumer".
 #
 # We compute paths unconditionally — including `HOST_RUNS`, so
 # `setup_run_dir` can run before pre-flight and a pre-flight abort
@@ -785,23 +789,17 @@ release_lock() {
 # structural integrity of these paths is established by their use
 # downstream (the lock acquisition, runner-checkout sync, etc.).
 resolve_host_repo() {
-  local src="${BASH_SOURCE[0]}"
-  case "$src" in
-    /*) ;;
-    *) src="$PWD/$src" ;;
-  esac
-  local seg
-  seg="$(dirname "$src")"
+  local d="$PWD"
   HOST_REPO=""
-  while [ "$seg" != "/" ] && [ -n "$seg" ]; do
-    if [ "$(basename "$seg")" = ".formann" ]; then
-      HOST_REPO="$(dirname "$seg")"
+  while [ "$d" != "/" ] && [ -n "$d" ]; do
+    if [ -e "$d/.formann" ]; then
+      HOST_REPO="$d"
       break
     fi
-    seg="$(dirname "$seg")"
+    d="$(dirname "$d")"
   done
   if [ -z "$HOST_REPO" ]; then
-    echo "run-the-queue.sh: cannot locate consumer's '.formann' symlink in invocation path '$src'" >&2
+    echo "run-the-queue.sh: not inside a consumer (no '.formann' ancestor of '$PWD')" >&2
     exit 2
   fi
   HOST_RUNNER_STATE="$HOST_REPO/$RUNNER_STATE_DIR"

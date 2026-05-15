@@ -1,11 +1,11 @@
 #!/usr/bin/env bats
 #
-# Exercises `resolve_host_repo` end-to-end via the consumer's `.formann`
-# indirection symlink. The test stages a synthetic consumer at
-# $BATS_TEST_TMPDIR/synthetic-consumer/, plants `.formann -> <formann-root>`
-# inside it, sources `run-the-queue.sh` through that symlink chain, and
-# asserts that `HOST_REPO` resolves to the synthetic consumer path — not
-# to the Formann checkout that the symlink ultimately points at.
+# Exercises `resolve_host_repo` end-to-end against a synthetic-consumer
+# fixture. The function walks up from $PWD looking for a directory that
+# contains a `.formann` entry — that directory is the consumer root.
+# Tests stage `<tmp>/synthetic-consumer/.formann -> <formann-root>`, cd
+# into the synthetic consumer (or a subdirectory), and assert HOST_REPO
+# resolves correctly.
 
 setup() {
   load 'test_helper/bats-support/load'
@@ -13,17 +13,18 @@ setup() {
 
   HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
   FORMANN_ROOT="$(cd "$HERE/../../.." && pwd)"
+  RUNNER_SCRIPT="$HERE/../run-the-queue.sh"
 
   SYNTHETIC_CONSUMER="$BATS_TEST_TMPDIR/synthetic-consumer"
   mkdir -p "$SYNTHETIC_CONSUMER"
   ln -s "$FORMANN_ROOT" "$SYNTHETIC_CONSUMER/.formann"
+
+  # shellcheck source=../run-the-queue.sh
+  source "$RUNNER_SCRIPT"
 }
 
-@test "resolve_host_repo — walks via .formann to the consumer root" {
-  # Source the runner through the consumer-side indirection. `BASH_SOURCE[0]`
-  # inside the function will be the unresolved path containing `.formann`.
-  # shellcheck source=/dev/null
-  source "$SYNTHETIC_CONSUMER/.formann/framework/runner/run-the-queue.sh"
+@test "resolve_host_repo — finds .formann ancestor from the consumer root" {
+  cd "$SYNTHETIC_CONSUMER"
 
   HOST_REPO=""
   resolve_host_repo
@@ -36,12 +37,23 @@ setup() {
   assert_equal "$HOST_ABORT_DIR" "$SYNTHETIC_CONSUMER/$RUNNER_ABORT_PATH"
 }
 
-@test "resolve_host_repo — refuses when invoked outside a .formann indirection" {
-  # Sourcing the script directly from the Formann checkout — no `.formann`
-  # in the path — must surface a diagnostic and exit non-zero rather than
-  # silently landing inside Formann.
-  run bash -c "source '$FORMANN_ROOT/framework/runner/run-the-queue.sh'; HOST_REPO=''; resolve_host_repo"
+@test "resolve_host_repo — finds .formann ancestor from a subdirectory" {
+  mkdir -p "$SYNTHETIC_CONSUMER/deep/nested/work"
+  cd "$SYNTHETIC_CONSUMER/deep/nested/work"
+
+  HOST_REPO=""
+  resolve_host_repo
+
+  assert_equal "$HOST_REPO" "$SYNTHETIC_CONSUMER"
+}
+
+@test "resolve_host_repo — refuses when cwd has no .formann ancestor" {
+  local outside="$BATS_TEST_TMPDIR/outside"
+  mkdir -p "$outside"
+
+  run bash -c "cd '$outside' && source '$RUNNER_SCRIPT' && HOST_REPO='' && resolve_host_repo"
 
   [ "$status" -ne 0 ]
-  assert_output --partial "cannot locate consumer's '.formann' symlink"
+  assert_output --partial "not inside a consumer"
+  assert_output --partial "no '.formann' ancestor"
 }
