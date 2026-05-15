@@ -131,9 +131,8 @@ and writes an abort flag.
 
 | File | Role |
 |------|------|
-| `Dockerfile` | Image carrying JDK 21, Maven, git, and the claude CLI. Debian-slim base, non-root user (UID/GID 1000), workdir `/repo`. |
-| `entrypoint.sh` | Suppresses kernel core dumps (`ulimit -c 0`) so an in-container crash can't drop a `core` file into the bind-mounted runner-checkout, then `exec "$@"`. Leaves `CLAUDE_CODE_OAUTH_TOKEN` and other env vars untouched. |
-| `build-image.sh` | Builds the image idempotently. Reuses cached layer; `--rebuild` forces a full rebuild. Prints the image name on stdout. |
+| `Dockerfile` | **Consumer-owned** (lives at `<consumer>/runner/Dockerfile`, not in the framework — see ADR-0002). The installer scaffolds an initial Debian-slim image with JDK 21, Maven, git, the `claude` CLI, a non-root user (UID/GID 1000), workdir `/repo`, and an inlined entrypoint that suppresses kernel core dumps (`ulimit -c 0`). The consumer edits it for their project. |
+| `build-image.sh` | Builds the consumer's image idempotently from `<consumer>/runner/Dockerfile`. Walks `$PWD` upward to find the consumer root (`.formann` ancestor), so it works from anywhere inside the consumer repo. Reuses cached layers; `--rebuild` forces a full rebuild. Prints the image name on stdout. |
 | `setup-network.sh` | Creates the sandbox bridge network and applies the RFC1918-deny outbound policy. Idempotent. Prints the network name on stdout. |
 | `retrieve-secret.sh` | Verbatim vendor of `arne/claude-code-api-key-setup`'s generic Keychain/libsecret/keyctl reader. Provenance in `NOTES.md`. |
 | `retrieve-token.sh` | Wraps `retrieve-secret.sh` with the OAuth-token service/account constants from `lib.sh`. Prints the token on stdout, fails fast with a populate-the-Keychain hint on stderr. Token never echoed beyond stdout. |
@@ -235,12 +234,13 @@ The runner script in slice 04 invokes these helpers automatically. To
 verify them by hand:
 
 ```sh
-# Build (or rebuild) the image.
-framework/runner/build-image.sh
-# framework/runner/build-image.sh --rebuild   # force fresh build
+# Build (or rebuild) the image. Run from anywhere inside the consumer repo;
+# the script locates the consumer root via the .formann indirection symlink.
+.formann/framework/runner/build-image.sh
+# .formann/framework/runner/build-image.sh --rebuild   # force fresh build
 
 # Create the sandbox network and apply the deny-RFC1918 policy.
-framework/runner/setup-network.sh
+.formann/framework/runner/setup-network.sh
 
 # Sanity-check the image:
 docker run --rm afk-runner-sandbox id          # uid=1000(runner) ...
@@ -304,7 +304,7 @@ RUNNER_SMOKE=1 bats framework/runner/tests/smoke.bats
 Run it manually before milestones — anytime something the unit suite
 can't see might have drifted:
 
-- Dockerfile changes (image now builds differently).
+- Consumer Dockerfile changes (`<consumer>/runner/Dockerfile`, scaffolded by the installer; edited per consumer).
 - `setup-network.sh` changes (RFC1918 deny list, bridge config).
 - Bumps to the bundled `claude` CLI (`@anthropic-ai/claude-code` in
   the Dockerfile).
