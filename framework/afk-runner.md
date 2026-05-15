@@ -76,7 +76,7 @@ Pure logic (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `c
 
 ### Sandbox container
 
-Each dispatch runs in a fresh container built from `framework/runner/Dockerfile`:
+Each dispatch runs in a fresh container built from `$HOST_REPO/runner/Dockerfile` (consumer-owned):
 
 - Debian-slim base, JDK 21 (matching the project's pom), Maven, git, and the `claude` CLI installed via npm.
 - Non-root user (UID/GID 1000), workdir `/repo`.
@@ -428,17 +428,17 @@ framework/
 ├── afk-runner.md                             ← this doc
 ├── afk-runner-flow.md                        ← flowchart-style companion to this doc
 ├── bindings/
-│   └── local-markdown/
-│       ├── README.md                         ← binding doc + tracker-snapshot contract
-│       ├── issue-tracker.md                  ← role doc (source of truth)
-│       └── tracker-snapshot                  ← machine-readable interface
+│   └── issue-tracker/
+│       └── local-markdown/
+│           ├── BINDING.md                    ← role doc (fixed name)
+│           ├── README.md                     ← binding doc + tracker-snapshot contract
+│           └── tracker-snapshot              ← machine-readable interface
 └── runner/
     ├── README.md                             ← operator-facing reference
     ├── NOTES.md                              ← provenance of vendored files
     ├── run-the-queue.sh                      ← orchestrator
     ├── lib.sh                                ← shared constants
-    ├── Dockerfile + entrypoint.sh            ← sandbox image
-    ├── build-image.sh                        ← idempotent image builder
+    ├── build-image.sh                        ← idempotent image builder (builds $HOST_REPO/runner/Dockerfile)
     ├── setup-network.sh                      ← bridge + iptables policy
     ├── ensure-mvn-cache.sh                   ← per-feature volume helper
     ├── retrieve-secret.sh                    ← vendored Keychain reader
@@ -452,7 +452,7 @@ framework/
 ├── checkout/                                 ← separate clone of the host repo
 ├── aborted/<feature>/                        ← runner-private abort flags (one per stuck issue)
 ├── runs/<ts>/                                ← per-run logs and SUMMARY.md
-└── smoke-runs/                               ← ephemeral smoke-walk artifacts (see SMOKE-ARTIFACTS.md)
+└── smoke-runs/                               ← ephemeral smoke-walk artifacts
 ```
 
 The framework lives in `framework/`. Per-project state lives in `.runner-state/` (gitignored). When the framework is eventually moved to a single per-machine instance outside any project, adopting projects will symlink into it; until then, `framework/` is in-tree and committable.
