@@ -18,7 +18,7 @@ Conventions:
 | Keychain                                     | OAuth token at service `claude-code-oauth`, account `anthropic` (macOS Keychain / libsecret / keyctl).      |
 | Docker daemon                                | Image `afk-runner-sandbox`, network `afk-runner-sandbox` (with RFC1918-deny rules), volume `runner-mvn-cache-<feature>` (created lazily per drained feature). |
 | `.runner-state/checkout/`                    | Separate clone of the host repo. Created on first run; **branch-switched** per drained feature inside the outer loop (drain mode) or sync'd once up front (narrowed modes). |
-| `framework/bindings/<name>/tracker-snapshot`   | Binding-supplied executable. `--list` returns active feature slugs (drain mode discovery); `<slug>` returns per-issue JSON with computed `eligible` flag. |
+| `$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot` | Binding-supplied executable, reached via the role surface. `--list` returns active feature slugs (drain mode discovery); `<slug>` returns per-issue JSON with computed `eligible` flag. |
 | `framework/runner/review-and-gate.md`          | Prompt for the post-implement gate dispatch.                                                                |
 
 ## Top-level flow

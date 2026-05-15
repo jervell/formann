@@ -113,7 +113,7 @@ When a dispatch fails and leaves an issue stuck (eligible status unchanged, prop
 | `framework/runner/run-the-queue.sh`          | Orchestrator. Pre-flight invariants, dispatch loop, outcome classification, host propagation. |
 | `framework/runner/Dockerfile` + `entrypoint` | Sandbox image — JDK + Maven + git + the `claude` CLI. Non-root user, workdir `/repo`.       |
 | `framework/runner/setup-network.sh`          | Custom Docker bridge with RFC1918-deny outbound. Public internet stays open.                 |
-| `framework/bindings/<name>/tracker-snapshot` | Binding-supplied JSON interface. Drives eligibility selection and outcome classification.    |
+| `$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot` | Binding-supplied JSON interface, reached via the role surface. Drives eligibility selection and outcome classification. |
 | `framework/runner/review-and-gate.md`        | Prompt for the post-implement gate dispatch — runs `review-issue`, classifies, commits.      |
 | `.runner-state/checkout/`                  | Separate git clone; the sandbox mounts this, never the host repo.                            |
 | `.runner-state/runs/<ts>/`                 | Per-run logs, per-issue exit codes, end-of-run `SUMMARY.md`.                                 |

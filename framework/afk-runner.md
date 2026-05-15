@@ -101,7 +101,7 @@ Rules live in a dedicated chain (`AFK-RUNNER-SANDBOX-FW`) that `DOCKER-USER` jum
 
 ### Tracker-snapshot — the binding interface
 
-The runner consumes the issue tracker through a single binding-supplied executable: `framework/bindings/<name>/tracker-snapshot <feature-slug>`. It emits a JSON document on stdout:
+The runner consumes the issue tracker through a single binding-supplied executable, reached via the role surface: `$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot <feature-slug>`. It emits a JSON document on stdout:
 
 ```json
 {
