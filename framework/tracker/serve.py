@@ -19,9 +19,34 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRATCH_DIR = REPO_ROOT / ".scratch"
-STATIC_DIR = REPO_ROOT / "tracker" / "static"
+def resolve_consumer_root(start: Path) -> Path | None:
+    """Walk ``start`` upward looking for a ``.formann`` ancestor.
+
+    Returns the directory containing ``.formann`` (the consumer root), or
+    ``None`` if no such ancestor exists. Mirrors ``build-image.sh``'s
+    ``HOST_REPO`` walk and ``tracker-snapshot``'s ``scratch_root`` walk —
+    consumer-side resources must be discovered from ``$cwd``, never from
+    ``__file__``: when the viewer is invoked through ``iot/.formann/``,
+    ``Path(__file__).resolve()`` physically follows the symlink and lands
+    in the framework checkout, away from the consumer's ``.scratch/``.
+    """
+    walk = start if start.is_absolute() else start.absolute()
+    while True:
+        if (walk / ".formann").exists():
+            return walk
+        if walk.parent == walk:
+            return None
+        walk = walk.parent
+
+
+# STATIC_DIR is framework-side: it sits alongside ``serve.py`` regardless of
+# where the consumer keeps its ``.scratch/``. SCRATCH_DIR is consumer-side:
+# the walk above finds it; without a ``.formann`` ancestor we fall back to
+# ``cwd`` so direct ``python3 serve.py`` invocations from a project root
+# still work for projects that haven't adopted Formann.
+_CONSUMER_ROOT = resolve_consumer_root(Path.cwd()) or Path.cwd()
+SCRATCH_DIR = _CONSUMER_ROOT / ".scratch"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 DEFAULT_PORT = 8765
 

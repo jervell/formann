@@ -7,12 +7,15 @@ Stdlib-only (``unittest``); no test runner dependency. Run with::
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from tracker.serve import (
     extract_title,
     parse_frontmatter,
     parse_issue_metadata,
+    resolve_consumer_root,
 )
 
 
@@ -121,6 +124,30 @@ class TestParseIssueMetadata(unittest.TestCase):
         # PRD-style files have no frontmatter; they should still yield a title.
         text = "# A PRD\n\nbody\n"
         self.assertEqual(parse_issue_metadata(text), {"title": "A PRD"})
+
+
+class TestResolveConsumerRoot(unittest.TestCase):
+    """The viewer reaches the consumer's ``.scratch/`` by walking $cwd
+    upward for a ``.formann`` ancestor — same shape ``build-image.sh`` and
+    ``tracker-snapshot`` use. Without this walk, ``Path(__file__).resolve()``
+    follows the ``iot/.formann/`` symlink into the framework checkout and
+    the viewer renders an empty tree against ``formann/.scratch/`` (which
+    does not exist)."""
+
+    def test_walks_up_from_descendant_to_dotformann_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            consumer = Path(raw) / "consumer"
+            (consumer / "a" / "b" / "c").mkdir(parents=True)
+            (consumer / ".formann").symlink_to(raw)  # marker; target irrelevant
+            self.assertEqual(resolve_consumer_root(consumer / "a" / "b" / "c"), consumer)
+            self.assertEqual(resolve_consumer_root(consumer / "a"), consumer)
+            self.assertEqual(resolve_consumer_root(consumer), consumer)
+
+    def test_returns_none_when_no_dotformann_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            here = Path(raw) / "deeply" / "nested"
+            here.mkdir(parents=True)
+            self.assertIsNone(resolve_consumer_root(here))
 
 
 if __name__ == "__main__":
