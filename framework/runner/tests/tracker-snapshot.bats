@@ -7,7 +7,7 @@ setup() {
   HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
   TRACKER_SNAPSHOT="$HERE/../../bindings/issue-tracker/local-markdown/tracker-snapshot"
   FIXTURES="$HERE/fixtures"
-  export TRACKER_SCRATCH_ROOT="$FIXTURES"
+  export TRACKER_ROOT="$FIXTURES"
 }
 
 # Compare the script's stdout to the fixture's expected.json after
@@ -59,13 +59,13 @@ assert_snapshot_matches_golden() {
 # === tracker-snapshot --list ================================================
 #
 # Additive flag: emits a JSON array of active feature slugs (subdirs of
-# scratch_root excluding done/). Today's bare invocation (no --list, no slug)
+# tracker_root excluding done/). Today's bare invocation (no --list, no slug)
 # keeps exiting 2 with a usage line — the contract grows additively.
 
 @test "--list — emits a JSON array of active slugs" {
-  local scratch="$BATS_TEST_TMPDIR/scratch-list"
-  mkdir -p "$scratch/alpha" "$scratch/beta"
-  TRACKER_SCRATCH_ROOT="$scratch" run "$TRACKER_SNAPSHOT" --list
+  local tracker_root="$BATS_TEST_TMPDIR/tracker-list"
+  mkdir -p "$tracker_root/alpha" "$tracker_root/beta"
+  TRACKER_ROOT="$tracker_root" run "$TRACKER_SNAPSHOT" --list
   assert_success
   local count
   count="$(printf '%s\n' "$output" | jq 'length')"
@@ -76,9 +76,9 @@ assert_snapshot_matches_golden() {
 }
 
 @test "--list — excludes done/ directory and its contents" {
-  local scratch="$BATS_TEST_TMPDIR/scratch-done"
-  mkdir -p "$scratch/active" "$scratch/done" "$scratch/done/archived"
-  TRACKER_SCRATCH_ROOT="$scratch" run "$TRACKER_SNAPSHOT" --list
+  local tracker_root="$BATS_TEST_TMPDIR/tracker-done"
+  mkdir -p "$tracker_root/active" "$tracker_root/done" "$tracker_root/done/archived"
+  TRACKER_ROOT="$tracker_root" run "$TRACKER_SNAPSHOT" --list
   assert_success
   local count
   count="$(printf '%s\n' "$output" | jq 'length')"
@@ -89,9 +89,9 @@ assert_snapshot_matches_golden() {
 }
 
 @test "--list — ordering is deterministic (sorted by name)" {
-  local scratch="$BATS_TEST_TMPDIR/scratch-order"
-  mkdir -p "$scratch/zebra" "$scratch/apple" "$scratch/mango"
-  TRACKER_SCRATCH_ROOT="$scratch" run "$TRACKER_SNAPSHOT" --list
+  local tracker_root="$BATS_TEST_TMPDIR/tracker-order"
+  mkdir -p "$tracker_root/zebra" "$tracker_root/apple" "$tracker_root/mango"
+  TRACKER_ROOT="$tracker_root" run "$TRACKER_SNAPSHOT" --list
   assert_success
   local first second third
   first="$(printf '%s\n' "$output" | jq -r '.[0]')"
@@ -102,35 +102,35 @@ assert_snapshot_matches_golden() {
   [ "$third" = "zebra" ]
 }
 
-@test "--list — empty scratch root yields empty array" {
-  local scratch="$BATS_TEST_TMPDIR/scratch-empty"
-  mkdir -p "$scratch"
-  TRACKER_SCRATCH_ROOT="$scratch" run "$TRACKER_SNAPSHOT" --list
+@test "--list — empty tracker root yields empty array" {
+  local tracker_root="$BATS_TEST_TMPDIR/tracker-empty"
+  mkdir -p "$tracker_root"
+  TRACKER_ROOT="$tracker_root" run "$TRACKER_SNAPSHOT" --list
   assert_success
   local count
   count="$(printf '%s\n' "$output" | jq 'length')"
   [ "$count" = "0" ]
 }
 
-@test "--list — nonexistent scratch root yields empty array" {
-  TRACKER_SCRATCH_ROOT="$BATS_TEST_TMPDIR/no-such-dir" run "$TRACKER_SNAPSHOT" --list
+@test "--list — nonexistent tracker root yields empty array" {
+  TRACKER_ROOT="$BATS_TEST_TMPDIR/no-such-dir" run "$TRACKER_SNAPSHOT" --list
   assert_success
   local count
   count="$(printf '%s\n' "$output" | jq 'length')"
   [ "$count" = "0" ]
 }
 
-# Discovery: when no TRACKER_SCRATCH_ROOT is set, the script must find the
-# consumer's .scratch/ by walking $PWD upward for a .formann ancestor — the
+# Discovery: when no TRACKER_ROOT is set, the script must find the
+# consumer's .features/ by walking $PWD upward for a .formann ancestor — the
 # same shape build-image.sh uses to find HOST_REPO. Without this walk, the
 # fallback "compute relative to BASH_SOURCE" path breaks when the role-surface
 # entry point (docs/formann/issue-tracker/) is itself a directory symlink:
 # `..` resolution physically follows the symlink into the framework checkout
 # and lands in the wrong namespace.
-@test "auto-discovers scratch_root via .formann ancestor when no env override" {
-  unset TRACKER_SCRATCH_ROOT
+@test "auto-discovers tracker_root via .formann ancestor when no env override" {
+  unset TRACKER_ROOT
   local consumer="$BATS_TEST_TMPDIR/consumer"
-  mkdir -p "$consumer/.scratch/auto-discovered"
+  mkdir -p "$consumer/.features/auto-discovered"
   # The .formann marker is what identifies the consumer root. The walk only
   # cares that the entry exists; pointing it at a real dir keeps `[ -e ]`
   # honest without requiring symlink resolution.
@@ -151,13 +151,13 @@ assert_snapshot_matches_golden() {
   # status/type, eligible:false, and *no* parse_error — invisible to
   # the runner and the maintainer alike. The fix strips `\r` from each
   # line before comparison so the parser handles CRLF transparently.
-  local feature_dir="$BATS_TEST_TMPDIR/scratch/crlf-feature/issues"
+  local feature_dir="$BATS_TEST_TMPDIR/tracker/crlf-feature/issues"
   mkdir -p "$feature_dir"
   # Write the issue with CRLF line endings throughout.
   printf -- '---\r\nstatus: ready-for-agent\r\ncategory: enhancement\r\ntype: AFK\r\n---\r\n\r\n# CRLF\r\n\r\n## Blocked by\r\n\r\nNone.\r\n' \
     >"$feature_dir/01-crlf.md"
 
-  TRACKER_SCRATCH_ROOT="$BATS_TEST_TMPDIR/scratch" \
+  TRACKER_ROOT="$BATS_TEST_TMPDIR/tracker" \
     run "$TRACKER_SNAPSHOT" "crlf-feature"
   assert_success
 

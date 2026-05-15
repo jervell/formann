@@ -8,12 +8,12 @@ type: AFK
 
 ## Parent
 
-`.scratch/smoke/PRD.md`
+`.features/smoke/PRD.md`
 
 ## What to build
 
 Create a one-line marker file at
-`.scratch/smoke/markers/MARKER-01.txt` with the exact content:
+`.features/smoke/markers/MARKER-01.txt` with the exact content:
 
 ```
 smoke/01 was here
@@ -25,10 +25,10 @@ smoke/01 was here
 
 ## Acceptance criteria
 
-- [ ] `.scratch/smoke/markers/MARKER-01.txt` exists with the expected
+- [ ] `.features/smoke/markers/MARKER-01.txt` exists with the expected
       single line of content
 - [ ] The commit message is `smoke/01: stamp smoke marker`
-- [ ] No files outside `.scratch/smoke/markers/` and the tracker move
+- [ ] No files outside `.features/smoke/markers/` and the tracker move
       are touched
 
 ## Blocked by
@@ -48,7 +48,7 @@ the slice 08 smoke test, not to do useful work.
 **Resolved during triage:**
 
 - The marker file's directory may not exist yet. `mkdir -p
-  .scratch/smoke/markers/` before writing.
+  .features/smoke/markers/` before writing.
 - The commit must include both the marker file and the tracker move
   in a single commit (matches the project's `/implement` convention).
 

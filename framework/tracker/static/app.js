@@ -314,7 +314,7 @@ function renderFeatureOverview(feature) {
 }
 
 function rawPrefix(feature) {
-  // Archived features live under .scratch/done/<slug>/. The hash route never
+  // Archived features live under .features/done/<slug>/. The hash route never
   // includes the `done/` segment (the spec keeps the canonical <feature>/NN
   // form across active and archive), so we add it only at fetch time based
   // on the feature's section.

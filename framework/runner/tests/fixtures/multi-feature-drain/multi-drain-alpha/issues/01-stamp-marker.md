@@ -8,12 +8,12 @@ type: AFK
 
 ## Parent
 
-`.scratch/multi-drain-alpha/PRD.md`
+`.features/multi-drain-alpha/PRD.md`
 
 ## What to build
 
 Create a one-line marker file at
-`.scratch/multi-drain-alpha/markers/MARKER-01.txt` with the exact content:
+`.features/multi-drain-alpha/markers/MARKER-01.txt` with the exact content:
 
 ```
 multi-drain-alpha/01 was here
@@ -25,10 +25,10 @@ multi-drain-alpha/01 was here
 
 ## Acceptance criteria
 
-- [ ] `.scratch/multi-drain-alpha/markers/MARKER-01.txt` exists with the
+- [ ] `.features/multi-drain-alpha/markers/MARKER-01.txt` exists with the
       expected single line of content
 - [ ] The commit message is `multi-drain-alpha/01: stamp marker`
-- [ ] No files outside `.scratch/multi-drain-alpha/markers/` and the
+- [ ] No files outside `.features/multi-drain-alpha/markers/` and the
       tracker move are touched
 
 ## Blocked by
@@ -48,7 +48,7 @@ work.
 **Resolved during triage:**
 
 - The marker file's directory may not exist yet. `mkdir -p
-  .scratch/multi-drain-alpha/markers/` before writing.
+  .features/multi-drain-alpha/markers/` before writing.
 - The commit must include both the marker file and the tracker move
   in a single commit (matches the project's `/implement` convention).
 

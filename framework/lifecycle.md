@@ -18,7 +18,7 @@ Indexed by what you have in front of you:
 | an `in-review` issue                            | `/triage`                             | `done` or `ready-for-agent` (rework)         |
 | an `in-review` issue you want a second eye on   | (`review-issue` agent)                | findings; no state change                    |
 | a feature ready before archive/merge            | (`review-feature` agent)              | findings; no state change                    |
-| a feature with all issues terminal              | `/triage` (say "archive `<feature>`") | moved to `.scratch/done/`                    |
+| a feature with all issues terminal              | `/triage` (say "archive `<feature>`") | moved to `.features/done/`                    |
 
 ## Layout
 
@@ -31,7 +31,7 @@ Two scopes. Project-level artifacts accumulate across features; feature-level ar
 ├── .inbox.md                  ← captured ideas, deferred (optional, project-level)
 ├── .inbox/                    ← long-form bodies for inbox entries (optional)
 ├── .out-of-scope/             ← rejected feature concepts (project-level)
-└── .scratch/
+└── .features/
     ├── <feature>/             ← active features
     │   ├── PRD.md             ← spec, no Status
     │   └── issues/NN-*.md     ← work units, with Status / Category / Type
@@ -54,10 +54,10 @@ Opt-in. Projects that don't want it just don't have an `.inbox.md`. See `docs/fo
 Reads `CONTEXT.md`, `docs/adr/`. Writes updates to `CONTEXT.md` as terms resolve; an ADR when a decision is hard to reverse, surprising without context, and a real trade-off.
 
 **2. PRD** — `/to-prd`
-Reads grilling context, `CONTEXT.md`, `docs/adr/`. Writes `.scratch/<feature>/PRD.md` — problem, solution, user stories, decisions, out-of-scope. Synthesizes the grilling output into a written spec, with light module decomposition confirmed with the maintainer. The grilling carried the substantive design work; this stage records it.
+Reads grilling context, `CONTEXT.md`, `docs/adr/`. Writes `.features/<feature>/PRD.md` — problem, solution, user stories, decisions, out-of-scope. Synthesizes the grilling output into a written spec, with light module decomposition confirmed with the maintainer. The grilling carried the substantive design work; this stage records it.
 
 **3. Slice** — `/to-issues`
-Reads PRD, `CONTEXT.md`, `docs/adr/`. Writes one issue per vertical slice at `.scratch/<feature>/issues/NN-<slug>.md`, each in state `needs-triage`, with a category (`bug` or `enhancement`) and type (`AFK` or `HITL`, provisional).
+Reads PRD, `CONTEXT.md`, `docs/adr/`. Writes one issue per vertical slice at `.features/<feature>/issues/NN-<slug>.md`, each in state `needs-triage`, with a category (`bug` or `enhancement`) and type (`AFK` or `HITL`, provisional).
 
 **4. Triage** — `/triage`
 Reads issue, `CONTEXT.md`, `docs/adr/`, `.out-of-scope/`. Writes updated state / category / type, an outcome-specific comment on the issue, an agent brief on `ready-for-*`, and a `.out-of-scope/` entry on `wontfix` of an enhancement. Resolves open questions in-session — type `HITL` and state `ready-for-human` describe the work, never "triage isn't finished".
@@ -69,19 +69,19 @@ Agent or human reads the issue, `CONTEXT.md`, `docs/adr/`. Writes code and tests
 Maintainer reads the shipped work + the summary's Evidence block. Trusts `[x]` (verified) coverage by default; walks each `[ ]` (`[human]`) row, posts a `### Verification` comment recording the walk, and sets state to `done` (accept) or `ready-for-agent` with rework notes (reject). A missing or unmappable Evidence block is grounds to reject. `done` is the per-issue signoff; final feature-level signoff happens at Archive. The maintainer may invoke the `review-issue` agent beforehand — decision-neutral, console-only, surfaces bug-hunt / intent-check / Evidence-check findings without touching state. Its output is an input to the maintainer's verify decision; `/triage` itself does not call it.
 
 **7. Archive** — `/triage`
-The feature-level final human gate. Reads the feature dir; collects every `[ ]` row from each `done` issue's latest Implementation comment that hasn't already been walked in a Verification comment, walks them with the maintainer, posts a per-issue Verification comment recording the verdicts, then moves `.scratch/<feature>/` to `.scratch/done/<feature>/`. Failed walks move the offending issue back to `ready-for-agent` with rework notes and abort archive. Triggered when every issue is terminal (`done`/`wontfix`) and the maintainer says "archive `<feature>`". The maintainer may invoke the `review-feature` agent before the move — two passes (primary + independent challenger via subagent), decision-neutral, scans the full feature diff for bugs and intent drift. Its output is an input to the maintainer's archive/merge decision; `/triage` itself does not call it.
+The feature-level final human gate. Reads the feature dir; collects every `[ ]` row from each `done` issue's latest Implementation comment that hasn't already been walked in a Verification comment, walks them with the maintainer, posts a per-issue Verification comment recording the verdicts, then moves `.features/<feature>/` to `.features/done/<feature>/`. Failed walks move the offending issue back to `ready-for-agent` with rework notes and abort archive. Triggered when every issue is terminal (`done`/`wontfix`) and the maintainer says "archive `<feature>`". The maintainer may invoke the `review-feature` agent before the move — two passes (primary + independent challenger via subagent), decision-neutral, scans the full feature diff for bugs and intent drift. Its output is an input to the maintainer's archive/merge decision; `/triage` itself does not call it.
 
 ### Reads and writes
 
 | Stage     | Command            | Reads                                                     | Writes                                                                                              |
 | --------- | ------------------ | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Grill     | `/grill-with-docs` | `CONTEXT.md`, `docs/adr/`                                 | `CONTEXT.md` updates; new ADR (when warranted)                                                      |
-| PRD       | `/to-prd`          | grilling output, `CONTEXT.md`, `docs/adr/`                | `.scratch/<feature>/PRD.md`                                                                         |
-| Slice     | `/to-issues`       | PRD, `CONTEXT.md`, `docs/adr/`                            | `.scratch/<feature>/issues/NN-*.md` (state `needs-triage`)                                          |
+| PRD       | `/to-prd`          | grilling output, `CONTEXT.md`, `docs/adr/`                | `.features/<feature>/PRD.md`                                                                         |
+| Slice     | `/to-issues`       | PRD, `CONTEXT.md`, `docs/adr/`                            | `.features/<feature>/issues/NN-*.md` (state `needs-triage`)                                          |
 | Triage    | `/triage`          | issue, `CONTEXT.md`, `docs/adr/`, `.out-of-scope/`        | state / category / type; outcome comment; agent brief on `ready-for-*`; `.out-of-scope/` entry on `wontfix` of an enhancement |
 | Implement | `/implement`       | issue, `CONTEXT.md`, `docs/adr/`                          | code, tests; new ADR (if surfaced); state `in-review`; summary comment with Evidence block          |
 | Verify    | `/triage`          | shipped work + summary's Evidence block                   | Verification comment with walked-row verdicts; state `done` or `ready-for-agent` (with rework notes) |
-| Archive   | `/triage`          | feature dir + each `done` issue's Evidence block          | per-issue Verification comments for unwalked rows; move `.scratch/<feature>/` → `.scratch/done/<feature>/` |
+| Archive   | `/triage`          | feature dir + each `done` issue's Evidence block          | per-issue Verification comments for unwalked rows; move `.features/<feature>/` → `.features/done/<feature>/` |
 
 ## Issue state machine
 

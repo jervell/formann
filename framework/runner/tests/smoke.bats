@@ -19,7 +19,7 @@
 #   1. Issue 01's frontmatter flipped to `status: done` (gate ran clean).
 #   2. The throwaway workspace's `smoke` branch fast-forwarded with a
 #      new commit whose tree contains
-#      `.scratch/smoke/markers/MARKER-01.txt`.
+#      `.features/smoke/markers/MARKER-01.txt`.
 #   3. The per-run dir under `.runner-state/runs/<ts>/` contains both
 #      `runner.log` and `SUMMARY.md` (sanity check on slice 06's
 #      output surface).
@@ -79,9 +79,9 @@ teardown() {
   mkdir -p "$WORKSPACE/.claude"
   cp -RP "$HOST_REPO/.claude/skills" "$WORKSPACE/.claude/skills"
   cp -RP "$HOST_REPO/.claude/agents" "$WORKSPACE/.claude/agents"
-  mkdir -p "$WORKSPACE/.scratch/smoke"
-  cp "$FIXTURE_DIR/PRD.md" "$WORKSPACE/.scratch/smoke/"
-  cp -R "$FIXTURE_DIR/issues" "$WORKSPACE/.scratch/smoke/"
+  mkdir -p "$WORKSPACE/.features/smoke"
+  cp "$FIXTURE_DIR/PRD.md" "$WORKSPACE/.features/smoke/"
+  cp -R "$FIXTURE_DIR/issues" "$WORKSPACE/.features/smoke/"
   # `.runner-state/` must be gitignored so pre-flight's "host clean"
   # check passes after the runner creates the per-run dir.
   printf '/.runner-state/\n' >"$WORKSPACE/.gitignore"
@@ -105,7 +105,7 @@ teardown() {
 
   # 4. Issue 01's frontmatter flipped to `done` (gate ran clean).
   run grep -E '^status: done$' \
-    "$WORKSPACE/.scratch/smoke/issues/01-stamp-marker.md"
+    "$WORKSPACE/.features/smoke/issues/01-stamp-marker.md"
   assert_success
 
   # 5. Workspace's `smoke` branch fast-forwarded with a new commit
@@ -113,7 +113,7 @@ teardown() {
   current_head="$(git -C "$WORKSPACE" rev-parse HEAD)"
   [ "$current_head" != "$initial_head" ]
   run git -C "$WORKSPACE" cat-file -e \
-    "smoke:.scratch/smoke/markers/MARKER-01.txt"
+    "smoke:.features/smoke/markers/MARKER-01.txt"
   assert_success
 
   # 6. Per-run dir contains runner.log and SUMMARY.md.

@@ -3106,7 +3106,7 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
 
 @test "check_discovery — persists DISCOVERY_JSON to <run-dir>/discovery.json" {
   HOST_REPO="$BATS_TEST_TMPDIR/disc-host"
-  mkdir -p "$HOST_REPO/.scratch/alpha" "$HOST_REPO/.scratch/beta"
+  mkdir -p "$HOST_REPO/.features/alpha" "$HOST_REPO/.features/beta"
   # check_discovery shells out to the binding's tracker-snapshot script.
   # Plant a minimal stub that emits a deterministic discovery list.
   local stub_dir="$HOST_REPO/docs/formann/issue-tracker"

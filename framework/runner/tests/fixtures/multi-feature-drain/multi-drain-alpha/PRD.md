@@ -26,7 +26,7 @@ its first pass.
 
 ## Implementation Decisions
 
-- Marker lives at `.scratch/multi-drain-alpha/markers/MARKER-01.txt`,
+- Marker lives at `.features/multi-drain-alpha/markers/MARKER-01.txt`,
   committed alongside the tracker move. Inside the feature dir so cleanup
   means deleting the branch + the working-tree fixture.
 - Single issue — keeps each per-feature drain section in SUMMARY.md compact

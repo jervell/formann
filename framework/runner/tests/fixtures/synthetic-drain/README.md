@@ -9,32 +9,32 @@ Slice 05 demos against this; slice 08's end-to-end smoke test reuses it.
 ```
 synthetic-drain/
 ├── README.md                    (this file)
-├── PRD.md                       installs at .scratch/synthetic-drain/PRD.md
+├── PRD.md                       installs at .features/synthetic-drain/PRD.md
 └── issues/
     ├── 01-stamp-marker-one.md   trivial AFK task — write MARKER-01.txt
     └── 02-stamp-marker-two.md   trivial AFK task — write MARKER-02.txt
 ```
 
 Each issue's "What to build" tells `/implement` to create a single
-one-line marker file under `.scratch/synthetic-drain/markers/` and
+one-line marker file under `.features/synthetic-drain/markers/` and
 commit it. Both issues are AFK + `ready-for-agent` with no blockers,
 so both are eligible from the first iteration.
 
 ## How to drive the demo
 
 The runner expects the host branch to match the feature slug and
-`.scratch/<slug>/` to exist. Install the fixture, switch branches, run.
+`.features/<slug>/` to exist. Install the fixture, switch branches, run.
 
 ```sh
 # 1. Switch to a fresh branch named after the feature.
 git checkout -b synthetic-drain
 
-# 2. Copy the fixture into .scratch/.
-mkdir -p .scratch/synthetic-drain
+# 2. Copy the fixture into .features/.
+mkdir -p .features/synthetic-drain
 cp -R framework/runner/tests/fixtures/synthetic-drain/PRD.md \
-      .scratch/synthetic-drain/
+      .features/synthetic-drain/
 cp -R framework/runner/tests/fixtures/synthetic-drain/issues \
-      .scratch/synthetic-drain/
+      .features/synthetic-drain/
 
 # 3. Drop the template tree on this branch so /implement matches one
 #    file, not two. (Template and live issue share the same path shape;
@@ -45,8 +45,8 @@ if [ -d framework/runner/tests/fixtures/synthetic-drain ]; then
 fi
 
 # 4. Commit so the fixture lives at HEAD (the runner reads
-#    .scratch from the runner-checkout's HEAD, not its working tree).
-git add .scratch/synthetic-drain
+#    .features from the runner-checkout's HEAD, not its working tree).
+git add .features/synthetic-drain
 git commit -m "synthetic-drain: install demo fixture"
 
 # 5. Park host on master so the runner can drain synthetic-drain
@@ -59,11 +59,11 @@ git checkout master
 #    discovers the slug. Without this, `--feature synthetic-drain` is
 #    refused with `unknown-feature` regardless of merge state.
 #    Mirrors multi-feature-drain's setup step 3. Do NOT commit on master.
-mkdir -p .scratch/synthetic-drain
+mkdir -p .features/synthetic-drain
 cp -R framework/runner/tests/fixtures/synthetic-drain/PRD.md \
-      .scratch/synthetic-drain/
+      .features/synthetic-drain/
 cp -R framework/runner/tests/fixtures/synthetic-drain/issues \
-      .scratch/synthetic-drain/
+      .features/synthetic-drain/
 bash framework/bindings/issue-tracker/local-markdown/tracker-snapshot --list \
   | grep -q synthetic-drain   # sanity-check: slug now in discovery output
 
@@ -73,7 +73,7 @@ bash framework/runner/run-the-queue.sh --feature synthetic-drain
 
 The runner should dispatch issue 01, propagate the commit into host's
 `synthetic-drain` ref, then issue 02, then report `queue empty`. Markers
-land at `.scratch/synthetic-drain/markers/MARKER-{01,02}.txt` on the
+land at `.features/synthetic-drain/markers/MARKER-{01,02}.txt` on the
 `synthetic-drain` branch.
 
 ## Ctrl-C demo
@@ -89,7 +89,7 @@ the next iteration.
 
 ```sh
 git checkout <your-working-branch>  # back to the working branch
-rm -rf .scratch/synthetic-drain     # drop the seeded untracked fixture
+rm -rf .features/synthetic-drain     # drop the seeded untracked fixture
 git branch -D synthetic-drain       # delete the demo branch
 docker volume rm runner-mvn-cache-synthetic-drain
 ```

@@ -4,7 +4,7 @@ Detailed architecture and process flow of the runner that drains a feature's `re
 
 - [`lifecycle.md`](lifecycle.md) — high-level overview and where the runner fits in the pipeline.
 - [`runner/README.md`](runner/README.md) — operator-facing reference (per-run output, sandbox primitives, OAuth setup, smoke test, verification recipes).
-- `.scratch/afk-runner/PRD.md` (or `.scratch/done/afk-runner/PRD.md` once archived) — full design rationale, user stories, out-of-scope decisions, and the original module decomposition.
+- `.features/afk-runner/PRD.md` (or `.features/done/afk-runner/PRD.md` once archived) — full design rationale, user stories, out-of-scope decisions, and the original module decomposition.
 
 If you want to *use* the runner, start with the README. If you want to *understand* the runner, start here.
 
@@ -133,7 +133,7 @@ The runner uses snapshots for two purposes:
 
 Snapshots are taken against the runner-checkout's **HEAD** (i.e. committed state), not the working tree. Fast-forward propagation only lands committed history on the host, so an apparent status flip living only in the working tree (because `/implement` skipped its `tracker:` commit) would never reach the host. Reading from HEAD makes the classifier's verdict match what actually propagates.
 
-The local-markdown binding's implementation is a shell script that globs `.scratch/<feature>/issues/*.md`, parses YAML frontmatter, and emits the JSON. A future binding (e.g., GitHub Issues) replaces this script; the contract is unchanged.
+The local-markdown binding's implementation is a shell script that globs `.features/<feature>/issues/*.md`, parses YAML frontmatter, and emits the JSON. A future binding (e.g., GitHub Issues) replaces this script; the contract is unchanged.
 
 ### Runner-checkout — `.runner-state/checkout/`
 

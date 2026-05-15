@@ -10,7 +10,7 @@ real fast-forward. Slow and expensive, so guarded behind the
 ```
 smoke/
 ├── README.md                 (this file)
-├── PRD.md                    installs at .scratch/smoke/PRD.md
+├── PRD.md                    installs at .features/smoke/PRD.md
 └── issues/
     └── 01-stamp-marker.md    trivial AFK task — write MARKER-01.txt
 ```
@@ -39,9 +39,9 @@ mkdir -p .runner-state/smoke-work
 ws=$(mktemp -d "$(pwd)/.runner-state/smoke-work/run.XXXXXX")
 cp -RP .agents "$ws/.agents"
 mkdir -p "$ws/.claude" && cp -RP .claude/skills "$ws/.claude/skills"
-mkdir -p "$ws/.scratch/smoke"
-cp framework/runner/tests/fixtures/smoke/PRD.md "$ws/.scratch/smoke/"
-cp -R framework/runner/tests/fixtures/smoke/issues "$ws/.scratch/smoke/"
+mkdir -p "$ws/.features/smoke"
+cp framework/runner/tests/fixtures/smoke/PRD.md "$ws/.features/smoke/"
+cp -R framework/runner/tests/fixtures/smoke/issues "$ws/.features/smoke/"
 printf '/.runner-state/\n' > "$ws/.gitignore"
 git -C "$ws" init -q
 git -C "$ws" symbolic-ref HEAD refs/heads/smoke
@@ -53,6 +53,6 @@ git -C "$ws" -c user.email=smoke@test -c user.name=smoke \
 
 The runner should report `queue empty` after one dispatch. The
 workspace's `smoke` branch advances by one commit; the marker lands
-at `.scratch/smoke/markers/MARKER-01.txt`. Tear-down is `rm -rf
+at `.features/smoke/markers/MARKER-01.txt`. Tear-down is `rm -rf
 "$ws"` and (optionally) `docker volume rm runner-mvn-cache-smoke` to
 reclaim the per-feature mvn cache.

@@ -10,7 +10,7 @@ runner's verification with the slices it dispatches.
 ## Solution
 
 Two trivial AFK issues, each instructing `/implement` to drop a
-marker file under `.scratch/synthetic-drain/markers/` and commit it.
+marker file under `.features/synthetic-drain/markers/` and commit it.
 Both issues are independently eligible — no blockers — so the runner
 picks them in source order.
 
@@ -25,7 +25,7 @@ picks them in source order.
 
 ## Implementation Decisions
 
-- Markers live at `.scratch/synthetic-drain/markers/MARKER-NN.txt`,
+- Markers live at `.features/synthetic-drain/markers/MARKER-NN.txt`,
   committed alongside the tracker move. They're inside the feature
   dir so cleaning up means deleting the branch.
 - Issues are independent (no `Blocked by`) so both are eligible from

@@ -1,6 +1,6 @@
 # Issue tracker: Local Markdown
 
-Issues and PRDs for this repo live as markdown files in `.scratch/`.
+Issues and PRDs for this repo live as markdown files in `.features/`.
 
 ## Authorship
 
@@ -25,13 +25,13 @@ Two structural types underpin the contract:
 
 Read the full content of an issue: its metadata, body sections (title, what to build, acceptance criteria, blocked-by, agent brief, triage notes), and its comment timeline.
 
-**Local-markdown realization:** Read the file at `.scratch/<feature>/issues/<NN>-<slug>.md`.
+**Local-markdown realization:** Read the file at `.features/<feature>/issues/<NN>-<slug>.md`.
 
 ### List issues in a feature
 
 Return the set of issues in a feature with their metadata (ref, status, category, type, blocked-by).
 
-**Local-markdown realization:** Run `tracker-snapshot <feature>` for a machine-readable JSON snapshot, or glob `.scratch/<feature>/issues/*.md` and read the frontmatter of each file.
+**Local-markdown realization:** Run `tracker-snapshot <feature>` for a machine-readable JSON snapshot, or glob `.features/<feature>/issues/*.md` and read the frontmatter of each file.
 
 ### Set the state to `<state>`
 
@@ -83,7 +83,7 @@ type: AFK
 # Add rate-limit header to API responses
 
 ## Parent
-`.scratch/api-hardening/PRD.md`
+`.features/api-hardening/PRD.md`
 
 ## What to build
 Return a `X-RateLimit-Remaining` header on every API response.
@@ -133,9 +133,9 @@ The implementation is clean. `RateLimitFilter` is well-scoped and the test cover
 
 ## Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The PRD is `.scratch/<feature-slug>/PRD.md`
-- Implementation issues are `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`
+- One feature per directory: `.features/<feature-slug>/`
+- The PRD is `.features/<feature-slug>/PRD.md`
+- Implementation issues are `.features/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`
 
 ## Issue properties
 
@@ -197,4 +197,4 @@ Tracker mutations — publishing an issue or PRD, changing a header field, posti
 
 ## Archiving a shipped feature
 
-When every issue in a feature dir is terminal (`status: done` or `status: wontfix`) and the feature is shipped, the entire dir moves from `.scratch/<feature>/` to `.scratch/done/<feature>/`. The PRD moves with it. Per-issue completion only flips `status`; archival happens at the feature level, on explicit maintainer request (see the `triage` skill).
+When every issue in a feature dir is terminal (`status: done` or `status: wontfix`) and the feature is shipped, the entire dir moves from `.features/<feature>/` to `.features/done/<feature>/`. The PRD moves with it. Per-issue completion only flips `status`; archival happens at the feature level, on explicit maintainer request (see the `triage` skill).

@@ -816,7 +816,7 @@ resolve_host_repo() {
 check_discovery() {
   local rc=0
   local result
-  result="$(TRACKER_SCRATCH_ROOT="$HOST_REPO/.scratch" \
+  result="$(TRACKER_ROOT="$HOST_REPO/.features" \
     bash "$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot" --list)" || rc=$?
   if [ "$rc" -ne 0 ]; then
     fail_invariant "discovery" \
@@ -1092,7 +1092,7 @@ preflight() {
 
 # === Tracker snapshot ======================================================
 
-# Run tracker-snapshot against the runner-checkout's `.scratch/` *as it
+# Run tracker-snapshot against the runner-checkout's `.features/` *as it
 # exists at HEAD* (i.e. committed state, not the working tree). This is
 # the classifier's source of truth: fast-forward propagation only lands
 # committed history on the host, so an apparent status flip living only
@@ -1100,16 +1100,16 @@ preflight() {
 # would never reach the host. Reading from HEAD makes the classifier's
 # verdict match what actually propagates.
 #
-# Implementation: extract HEAD's `.scratch/` into a temp dir via
+# Implementation: extract HEAD's `.features/` into a temp dir via
 # `git archive | tar`, snapshot from there, clean up.
 take_snapshot() {
   local feature="$1"
   local tmp result
   tmp="$(mktemp -d -t runner-snap.XXXXXX)"
-  if ! git -C "$HOST_CHECKOUT" archive HEAD .scratch 2>/dev/null \
+  if ! git -C "$HOST_CHECKOUT" archive HEAD .features 2>/dev/null \
        | tar -xC "$tmp" 2>/dev/null; then
     rm -rf "$tmp"
-    echo "runner: failed to extract committed .scratch/ from runner-checkout HEAD" >&2
+    echo "runner: failed to extract committed .features/ from runner-checkout HEAD" >&2
     return 1
   fi
   # Capture rc explicitly: command-substitution-into-local-assignment
@@ -1118,7 +1118,7 @@ take_snapshot() {
   # snapshot indistinguishable from "no issues" — and run_loop would
   # report a misleading queue-empty stop.
   local rc=0
-  result="$(TRACKER_SCRATCH_ROOT="$tmp/.scratch" \
+  result="$(TRACKER_ROOT="$tmp/.features" \
     bash "$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot" "$feature")" || rc=$?
   rm -rf "$tmp"
   if [ "$rc" -ne 0 ]; then

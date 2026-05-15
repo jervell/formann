@@ -23,7 +23,7 @@ commits it. Independently eligible — no blockers.
 
 ## Implementation Decisions
 
-- Marker lives at `.scratch/multi-drain-beta/markers/MARKER-01.txt`,
+- Marker lives at `.features/multi-drain-beta/markers/MARKER-01.txt`,
   committed alongside the tracker move.
 - Single issue — same shape as alpha. Per-feature SUMMARY sections stay
   compact.

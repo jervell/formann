@@ -23,17 +23,17 @@ Verification comment carries the durable record).
 multi-feature-drain/
 ├── README.md                              (this file — the runbook)
 ├── multi-drain-alpha/
-│   ├── PRD.md                             installs at .scratch/multi-drain-alpha/PRD.md
+│   ├── PRD.md                             installs at .features/multi-drain-alpha/PRD.md
 │   └── issues/
 │       └── 01-stamp-marker.md             trivial AFK task — write MARKER-01.txt
 └── multi-drain-beta/
-    ├── PRD.md                             installs at .scratch/multi-drain-beta/PRD.md
+    ├── PRD.md                             installs at .features/multi-drain-beta/PRD.md
     └── issues/
         └── 01-stamp-marker.md             trivial AFK task — write MARKER-01.txt
 ```
 
 Each issue tells `/implement` to create a one-line marker file inside its
-own feature dir (`.scratch/<slug>/markers/MARKER-01.txt`) and commit. Both
+own feature dir (`.features/<slug>/markers/MARKER-01.txt`) and commit. Both
 issues are `ready-for-agent + AFK` with no blockers, so each feature has one
 eligible ref on the first iteration.
 
@@ -43,14 +43,14 @@ Run this on host **before** the first scenario. Establishes both feature
 branches with the fixture committed on each, then returns host to master
 with the fixture dirs present in the working tree so discovery sees them.
 
-Each feature branch installs only its own `.scratch/<feature>/` fixture and
+Each feature branch installs only its own `.features/<feature>/` fixture and
 **also drops the `tests/fixtures/multi-feature-drain/` template tree from
 that branch.** Why the drop: when the feature branch is created off a
 parent that already contains the fixture template (which it does, once
 this slice has merged), the dispatched `/implement` sees two files
 matching the issue path pattern — the template at
 `framework/runner/tests/fixtures/multi-feature-drain/<feature>/issues/01-stamp-marker.md`
-and the live issue at `.scratch/<feature>/issues/01-stamp-marker.md` — and
+and the live issue at `.features/<feature>/issues/01-stamp-marker.md` — and
 picks nondeterministically. Removing the template from the feature branch
 leaves a single match.
 
@@ -61,29 +61,29 @@ git rev-parse --abbrev-ref HEAD   # → master
 
 # 1. Branch 'multi-drain-alpha' off master with fixture A committed.
 git checkout -b multi-drain-alpha master
-mkdir -p .scratch/multi-drain-alpha
+mkdir -p .features/multi-drain-alpha
 cp -R framework/runner/tests/fixtures/multi-feature-drain/multi-drain-alpha/PRD.md \
-      .scratch/multi-drain-alpha/
+      .features/multi-drain-alpha/
 cp -R framework/runner/tests/fixtures/multi-feature-drain/multi-drain-alpha/issues \
-      .scratch/multi-drain-alpha/
+      .features/multi-drain-alpha/
 # Drop the template tree so /implement matches one file, not two.
 if [ -d framework/runner/tests/fixtures/multi-feature-drain ]; then
   git rm -r framework/runner/tests/fixtures/multi-feature-drain
 fi
-git add .scratch/multi-drain-alpha
+git add .features/multi-drain-alpha
 git commit -m "multi-drain-alpha: install smoke fixture"
 
 # 2. Branch 'multi-drain-beta' off master with fixture B committed.
 git checkout -b multi-drain-beta master
-mkdir -p .scratch/multi-drain-beta
+mkdir -p .features/multi-drain-beta
 cp -R framework/runner/tests/fixtures/multi-feature-drain/multi-drain-beta/PRD.md \
-      .scratch/multi-drain-beta/
+      .features/multi-drain-beta/
 cp -R framework/runner/tests/fixtures/multi-feature-drain/multi-drain-beta/issues \
-      .scratch/multi-drain-beta/
+      .features/multi-drain-beta/
 if [ -d framework/runner/tests/fixtures/multi-feature-drain ]; then
   git rm -r framework/runner/tests/fixtures/multi-feature-drain
 fi
-git add .scratch/multi-drain-beta
+git add .features/multi-drain-beta
 git commit -m "multi-drain-beta: install smoke fixture"
 
 # 3. Return to master. Re-stage the fixture dirs in master's working tree
@@ -91,13 +91,13 @@ git commit -m "multi-drain-beta: install smoke fixture"
 #    discovers both features. They sit as untracked dirs on master —
 #    do NOT commit them on master.
 git checkout master
-mkdir -p .scratch/multi-drain-alpha .scratch/multi-drain-beta
+mkdir -p .features/multi-drain-alpha .features/multi-drain-beta
 cp -R framework/runner/tests/fixtures/multi-feature-drain/multi-drain-alpha/PRD.md \
       framework/runner/tests/fixtures/multi-feature-drain/multi-drain-alpha/issues \
-      .scratch/multi-drain-alpha/
+      .features/multi-drain-alpha/
 cp -R framework/runner/tests/fixtures/multi-feature-drain/multi-drain-beta/PRD.md \
       framework/runner/tests/fixtures/multi-feature-drain/multi-drain-beta/issues \
-      .scratch/multi-drain-beta/
+      .features/multi-drain-beta/
 
 # 4. Sanity-check the setup.
 git rev-parse --abbrev-ref HEAD                              # → master
@@ -110,9 +110,9 @@ git ls-tree -r multi-drain-beta  -- framework/runner/tests/fixtures/multi-featur
 After step 4, the host repo holds:
 
 - `master` (host HEAD, unchanged from your starting commit).
-- `multi-drain-alpha` branch with `.scratch/multi-drain-alpha/` committed.
-- `multi-drain-beta` branch with `.scratch/multi-drain-beta/` committed.
-- Untracked `.scratch/multi-drain-alpha/` and `.scratch/multi-drain-beta/`
+- `multi-drain-alpha` branch with `.features/multi-drain-alpha/` committed.
+- `multi-drain-beta` branch with `.features/multi-drain-beta/` committed.
+- Untracked `.features/multi-drain-alpha/` and `.features/multi-drain-beta/`
   in master's working tree (so discovery can list them).
 
 ## Scenarios
@@ -142,7 +142,7 @@ Both features drain in one pass.
 
 ```sh
 # Pre-conditions: host on master; both feature branches exist; both
-# .scratch/multi-drain-{alpha,beta}/ dirs present (untracked) in working tree.
+# .features/multi-drain-{alpha,beta}/ dirs present (untracked) in working tree.
 git rev-parse multi-drain-alpha > /tmp/smoke-alpha-before
 git rev-parse multi-drain-beta  > /tmp/smoke-beta-before
 
@@ -154,7 +154,7 @@ bash framework/runner/run-the-queue.sh
 - Exit 0.
 - Stop reason: `completed`.
 - `discovery.json` is a JSON array containing both `multi-drain-alpha` and
-  `multi-drain-beta` (alongside any other live `.scratch/` features).
+  `multi-drain-beta` (alongside any other live `.features/` features).
 - `SUMMARY.md` has a `# AFK runner — multi-feature drain` heading.
 - Two per-feature sections in source order:
   - `## multi-drain-alpha — drained` followed by a per-issue table with one
@@ -247,7 +247,7 @@ git branch -D multi-drain-alpha
 git branch -D multi-drain-beta
 
 # 3. Remove the working-tree fixture dirs (they were untracked on master).
-rm -rf .scratch/multi-drain-alpha .scratch/multi-drain-beta
+rm -rf .features/multi-drain-alpha .features/multi-drain-beta
 
 # 4. Reclaim the per-feature mvn cache volumes if they exist.
 docker volume rm runner-mvn-cache-multi-drain-alpha 2>/dev/null || true
@@ -259,7 +259,7 @@ rm -rf .runner-state/aborted/multi-drain-alpha .runner-state/aborted/multi-drain
 # 6. Sanity-check the teardown.
 git status                                                   # → clean
 git branch | grep -E 'multi-drain-(alpha|beta)' && echo BAD || echo OK   # → OK
-ls .scratch | grep -E 'multi-drain-(alpha|beta)' && echo BAD || echo OK  # → OK
+ls .features | grep -E 'multi-drain-(alpha|beta)' && echo BAD || echo OK  # → OK
 bash framework/bindings/issue-tracker/local-markdown/tracker-snapshot --list # → neither slug in output
 ```
 
@@ -267,7 +267,7 @@ bash framework/bindings/issue-tracker/local-markdown/tracker-snapshot --list # �
 
 - Host is back on master with a clean working tree.
 - Neither `multi-drain-alpha` nor `multi-drain-beta` appears in
-  `git branch` or `.scratch/`.
+  `git branch` or `.features/`.
 - `tracker-snapshot --list` no longer mentions either slug.
 - Per-run dirs under `.runner-state/runs/` from the smoke remain (forensics;
   remove manually if desired).

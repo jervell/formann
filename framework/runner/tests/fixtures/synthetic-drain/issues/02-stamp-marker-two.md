@@ -8,12 +8,12 @@ type: AFK
 
 ## Parent
 
-`.scratch/synthetic-drain/PRD.md`
+`.features/synthetic-drain/PRD.md`
 
 ## What to build
 
 Create a one-line marker file at
-`.scratch/synthetic-drain/markers/MARKER-02.txt` with the exact content:
+`.features/synthetic-drain/markers/MARKER-02.txt` with the exact content:
 
 ```
 synthetic-drain/02 was here
@@ -25,10 +25,10 @@ synthetic-drain/02 was here
 
 ## Acceptance criteria
 
-- [ ] `.scratch/synthetic-drain/markers/MARKER-02.txt` exists with the
+- [ ] `.features/synthetic-drain/markers/MARKER-02.txt` exists with the
       expected single line of content
 - [ ] The commit message is `synthetic-drain/02: stamp marker two`
-- [ ] No files outside `.scratch/synthetic-drain/markers/` and the
+- [ ] No files outside `.features/synthetic-drain/markers/` and the
       tracker move are touched
 
 ## Blocked by
@@ -48,7 +48,7 @@ independently eligible so both are picked in the first loop pass.
 **Resolved during triage:**
 
 - The marker file's directory may not exist yet. `mkdir -p
-  .scratch/synthetic-drain/markers/` before writing.
+  .features/synthetic-drain/markers/` before writing.
 - The commit must include both the marker file and the tracker move
   in a single commit (matches the project's `/implement` convention).
 

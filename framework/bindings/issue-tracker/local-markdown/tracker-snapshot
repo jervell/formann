@@ -5,11 +5,11 @@
 ### Usage: tracker-snapshot <feature-slug>
 ###
 ### Emits a JSON document on stdout describing every issue under
-### `<scratch>/<feature-slug>/issues/`. See
+### `<tracker-root>/<feature-slug>/issues/`. See
 ### `framework/bindings/issue-tracker/local-markdown/README.md` for the schema, eligibility
 ### rule, and cross-feature / malformed-frontmatter semantics.
 ###
-### Override the scratch root for tests via TRACKER_SCRATCH_ROOT.
+### Override the tracker root for tests via TRACKER_ROOT.
 ###
 ### Bash 3.2 compatible (macOS default): no associative arrays.
 ###
@@ -22,7 +22,7 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
-# Resolve the scratch root. Tests pass TRACKER_SCRATCH_ROOT explicitly.
+# Resolve the tracker root. Tests pass TRACKER_ROOT explicitly.
 # Production consumer invocations (bare `tracker-snapshot ...` reached through
 # the role-surface symlink) walk $PWD upward for the `.formann` ancestor —
 # same shape build-image.sh uses to find HOST_REPO. Walking $PWD instead of
@@ -30,21 +30,21 @@ fi
 # surface entry point (`docs/formann/issue-tracker/`) is a directory symlink
 # into the framework checkout, so any `..` arithmetic from the script's path
 # would physically follow the symlink and land in the wrong namespace.
-if [ -n "${TRACKER_SCRATCH_ROOT:-}" ]; then
-  scratch_root="$TRACKER_SCRATCH_ROOT"
+if [ -n "${TRACKER_ROOT:-}" ]; then
+  tracker_root="$TRACKER_ROOT"
 else
   walk_dir="$PWD"
-  scratch_root=""
+  tracker_root=""
   while [ "$walk_dir" != "/" ]; do
     if [ -e "$walk_dir/.formann" ]; then
-      scratch_root="$walk_dir/.scratch"
+      tracker_root="$walk_dir/.features"
       break
     fi
     walk_dir="$(dirname "$walk_dir")"
   done
-  if [ -z "$scratch_root" ]; then
+  if [ -z "$tracker_root" ]; then
     echo "tracker-snapshot: could not find .formann ancestor from $PWD" >&2
-    echo "tracker-snapshot: set TRACKER_SCRATCH_ROOT to override" >&2
+    echo "tracker-snapshot: set TRACKER_ROOT to override" >&2
     exit 2
   fi
 fi
@@ -92,25 +92,25 @@ json_string_array() {
 }
 
 # --list mode: emit a JSON array of active feature slugs. Active means: a
-# direct subdirectory of scratch_root, excluding `done/`.
+# direct subdirectory of tracker_root, excluding `done/`.
 if [ "$1" = "--list" ]; then
   printf '['
   first=1
-  if [ -d "$scratch_root" ]; then
+  if [ -d "$tracker_root" ]; then
     while IFS= read -r d; do
       [ -n "$d" ] || continue
       slug="$(basename "$d")"
       [ "$slug" = "done" ] && continue
       if [ "$first" -eq 1 ]; then first=0; else printf ','; fi
       printf '"%s"' "$(json_escape "$slug")"
-    done < <(find "$scratch_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+    done < <(find "$tracker_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
   fi
   printf ']\n'
   exit 0
 fi
 
 feature="$1"
-issues_dir="$scratch_root/$feature/issues"
+issues_dir="$tracker_root/$feature/issues"
 
 # Read the YAML frontmatter from $1. Sets globals fm_status, fm_category,
 # fm_type, fm_body (text after the closing `---`), and fm_error (non-empty

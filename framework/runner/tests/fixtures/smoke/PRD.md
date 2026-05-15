@@ -11,7 +11,7 @@ smoke test something deterministic to assert on.
 ## Solution
 
 A single trivial AFK issue that tells `/implement` to drop a marker
-file under `.scratch/smoke/markers/` and commit it alongside the
+file under `.features/smoke/markers/` and commit it alongside the
 tracker move. One issue keeps the smoke run short while still
 exercising every step of the dispatch path (snapshot, container,
 classifier, fast-forward).

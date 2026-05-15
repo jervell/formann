@@ -2,7 +2,7 @@
 """Local tracker viewer server.
 
 Stdlib-only HTTP server that serves the SPA shell, the tracker tree as JSON,
-and raw markdown files under .scratch/. The walking-skeleton subset: no
+and raw markdown files under .features/. The walking-skeleton subset: no
 parsing, no rendering — clients render or display the bytes themselves.
 """
 
@@ -24,11 +24,11 @@ def resolve_consumer_root(start: Path) -> Path | None:
 
     Returns the directory containing ``.formann`` (the consumer root), or
     ``None`` if no such ancestor exists. Mirrors ``build-image.sh``'s
-    ``HOST_REPO`` walk and ``tracker-snapshot``'s ``scratch_root`` walk —
+    ``HOST_REPO`` walk and ``tracker-snapshot``'s ``tracker_root`` walk —
     consumer-side resources must be discovered from ``$cwd``, never from
     ``__file__``: when the viewer is invoked through ``iot/.formann/``,
     ``Path(__file__).resolve()`` physically follows the symlink and lands
-    in the framework checkout, away from the consumer's ``.scratch/``.
+    in the framework checkout, away from the consumer's ``.features/``.
     """
     walk = start if start.is_absolute() else start.absolute()
     while True:
@@ -40,12 +40,12 @@ def resolve_consumer_root(start: Path) -> Path | None:
 
 
 # STATIC_DIR is framework-side: it sits alongside ``serve.py`` regardless of
-# where the consumer keeps its ``.scratch/``. SCRATCH_DIR is consumer-side:
+# where the consumer keeps its ``.features/``. TRACKER_DIR is consumer-side:
 # the walk above finds it; without a ``.formann`` ancestor we fall back to
 # ``cwd`` so direct ``python3 serve.py`` invocations from a project root
 # still work for projects that haven't adopted Formann.
 _CONSUMER_ROOT = resolve_consumer_root(Path.cwd()) or Path.cwd()
-SCRATCH_DIR = _CONSUMER_ROOT / ".scratch"
+TRACKER_DIR = _CONSUMER_ROOT / ".features"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 DEFAULT_PORT = 8765
@@ -191,21 +191,21 @@ def _build_feature(entry: Path, section: str) -> dict | None:
 def build_tree() -> list[dict]:
     """Return the tree of active and archived features.
 
-    Walks both ``.scratch/<feature>/`` (active) and ``.scratch/done/<feature>/``
+    Walks both ``.features/<feature>/`` (active) and ``.features/done/<feature>/``
     (archive). Each feature carries its ``section`` and ``mtime`` so the
     client can sort and tab-route. Empty feature directories (no PRD, no
     well-formed issues) and stray non-issue files are silently dropped.
     """
     features: list[dict] = []
-    if not SCRATCH_DIR.is_dir():
+    if not TRACKER_DIR.is_dir():
         return features
-    for entry in sorted(SCRATCH_DIR.iterdir(), key=lambda p: p.name):
+    for entry in sorted(TRACKER_DIR.iterdir(), key=lambda p: p.name):
         if not entry.is_dir() or entry.name == "done":
             continue
         feat = _build_feature(entry, "active")
         if feat is not None:
             features.append(feat)
-    done_dir = SCRATCH_DIR / "done"
+    done_dir = TRACKER_DIR / "done"
     if done_dir.is_dir():
         for entry in sorted(done_dir.iterdir(), key=lambda p: p.name):
             if not entry.is_dir():
@@ -277,9 +277,9 @@ class Handler(BaseHTTPRequestHandler):
         if not rel:
             self._send_404()
             return
-        target = (SCRATCH_DIR / rel).resolve()
+        target = (TRACKER_DIR / rel).resolve()
         try:
-            target.relative_to(SCRATCH_DIR.resolve())
+            target.relative_to(TRACKER_DIR.resolve())
         except ValueError:
             self._send_404()
             return
