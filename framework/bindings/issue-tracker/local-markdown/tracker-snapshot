@@ -22,13 +22,31 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
-# Resolve the scratch root. Tests pass an override; production invocations
-# fall through to the repo's `.scratch/`, computed relative to this script.
+# Resolve the scratch root. Tests pass TRACKER_SCRATCH_ROOT explicitly.
+# Production consumer invocations (bare `tracker-snapshot ...` reached through
+# the role-surface symlink) walk $PWD upward for the `.formann` ancestor —
+# same shape build-image.sh uses to find HOST_REPO. Walking $PWD instead of
+# resolving relative to BASH_SOURCE is the only correct strategy: the role
+# surface entry point (`docs/formann/issue-tracker/`) is a directory symlink
+# into the framework checkout, so any `..` arithmetic from the script's path
+# would physically follow the symlink and land in the wrong namespace.
 if [ -n "${TRACKER_SCRATCH_ROOT:-}" ]; then
   scratch_root="$TRACKER_SCRATCH_ROOT"
 else
-  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  scratch_root="$here/../../../.scratch"
+  walk_dir="$PWD"
+  scratch_root=""
+  while [ "$walk_dir" != "/" ]; do
+    if [ -e "$walk_dir/.formann" ]; then
+      scratch_root="$walk_dir/.scratch"
+      break
+    fi
+    walk_dir="$(dirname "$walk_dir")"
+  done
+  if [ -z "$scratch_root" ]; then
+    echo "tracker-snapshot: could not find .formann ancestor from $PWD" >&2
+    echo "tracker-snapshot: set TRACKER_SCRATCH_ROOT to override" >&2
+    exit 2
+  fi
 fi
 
 # JSON-string escaper: backslashes, quotes, and control characters.

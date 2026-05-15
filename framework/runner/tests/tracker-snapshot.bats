@@ -120,6 +120,29 @@ assert_snapshot_matches_golden() {
   [ "$count" = "0" ]
 }
 
+# Discovery: when no TRACKER_SCRATCH_ROOT is set, the script must find the
+# consumer's .scratch/ by walking $PWD upward for a .formann ancestor — the
+# same shape build-image.sh uses to find HOST_REPO. Without this walk, the
+# fallback "compute relative to BASH_SOURCE" path breaks when the role-surface
+# entry point (docs/formann/issue-tracker/) is itself a directory symlink:
+# `..` resolution physically follows the symlink into the framework checkout
+# and lands in the wrong namespace.
+@test "auto-discovers scratch_root via .formann ancestor when no env override" {
+  unset TRACKER_SCRATCH_ROOT
+  local consumer="$BATS_TEST_TMPDIR/consumer"
+  mkdir -p "$consumer/.scratch/auto-discovered"
+  # The .formann marker is what identifies the consumer root. The walk only
+  # cares that the entry exists; pointing it at a real dir keeps `[ -e ]`
+  # honest without requiring symlink resolution.
+  ln -s "$BATS_TEST_TMPDIR" "$consumer/.formann"
+  ( cd "$consumer" && "$TRACKER_SNAPSHOT" --list ) >"$BATS_TEST_TMPDIR/out" 2>&1
+  run cat "$BATS_TEST_TMPDIR/out"
+  assert_success
+  local slugs
+  slugs="$(printf '%s\n' "$output" | jq -r '.[]' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+  [ "$slugs" = "auto-discovered" ]
+}
+
 @test "CRLF-encoded issue files are parsed, not silently dropped" {
   # Regression: parse_frontmatter compared each line to the bare string
   # `---`, but `read -r` does not strip a trailing `\r`. A CRLF-saved
