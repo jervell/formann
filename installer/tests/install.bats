@@ -31,12 +31,10 @@ _setup_formann_fixture() {
   mkdir -p "$FORMANN_FIXTURE/framework/skills/grill-me"
   mkdir -p "$FORMANN_FIXTURE/framework/skills/implement"
   mkdir -p "$FORMANN_FIXTURE/framework/agents"
-  mkdir -p "$FORMANN_FIXTURE/framework/rules"
   touch "$FORMANN_FIXTURE/framework/skills/grill-me/SKILL.md"
   touch "$FORMANN_FIXTURE/framework/skills/implement/SKILL.md"
   touch "$FORMANN_FIXTURE/framework/agents/review-feature.md"
   touch "$FORMANN_FIXTURE/framework/agents/review-issue.md"
-  touch "$FORMANN_FIXTURE/framework/rules/runner-smoke-artifacts.md"
   touch "$FORMANN_FIXTURE/framework/lifecycle.md"
   touch "$FORMANN_FIXTURE/framework/inbox.md"
   touch "$FORMANN_FIXTURE/framework/domain.md"
@@ -133,14 +131,6 @@ _run_installer() {
   [ -L "$CONSUMER/.claude/agents/review-feature.md" ]
   target="$(readlink "$CONSUMER/.claude/agents/review-feature.md")"
   [ "$target" = "../../.formann/framework/agents/review-feature.md" ]
-}
-
-@test ".claude/rules/runner-smoke-artifacts.md is a symlink resolving through .formann" {
-  run _run_installer
-  assert_success
-  [ -L "$CONSUMER/.claude/rules/runner-smoke-artifacts.md" ]
-  target="$(readlink "$CONSUMER/.claude/rules/runner-smoke-artifacts.md")"
-  [ "$target" = "../../.formann/framework/rules/runner-smoke-artifacts.md" ]
 }
 
 # ---------------------------------------------------------------------------
