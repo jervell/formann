@@ -1,6 +1,6 @@
 # Bindings are folders symlinked into the role surface
 
-Bindings live at `framework/bindings/<role>/<impl>/` (e.g., `framework/bindings/issue-tracker/local-markdown/`). Each binding folder contains a fixed-name contract document `BINDING.md`, any bundled scripts the role calls (e.g., `tracker-snapshot`), and a human `README.md`. On installation, the consumer gets one folder-symlink per chosen binding: `<consumer>/docs/formann/<role> -> ../../.formann/framework/bindings/<role>/<chosen-impl>`. Skills read `docs/formann/<role>/BINDING.md`. The runner invokes bundled scripts via the role surface (`$HOST_REPO/docs/formann/<role>/<script>`) — no binding name appears in framework code. The binding choice is encoded by where the symlink points; there is no per-binding manifest.
+Bindings live at `framework/bindings/<role>/<impl>/` (e.g., `framework/bindings/issue-tracker/local-markdown/`). Each binding folder contains a fixed-name contract document `BINDING.md`, any bundled scripts the role calls (e.g., `tracker-snapshot`), and a human `README.md`. On installation, the consumer gets one folder-symlink per chosen binding: `<consumer>/docs/formann/<role> -> ../../.formann/bindings/<role>/<chosen-impl>`. Skills read `docs/formann/<role>/BINDING.md`. The runner invokes bundled scripts via the role surface (`$HOST_REPO/docs/formann/<role>/<script>`) — no binding name appears in framework code. The binding choice is encoded by where the symlink points; there is no per-binding manifest.
 
 ## Considered options
 

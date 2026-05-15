@@ -1,6 +1,6 @@
 # Symlink-based framework consumption with `.formann` indirection
 
-Consumers adopt Formann by symlinking into a local Formann checkout, not by copying, vendoring, or packaging. A gitignored `.formann` symlink at the consumer's root points at the local Formann checkout; every committed symlink in the consumer resolves through `.formann` (e.g., `.claude/skills/triage -> ../../.formann/framework/skills/triage`). This keeps the consumer's committed symlink graph stable across machines while letting each developer or CI place Formann wherever it lands.
+Consumers adopt Formann by symlinking into a local Formann checkout, not by copying, vendoring, or packaging. A gitignored `.formann` symlink at the consumer's root points at the Formann checkout's `framework/` directory; every committed symlink in the consumer resolves through `.formann` (e.g., `.claude/skills/triage -> ../../.formann/skills/triage`). Pointing `.formann` at `framework/` rather than the Formann repo root keeps Formann's own consumer setup (`.claude/`, `.git/`, `installer/`, top-level `docs/`) outside the consumer's view — `.formann/` exposes only the framework surface. This keeps the consumer's committed symlink graph stable across machines while letting each developer or CI place Formann wherever it lands.
 
 ## Considered options
 

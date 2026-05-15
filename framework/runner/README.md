@@ -236,11 +236,11 @@ verify them by hand:
 ```sh
 # Build (or rebuild) the image. Run from anywhere inside the consumer repo;
 # the script locates the consumer root via the .formann indirection symlink.
-.formann/framework/runner/build-image.sh
-# .formann/framework/runner/build-image.sh --rebuild   # force fresh build
+.formann/runner/build-image.sh
+# .formann/runner/build-image.sh --rebuild   # force fresh build
 
 # Create the sandbox network and apply the deny-RFC1918 policy.
-.formann/framework/runner/setup-network.sh
+.formann/runner/setup-network.sh
 
 # Sanity-check the image:
 docker run --rm afk-runner-sandbox id          # uid=1000(runner) ...

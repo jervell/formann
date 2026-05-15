@@ -118,7 +118,7 @@ make_symlink() {
 link_formann() {
   local consumer_path="$1"
   local formann_path="$2"
-  make_symlink "$consumer_path/.formann" "$formann_path"
+  make_symlink "$consumer_path/.formann" "$formann_path/framework"
 }
 
 link_skills() {
@@ -136,7 +136,7 @@ link_skills() {
     [ -d "$entry" ] || continue
     local name
     name="$(basename "$entry")"
-    make_symlink "$consumer_path/.claude/skills/$name" "../../.formann/framework/skills/$name"
+    make_symlink "$consumer_path/.claude/skills/$name" "../../.formann/skills/$name"
   done
 }
 
@@ -155,7 +155,7 @@ link_agents() {
     [ -f "$entry" ] || continue
     local name
     name="$(basename "$entry")"
-    make_symlink "$consumer_path/.claude/agents/$name" "../../.formann/framework/agents/$name"
+    make_symlink "$consumer_path/.claude/agents/$name" "../../.formann/agents/$name"
   done
 }
 
@@ -174,7 +174,7 @@ link_rules() {
     [ -f "$entry" ] || continue
     local name
     name="$(basename "$entry")"
-    make_symlink "$consumer_path/.claude/rules/$name" "../../.formann/framework/rules/$name"
+    make_symlink "$consumer_path/.claude/rules/$name" "../../.formann/rules/$name"
   done
 }
 
@@ -188,12 +188,12 @@ link_role_surface() {
     local role="${ROLE_NAMES[$i]}"
     local impl="${ROLE_IMPLS[$i]}"
     make_symlink "$consumer_path/docs/formann/$role" \
-      "../../.formann/framework/bindings/$role/$impl"
+      "../../.formann/bindings/$role/$impl"
   done
 
   local framework_docs=(lifecycle.md inbox.md domain.md triage-states.md afk-runner.md afk-runner-flow.md)
   for doc in "${framework_docs[@]}"; do
-    make_symlink "$consumer_path/docs/formann/$doc" "../../.formann/framework/$doc"
+    make_symlink "$consumer_path/docs/formann/$doc" "../../.formann/$doc"
   done
 }
 

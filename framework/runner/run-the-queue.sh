@@ -770,8 +770,8 @@ release_lock() {
 
 # Resolve the host (consumer) repo root. The script lives at
 # `<formann>/framework/runner/run-the-queue.sh` and is reached from a
-# consumer via `<consumer>/.formann/framework/runner/run-the-queue.sh`
-# (where `.formann -> <formann-root>` is a per-machine indirection
+# consumer via `<consumer>/.formann/runner/run-the-queue.sh` (where
+# `.formann -> <formann-root>/framework` is a per-machine indirection
 # symlink kept out of git). We walk up from $PWD looking for a
 # directory that contains a `.formann` entry — same shape as git
 # finding its repo root, npm finding package.json. First match wins;

@@ -68,19 +68,19 @@ _run_installer() {
   assert_success
   [ -L "$CONSUMER/.formann" ]
   resolved="$(readlink "$CONSUMER/.formann")"
-  [ "$resolved" = "$FORMANN_FIXTURE" ]
+  [ "$resolved" = "$FORMANN_FIXTURE/framework" ]
 }
 
 # ---------------------------------------------------------------------------
 # docs/formann role surface
 # ---------------------------------------------------------------------------
 
-@test "docs/formann/issue-tracker is a symlink resolving through .formann/framework/bindings" {
+@test "docs/formann/issue-tracker is a symlink resolving through .formann/bindings" {
   run _run_installer
   assert_success
   [ -L "$CONSUMER/docs/formann/issue-tracker" ]
   target="$(readlink "$CONSUMER/docs/formann/issue-tracker")"
-  [ "$target" = "../../.formann/framework/bindings/issue-tracker/local-markdown" ]
+  [ "$target" = "../../.formann/bindings/issue-tracker/local-markdown" ]
 }
 
 @test "docs/formann/lifecycle.md symlink exists and resolves through .formann" {
@@ -88,7 +88,7 @@ _run_installer() {
   assert_success
   [ -L "$CONSUMER/docs/formann/lifecycle.md" ]
   target="$(readlink "$CONSUMER/docs/formann/lifecycle.md")"
-  [ "$target" = "../../.formann/framework/lifecycle.md" ]
+  [ "$target" = "../../.formann/lifecycle.md" ]
 }
 
 @test "all framework-level doc symlinks exist in docs/formann" {
@@ -106,12 +106,12 @@ _run_installer() {
 # .claude/{skills,agents,rules} symlinks
 # ---------------------------------------------------------------------------
 
-@test ".claude/skills/grill-me is a symlink resolving through .formann/framework/skills" {
+@test ".claude/skills/grill-me is a symlink resolving through .formann/skills" {
   run _run_installer
   assert_success
   [ -L "$CONSUMER/.claude/skills/grill-me" ]
   target="$(readlink "$CONSUMER/.claude/skills/grill-me")"
-  [ "$target" = "../../.formann/framework/skills/grill-me" ]
+  [ "$target" = "../../.formann/skills/grill-me" ]
 }
 
 @test ".claude/skills/* symlinks exist for every skill in the fixture" {
@@ -130,7 +130,7 @@ _run_installer() {
   assert_success
   [ -L "$CONSUMER/.claude/agents/review-feature.md" ]
   target="$(readlink "$CONSUMER/.claude/agents/review-feature.md")"
-  [ "$target" = "../../.formann/framework/agents/review-feature.md" ]
+  [ "$target" = "../../.formann/agents/review-feature.md" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -231,7 +231,7 @@ _run_installer() {
   assert_success
 
   target="$(readlink "$CONSUMER/.claude/skills/grill-me")"
-  [ "$target" = "../../.formann/framework/skills/grill-me" ]
+  [ "$target" = "../../.formann/skills/grill-me" ]
 }
 
 # ---------------------------------------------------------------------------
