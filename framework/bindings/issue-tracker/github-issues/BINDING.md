@@ -122,6 +122,95 @@ The title goes in GitHub's native title field. The PRD content (`@prd.md`) goes 
 
 This step is binding-agnostic and follows the same convention as the local-markdown binding.
 
+### Create an issue
+
+Create a new sub-issue and attach it to the feature's parent issue. This is `/to-issues`'s entry point for the GH binding. One logical operation performed in two steps.
+
+**GitHub-issues realization:**
+
+**Step 1 — Create the sub-issue.** Write the issue body following the [GH binding's issue template](#issue-template) (no `## Parent` section), then run:
+
+```bash
+gh issue create \
+  --title "<title>" \
+  --body @issue.md \
+  --label "formann:status:needs-triage,formann:category:<cat>,formann:type:<type>"
+```
+
+Labels applied to every fresh sub-issue:
+
+- `formann:status:needs-triage` — every new issue enters the triage flow.
+- `formann:category:<cat>` — `bug` or `enhancement`.
+- `formann:type:<type>` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+No `formann:feature` label — that label is parent-only.
+
+`gh issue create` prints the new issue URL. Extract the issue number from the URL (the trailing integer); this is `<new-N>`.
+
+**Step 2 — Link to the parent via `addSubIssue`.** Retrieve the node IDs for both issues, then run the mutation:
+
+```bash
+parent_node_id=$(gh issue view <parent-N> --json id --jq '.id')
+new_node_id=$(gh issue view <new-N> --json id --jq '.id')
+
+gh api graphql \
+  --field query='mutation($parentId:ID!,$subId:ID!) {
+    addSubIssue(input:{issueId:$parentId,subIssueId:$subId}) {
+      issue { number }
+      subIssue { number }
+    }
+  }' \
+  --field parentId="$parent_node_id" \
+  --field subId="$new_node_id"
+```
+
+`addSubIssue.input.issueId` is the **parent's** node ID; `addSubIssue.input.subIssueId` is the **new sub-issue's** node ID. The mutation returns `issue.number` (parent) and `subIssue.number` (new sub-issue); verify both match the expected values.
+
+To confirm the link, query the parent's `subIssues` connection:
+
+```bash
+gh api graphql \
+  --field query='query($id:ID!) {
+    node(id:$id) {
+      ... on Issue {
+        subIssues(first:100) { nodes { number } }
+      }
+    }
+  }' \
+  --field id="$parent_node_id"
+```
+
+The new issue's number should appear in `nodes[*].number`.
+
+**Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If Step 1 succeeds but Step 2 fails, the new issue exists on GitHub without a parent link — it is an orphan. This is a multi-call atomicity risk consistent with the PRD's "documented; the maintainer reconciles" framing. No engineered rollback. Recovery: re-run only Step 2 with the orphan's existing issue number and its parent's number.
+
+## Issue template
+
+Under the github-issues binding, sub-issue bodies follow the same template as the local-markdown binding, with one per-binding difference: **`## Parent` is omitted**.
+
+```markdown
+## What to build
+
+A concise description of this vertical slice. Describe the end-to-end behavior, not layer-by-layer implementation.
+
+## Acceptance criteria
+
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+## Blocked by
+
+- #N
+
+Or "None — can start immediately" if no blockers.
+```
+
+Use GitHub's native `#N` autolink form inside `## Blocked by` — not the portable `<feature>/<N>` form. The snapshot's blocker extractor matches `#N` refs against the parent's in-memory sub-issue set.
+
+**Rationale for omitting `## Parent`:** Under local-markdown, `## Parent` carries a file path to the PRD (e.g., `.features/<slug>/PRD.md`) — the only in-file pointer to the parent artifact. Under the github-issues binding, GitHub's native sub-issue panel on the parent issue already surfaces the parent → sub-issue relationship visually; and the **Read the feature** verb (`gh issue view <parent-N>`) gives skills programmatic access to the PRD body. The `## Parent` section would be redundant and would drift if the parent issue number changed.
+
+Other bindings (local-markdown) keep their own `## Parent` convention; this omission applies only to the github-issues binding.
+
 ## Snapshot contract
 
 `tracker-snapshot` is the machine-readable interface for the github-issues binding. It requires `jq` on PATH. Usage:
