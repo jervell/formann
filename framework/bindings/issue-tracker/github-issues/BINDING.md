@@ -363,6 +363,41 @@ The new issue's number should appear in `nodes[*].number`.
 
 **Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If Step 1 succeeds but Step 2 fails, the new issue exists on GitHub without a parent link — it is an orphan. This is a multi-call atomicity risk consistent with the PRD's "documented; the maintainer reconciles" framing. No engineered rollback. Recovery: re-run only Step 2 with the orphan's existing issue number and its parent's number.
 
+### Archive a feature
+
+Close the parent issue with `state_reason=completed` and mark it with `formann:archived`. This is the binding's realization of `/triage`'s **Archive a completed feature** step 6 ("Archive the feature. Per the binding's archive convention.").
+
+**GitHub-issues realization:**
+
+**Pre-flight — parent lookup.** Resolve the parent issue number via the **Read the feature** verb: `gh issue list --label "formann:feature" --label "formann:slug:<slug>" --state open --json number,title --jq '.'`. If no open parent is found, the feature may already be archived — report the error and stop.
+
+**Pre-flight — non-terminal guard.** The `/triage` skill enforces the non-terminal precheck in step 1 before reaching step 6. The binding re-enforces it for robustness: run `tracker-snapshot <slug>` and check every sub-issue's `status` field. If any sub-issue has a status other than `done` or `wontfix`, refuse with a clear error listing the non-terminal issues:
+
+```
+Error: cannot archive "<slug>" — non-terminal sub-issues remain: #N (in-review), #M (ready-for-agent)
+```
+
+**Two-step archive:**
+
+```bash
+gh issue close <parent-N> --reason completed
+gh issue edit <parent-N> --add-label formann:archived
+```
+
+These are independent API calls. **Sequence matters:** close first so that a partial failure leaves the feature in a clearly closed (non-discoverable) state rather than open with an `formann:archived` label that could confuse the runner.
+
+**Effects:**
+
+- `tracker-snapshot --list` uses `states: [OPEN]` in its GraphQL query, so closed parents are excluded naturally — archived features drop out of feature discovery without a separate filter.
+- Sub-issues remain in whatever state they had at archive time (typically all `done` or `wontfix`).
+
+**Idempotency — re-archive after reopen:** If the maintainer reopens a parent (`gh issue reopen <parent-N>`) and then re-archives, the two-step sequence is safe to re-run:
+
+1. `gh issue close <parent-N> --reason completed` — re-closes the issue.
+2. `gh issue edit <parent-N> --add-label formann:archived` — GitHub's label-add on an already-present label is a no-op; no duplicate label is created.
+
+The `formann:archived` label is durable — it survives `gh issue reopen` and persists as the intentional archive signal even while the issue is temporarily open.
+
 ## Issue template
 
 Under the github-issues binding, sub-issue bodies follow the same template as the local-markdown binding, with one per-binding difference: **`## Parent` is omitted**.
