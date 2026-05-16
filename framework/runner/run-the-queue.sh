@@ -1192,11 +1192,34 @@ run_sandbox_container() {
   # dangling symlink inside the container and claude reports `Unknown
   # command: /implement` on dispatch. `:ro` because the framework is
   # shared host state — a container should not write to it.
+  #
+  # `.claude/{skills,agents,rules}` are overlaid on top of the
+  # runner-checkout for the same reason in the inverse direction: for
+  # normal consumers the symlinks are tracked and already present in the
+  # checkout (the overlay is byte-equivalent), but for Formann
+  # self-install the symlinks are gitignored — `git clone` produces a
+  # checkout with no `.claude/*` content, so without this overlay the
+  # container's claude can't discover framework skills/agents/rules. Each
+  # mount is conditional on the host dir existing (matching the
+  # installer's `link_rules` "skip if absent" pattern for rules, and
+  # natural for skills/agents on a host that hasn't yet self-installed).
+  # No other `.claude/` subdir is mounted — `settings.local.json`,
+  # `plugins/`, `worktrees/`, `plans/`, `scripts/`, `docs/` carry local
+  # Claude Code state the container has no business with.
+  local claude_mounts=()
+  local _sub
+  for _sub in skills agents rules; do
+    if [ -d "$HOST_REPO/.claude/$_sub" ]; then
+      claude_mounts+=("-v" "$HOST_REPO/.claude/$_sub:$RUNNER_CONTAINER_REPO_PATH/.claude/$_sub:ro")
+    fi
+  done
+
   docker run --rm -t \
     --cidfile "$cid_file" \
     --network "$NET_NAME" \
     -v "$HOST_CHECKOUT:$RUNNER_CONTAINER_REPO_PATH" \
     -v "$HOST_REPO/.formann:$RUNNER_CONTAINER_REPO_PATH/.formann:ro" \
+    ${claude_mounts[@]+"${claude_mounts[@]}"} \
     -v "$MVN_VOLUME:$RUNNER_CONTAINER_M2_PATH" \
     --env-file <(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOKEN") \
     "$RUNNER_IMAGE_NAME" \

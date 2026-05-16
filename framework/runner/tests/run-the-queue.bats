@@ -3160,3 +3160,115 @@ EOF
   # standalone arg on the `docker run` line (i.e. the value following a `-v`).
   grep -qFx -- "$HOST_REPO/.formann:/repo/.formann:ro" "$args_file"
 }
+
+# Helper: minimal `run_sandbox_container` test scaffolding. Sets the globals
+# the function reads, populates `$HOST_REPO/.claude/<subs>` for each requested
+# subdir, stubs `docker` to capture its argv into $args_file, and runs the
+# given wrapper (defaults to `run_sandbox_container`). Sets the variables
+# `args_file` and `claude_subs_present` in the caller for assertions.
+#
+# Args: $1 = space-separated list of `.claude/<sub>` dirs to create on host
+#       $2 = wrapper to invoke (`run_sandbox_container` | `run_dispatch_container` | `run_gate_container`)
+_setup_mount_capture() {
+  local subs="$1" wrapper="${2:-run_sandbox_container}"
+  HOST_REPO="$BATS_TEST_TMPDIR/host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR/runner-state"
+  MVN_VOLUME="test-mvn"
+  NET_NAME="test-net"
+  RUNNER_IMAGE_NAME="test-image"
+  TOKEN="test-token"
+  RUNNER_INTERRUPTED=0
+  IN_FLIGHT_CID_FILE=""
+  GATE_PROMPT_PATH="$BATS_TEST_TMPDIR/gate-prompt"
+  mkdir -p "$HOST_REPO" "$HOST_CHECKOUT" "$HOST_RUNNER_STATE"
+  printf 'gate prompt\n' > "$GATE_PROMPT_PATH"
+
+  local sub
+  for sub in $subs; do
+    mkdir -p "$HOST_REPO/.claude/$sub"
+  done
+
+  args_file="$BATS_TEST_TMPDIR/docker-args"
+  docker() {
+    printf '%s\n' "$@" > "$args_file"
+    return 0
+  }
+
+  case "$wrapper" in
+    run_dispatch_container) run_dispatch_container "f/01" "$BATS_TEST_TMPDIR/log" ;;
+    run_gate_container)     run_gate_container     "f/01" "$BATS_TEST_TMPDIR/log" ;;
+    *)                      run_sandbox_container "$BATS_TEST_TMPDIR/log" claude -p "/implement f/01" ;;
+  esac
+}
+
+@test "run_sandbox_container — mounts .claude/{skills,agents,rules} :ro when all three exist on host" {
+  _setup_mount_capture "skills agents rules"
+
+  grep -qFx -- "$HOST_REPO/.claude/skills:/repo/.claude/skills:ro" "$args_file"
+  grep -qFx -- "$HOST_REPO/.claude/agents:/repo/.claude/agents:ro" "$args_file"
+  grep -qFx -- "$HOST_REPO/.claude/rules:/repo/.claude/rules:ro" "$args_file"
+}
+
+@test "run_sandbox_container — omits the .claude/rules mount when the host dir is absent" {
+  _setup_mount_capture "skills agents"
+
+  grep -qFx -- "$HOST_REPO/.claude/skills:/repo/.claude/skills:ro" "$args_file"
+  grep -qFx -- "$HOST_REPO/.claude/agents:/repo/.claude/agents:ro" "$args_file"
+  ! grep -qF -- "/.claude/rules:" "$args_file"
+}
+
+@test "run_sandbox_container — omits every .claude/* mount when none of the host dirs exist" {
+  _setup_mount_capture ""
+
+  # Sanity: the unconditional .formann mount is still present.
+  grep -qFx -- "$HOST_REPO/.formann:/repo/.formann:ro" "$args_file"
+  ! grep -qF -- "/.claude/skills:" "$args_file"
+  ! grep -qF -- "/.claude/agents:" "$args_file"
+  ! grep -qF -- "/.claude/rules:" "$args_file"
+}
+
+@test "run_sandbox_container — mounts an existing-but-empty .claude/<sub> (no special-casing)" {
+  _setup_mount_capture "skills"
+  # The .claude/skills dir is created by the helper but left empty — the mount
+  # is still added, mirroring the AC contract.
+
+  grep -qFx -- "$HOST_REPO/.claude/skills:/repo/.claude/skills:ro" "$args_file"
+}
+
+@test "run_sandbox_container — does not mount any other .claude/* subdir than skills, agents, rules" {
+  HOST_REPO="$BATS_TEST_TMPDIR/host"
+  mkdir -p "$HOST_REPO/.claude/skills" "$HOST_REPO/.claude/settings.local.json.d" \
+           "$HOST_REPO/.claude/plugins" "$HOST_REPO/.claude/worktrees" \
+           "$HOST_REPO/.claude/plans" "$HOST_REPO/.claude/scripts" \
+           "$HOST_REPO/.claude/docs"
+  _setup_mount_capture "skills"
+
+  grep -qFx -- "$HOST_REPO/.claude/skills:/repo/.claude/skills:ro" "$args_file"
+  # No other .claude subpath leaks into the docker args.
+  ! grep -qF -- "/.claude/plugins:"   "$args_file"
+  ! grep -qF -- "/.claude/worktrees:" "$args_file"
+  ! grep -qF -- "/.claude/plans:"     "$args_file"
+  ! grep -qF -- "/.claude/scripts:"   "$args_file"
+  ! grep -qF -- "/.claude/docs:"      "$args_file"
+  ! grep -qF -- "settings.local"      "$args_file"
+}
+
+# `run_dispatch_container` and `run_gate_container` both funnel through
+# `run_sandbox_container`, so the mount logic is implemented in one place — but
+# the brief asks for coverage at both invocation sites. Pin them.
+@test "run_dispatch_container — forwards .claude/{skills,agents,rules} mounts when host has them" {
+  _setup_mount_capture "skills agents rules" run_dispatch_container
+
+  grep -qFx -- "$HOST_REPO/.claude/skills:/repo/.claude/skills:ro" "$args_file"
+  grep -qFx -- "$HOST_REPO/.claude/agents:/repo/.claude/agents:ro" "$args_file"
+  grep -qFx -- "$HOST_REPO/.claude/rules:/repo/.claude/rules:ro" "$args_file"
+}
+
+@test "run_gate_container — forwards .claude/{skills,agents,rules} mounts when host has them" {
+  _setup_mount_capture "skills agents rules" run_gate_container
+
+  grep -qFx -- "$HOST_REPO/.claude/skills:/repo/.claude/skills:ro" "$args_file"
+  grep -qFx -- "$HOST_REPO/.claude/agents:/repo/.claude/agents:ro" "$args_file"
+  grep -qFx -- "$HOST_REPO/.claude/rules:/repo/.claude/rules:ro" "$args_file"
+}
