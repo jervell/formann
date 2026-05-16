@@ -8,48 +8,54 @@ Today Formann ships one binding for the issue-tracker role: `local-markdown`. PR
 
 ## Solution
 
-Ship a second issue-tracker binding, `github-issues`, that realizes the seven tracker verbs against GitHub-native primitives:
+Ship a second issue-tracker binding, `github-issues`, that realizes the binding contract against GitHub-native primitives:
 
-- A **feature** is a parent issue (labelled `formann:feature`) whose body is the PRD.
-- An **issue** (vertical slice) is a sub-issue of that parent, with the same body-section conventions today's BINDING.md describes.
+- A **feature** is a parent issue (labelled `formann:feature`) whose title is the feature title and whose body is the PRD.
+- An **issue** (vertical slice) is a sub-issue of that parent, linked via `addSubIssue`.
 - **State, category, and type** live as labels (`formann:status:*`, `formann:category:*`, `formann:type:*`); terminal states use GitHub's closed-with-state_reason mechanism.
+- **Binding-native refs** are GitHub's native `#N`. The slug travels alongside via the snapshot's `feature` field. The runner's CLI form stays the portable `<feature>/<N>` shape across bindings; the runner resolves to the native ref by indexing into the snapshot.
 - **Comments** are native GitHub comments with the existing `### <Kind> — <date>` first-line heading convention.
-- **Archive** = close the parent issue and apply `formann:archived`.
+- **Archive** = close the parent issue with `state_reason=completed` and apply `formann:archived`.
 
-A maintainer chooses the binding by where the role-surface symlink points; the choice is per-Consumer, and `local-markdown` stays the default. The runner and skills don't change shape — they keep reading the role surface and following BINDING.md's conventions, which the new binding writes for itself.
+A maintainer chooses the binding by where the role-surface symlink points; the choice is per-Consumer, and `local-markdown` stays the default.
 
 ## User Stories
 
 1. As a maintainer on a GitHub-hosted repo, I want PRDs, issues, and triage state to live on github.com, so my team can discuss tracker artifacts in the same UI they use for code review.
 2. As a maintainer evaluating Formann, I want to pick between local-markdown and GitHub Issues at installation time, so adoption fits my team's tooling preferences.
 3. As a maintainer on local-markdown today, I want the GH binding to ship without regressing local-markdown, so my existing repo keeps working untouched.
-4. As a maintainer, I want a feature's PRD to live in its parent issue body, so the PRD is rendered markdown, version-tracked by GitHub, and commentable inline.
+4. As a maintainer, I want a feature's title to live in GitHub's native title field and the PRD to live in the parent issue body, so the PRD is rendered markdown and the title appears in every UI surface (lists, search, PR autolinks) without duplication or drift.
 5. As a maintainer, I want feature → vertical-slice hierarchy modelled as parent → sub-issues, so navigation is native in the GitHub UI.
-6. As a maintainer, I want feature slugs stored as a label on the parent issue, so the slug is visible in the UI, queryable via the API, and not lost to a careless body edit.
-7. As a maintainer, I want commits to keep using `<slug>/N` refs, so existing review-issue scanning conventions and feature-scoped log filtering keep working.
-8. As a maintainer, I want issue states encoded as labels (and closed-with-reason for terminal), so state transitions are visible at a glance and filterable in GitHub search.
-9. As a maintainer, I want body-shaped tracker writes (publish agent brief, record triage notes) to preserve un-edited sections, so re-triage doesn't clobber my hand-edits to other parts of the body.
-10. As a maintainer, I want sub-issue ordering to be deterministic across snapshots and not changeable by drag-and-drop in the UI, so the AFK runner's dispatch order is stable.
-11. As a maintainer, I want comments-with-kind to use the same `### <Kind> — <YYYY-MM-DD>` heading convention as local-markdown, so the parse rule is portable and the visual style is consistent.
-12. As a maintainer, I want archive to be "close the parent issue and apply a `formann:archived` label", so archive is a single deliberate action and recoverable.
-13. As a maintainer, I want `tracker-snapshot --list` to return open `formann:feature`-labelled parent issues sorted by issue number, so feature discovery order is deterministic and not influenced by GitHub's default sort.
-14. As a maintainer, I want `tracker-snapshot <slug>` to drive a single GraphQL query that fetches the parent, all its sub-issues, their bodies, and their labels, so the binding stays cheap on the rate limit.
-15. As a maintainer, I want blocker eligibility to be resolved from the in-memory sub-issue snapshot (not extra API calls), so eligibility computation is O(1) in API cost regardless of blocker count.
-16. As a maintainer, I want the AI-disclaimer convention to remain the authorship marker on GitHub, with its weakened semantics (GitHub erases git-blame) documented in the binding's BINDING.md, so I'm not surprised when attribution is softer than on local-markdown.
-17. As an AFK runner operator, I want the runner to stay binding-agnostic — never importing `gh`, GitHub tokens, or GH API knowledge — so consumers using local-markdown don't pay for the GH binding.
-18. As an AFK runner operator, I want the binding to declare any sandbox prerequisites (env vars, network egress) by shipping an optional `sandbox-env` script in its folder, so the runner can satisfy them without binding-specific code.
-19. As a /implement dispatch, I want to perform tracker writes by following the binding's BINDING.md verb instructions, so my prose flow is portable across bindings.
-20. As a /triage skill, I want to read issue body, comments, labels, and state via the binding's documented `gh` commands, so my interactive flow works without skill-side changes.
-21. As a /to-prd skill, I want to create a feature by creating a parent issue (with PRD body and the right labels) and a git branch, so workspace setup is one logical operation.
-22. As a /to-issues skill, I want to create slice issues as sub-issues of the parent, so the hierarchy is captured natively at creation time.
-23. As a review-issue agent, I want commits referencing `<slug>/N` to still resolve correctly under the GH binding, so my commit-scanning logic is binding-portable.
-24. As a maintainer running the AFK runner offline, I want `tracker-snapshot` testable without network access via a `gh` shim and recorded GraphQL responses, so CI without a GH token still validates the binding.
-25. As a maintainer, I want the runner's review-and-gate prompt to use binding-agnostic verb language ("set the state to `<verdict>`, comment with `Review (AFK gate)`"), so the prompt doesn't presume tracker writes are git commits.
-26. As a maintainer, I want the runner's `take_snapshot` wrapper to be a thin shell-out, with HEAD-archive logic absorbed into local-markdown's `tracker-snapshot`, so each binding owns its "current state" definition.
-27. As a maintainer, I want failures from the GH binding (rate-limited, 5xx, auth-expired) surfaced with clear exit codes after a bounded retry, so the runner can distinguish "binding transient failure" from "issue malformed".
-28. As a maintainer reading the binding's BINDING.md, I want every verb's GitHub realization shown as a concrete `gh` command, so I can mentally trace what each skill does without consulting external docs.
-29. As a maintainer hitting GitHub's 100-sub-issues-per-parent limit, I want the limit documented in BINDING.md with a note on how to split a feature, so I know when to re-architect.
-30. As a maintainer adopting the GH binding for a fresh repo, I want no migration step required (clean slate), and for a repo with archived local-markdown features, I want those features to remain readable in git history (no backfill into GitHub).
+6. As a maintainer, I want the feature slug stored as the label `formann:slug:<slug>` on the parent issue, so the slug is visible in the UI, queryable via the API, and not lost to a careless body edit. ADR-0005 records why this beat the alternatives (body-marker, title-prefix, no-slug-storage).
+7. As a maintainer, I want feature-slug uniqueness detected at creation time and at every snapshot read, so the slug is a reliable identifier even though GitHub labels carry no uniqueness constraint.
+8. As a maintainer, I want binding-native refs to use GitHub's `#N` form (inside `## Blocked by`, prose, and commit messages, where GitHub autolinks them), while the runner's CLI keeps the portable `<feature>/<N>` form across bindings. Skills and the runner translate between the two by indexing into the current snapshot.
+9. As a maintainer, I want the runner and `review-issue` to derive the current feature from the snapshot's `feature` field (not by regex-parsing it out of the ref), so the ref shape stays a binding-internal concern.
+10. As a maintainer, I want issue states encoded as labels (non-terminal) and closed-with-reason (terminal), so state transitions are visible at a glance, filterable in GitHub search, and natural to GH-native users.
+11. As a maintainer, I want body-shaped tracker writes (publish agent brief, record triage notes) to preserve un-edited sections, so re-triage doesn't clobber the rest of the body.
+12. As a maintainer, I want sub-issue dispatch order to reflect GitHub's drag-and-drop priority (with `#N` ASC as the tiebreaker), so dragging an issue to the top of the sub-issue panel acts as a "run this next" signal to the AFK runner.
+13. As a maintainer, I want comments-with-kind to use the same `### <Kind> — <YYYY-MM-DD>` heading convention as local-markdown, so the parse rule is portable and the visual style is consistent. Comments authored in the web UI that don't match the heading are treated as unstructured notes.
+14. As a maintainer, I want archive to be "close the parent issue and apply a `formann:archived` label", so archive is a single deliberate action and recoverable.
+15. As a maintainer, I want `tracker-snapshot --list` to return open `formann:feature`-labelled parent issues sorted by issue number ascending, so feature discovery order is deterministic. List order is binding-specific (local-markdown sorts alphabetically); BINDING.md documents the per-binding contract.
+16. As a maintainer, I want `tracker-snapshot <slug>` to drive a single GraphQL query that fetches the parent, all its sub-issues, their bodies, and their labels, so the binding stays cheap on the rate limit.
+17. As a maintainer, I want blocker eligibility resolved from the in-memory sub-issue snapshot (not extra API calls), so eligibility computation is O(1) in API cost regardless of blocker count.
+18. As a maintainer, I want the AI-disclaimer convention to remain the only authorship marker on GitHub, with its weakened semantics (GitHub erases git-blame; all writes come from the maintainer's PAT) documented in the binding's BINDING.md, so I'm not surprised when attribution is softer than on local-markdown.
+19. As an AFK runner operator, I want the runner to stay binding-agnostic — never importing `gh`, GitHub tokens, or GH API knowledge — so consumers using local-markdown don't pay for the GH binding.
+20. As an AFK runner operator, I want the binding to declare any sandbox prerequisites (env vars, network egress) by shipping an optional `sandbox-env` script in its folder, so the runner can satisfy them without binding-specific code.
+21. As a /implement dispatch, I want to discover the feature's PRD via a binding **Read the feature** verb (not by parsing `## Parent` from the issue body), so PRD lookup works the same shape across bindings.
+22. As a /triage skill, I want to read issue body, comments, labels, and state via the binding's documented verbs, so my interactive flow works without skill-side changes.
+23. As a /to-prd skill, I want feature creation defined as a binding verb — pre-flight slug uniqueness check, on-demand `formann:slug:<slug>` label creation, parent issue creation with PRD body and required labels, feature branch creation — so workspace setup is one logical operation with no silent slug collisions and no label-not-found failures on first use.
+24. As a /to-issues skill, I want issue creation defined as a binding verb — create the sub-issue with body template and link it to the parent via `addSubIssue` — so the hierarchy is captured natively at creation time.
+25. As a maintainer, I want sub-issue bodies under the GH binding to skip `## Parent`, because GitHub's native sub-issue panel surfaces the parent and the Read-the-feature verb gives skills programmatic access.
+26. As a maintainer accepting body-edit's residual concurrent-write race, I want it documented explicitly in BINDING.md (including the wider window during interactive `/triage`), so I know not to hand-edit the same body in the GitHub UI while a skill is running.
+27. As a maintainer running the AFK runner offline, I want `tracker-snapshot` testable without network access via a `gh` shim and recorded GraphQL responses, so CI without a GH token still validates the binding.
+28. As a maintainer, I want the runner's review-and-gate prompt rewritten in binding-agnostic verb language ("set the state to `<verdict>`, comment with `Review (AFK gate)`"), so the prompt doesn't presume tracker writes are git commits.
+29. As a maintainer, I want the runner's bail-flow handling refreshed for a world where tracker mutations don't produce git commits, so abort-flag logic and propagation gating still work when `/implement` bails via API call (no `tracker:` commit lands).
+30. As a maintainer, I want failures from the GH binding (rate-limited, 5xx, auth-expired) surfaced with clear exit codes after a bounded retry, so the runner can distinguish "binding transient failure" from "issue malformed".
+31. As a maintainer reading the binding's BINDING.md, I want every verb's GitHub realization shown as a concrete `gh` command, so I can mentally trace what each skill does without consulting external docs.
+32. As a maintainer hitting GitHub's hard limits (100 sub-issues per parent, 8 levels of nesting, 50-char label name, 65,536-char issue body), I want each limit documented in BINDING.md with the failure mode and the workaround, so I know when to re-architect.
+33. As a maintainer installing the GH binding, I want the binding's static label namespace (`formann:feature`, `formann:archived`, all `formann:status:*`, `formann:category:*`, `formann:type:*`) created at install-time by a one-shot bootstrap script, so the first `/to-prd` doesn't fail because `gh issue create --label` can't find a non-existent label.
+34. As a maintainer evaluating the GH binding for GitHub Enterprise Server, I want BINDING.md to state the version prerequisite (sub-issues feature enabled), so I know whether my GHE supports it before I commit.
+35. As a maintainer adopting the GH binding for a fresh repo, I want no migration step beyond label bootstrap, and for a repo with archived local-markdown features, I want those features to remain readable in git history (no backfill into GitHub).
 
 ## Implementation Decisions
 
@@ -57,63 +63,96 @@ A maintainer chooses the binding by where the role-surface symlink points; the c
 
 | Concept | GitHub representation |
 |---|---|
-| Feature | Open issue labelled `formann:feature`. Body is the PRD. |
-| Feature slug | Label `formann:slug:<slug>` on the parent issue. |
-| Issue (slice) | Sub-issue of the feature issue (linked via `addSubIssue`). |
+| Feature | Open issue labelled `formann:feature`. Title is the feature title. Body is the PRD. |
+| Feature slug | Label `formann:slug:<slug>` on the parent issue. Uniqueness enforced by `/to-prd` pre-flight and `tracker-snapshot` runtime checks (see Slug identity below). |
+| Feature PRD | Parent issue's body. Retrieved via the **Read the feature** verb. |
+| Issue (slice) | Sub-issue of the feature issue, linked via the `addSubIssue` GraphQL mutation. |
+| Issue title | Native GitHub issue title field. `# Title` is **not** duplicated in the body. |
 | `status` | Open + label `formann:status:<state>` for non-terminal. Closed + `state_reason=completed` for `done`. Closed + `state_reason=not_planned` for `wontfix`. |
 | `category` | Label `formann:category:bug` or `formann:category:enhancement`. |
 | `type` | Label `formann:type:afk` or `formann:type:hitl`. |
-| Refs | `<slug>/N`, where `N` is the GitHub global issue number. Slug stays in the ref. |
-| `## Blocked by` | Same body section, contains `<slug>/N` refs. |
-| Comments | Native GitHub comments. First line is `### <Kind> — <YYYY-MM-DD>`. |
+| Binding-native ref | GitHub's `#N`. Carried in the snapshot's `ref` field. The runner's CLI uses the portable `<feature>/<N>` form and translates via the snapshot. |
+| `## Blocked by` | Same body section. Contains `#N` refs. The snapshot's blocker extractor matches `#N` against the parent's in-memory sub-issue set; unmatched refs are conservative-false on eligibility. |
+| `## Parent` | **Dropped** from sub-issue bodies under this binding. Native sub-issue panel + Read-the-feature verb replace it. |
+| Sub-issue dispatch order | GraphQL `subIssues` connection order (priority-ordered; UI-mutable via drag-and-drop). Tiebreaker: `#N` ascending. |
+| Comments | Native GitHub comments. First line is `### <Kind> — <YYYY-MM-DD>`. Web-UI comments that don't match the heading are treated as unstructured. |
 | AI disclaimer | First content line of body or comment: `> *This was generated by AI during <skill>.*`. |
-| Archive | Close parent issue (`state_reason=completed`) and apply `formann:archived` label. |
+| Archive | Close parent issue with `state_reason=completed` and apply `formann:archived`. |
 | Branch convention | Unchanged. Slug → branch name. |
 
 ### Modules
 
 **`framework/bindings/issue-tracker/github-issues/`** — new binding folder containing:
 
-- **`BINDING.md`** — Contract doc. Realizes the seven tracker verbs against GitHub primitives with concrete `gh` commands per verb. Includes authorship section documenting the weakened-on-GitHub semantics, sandbox compatibility section naming `GH_TOKEN` and the egress requirement to `api.github.com`, and a documented residual race for concurrent web-UI body edits (no engineered locking).
-- **`tracker-snapshot`** — Machine interface. CLI: `tracker-snapshot --list` and `tracker-snapshot <slug>`, returning JSON byte-compatible with local-markdown's schema. Drives a single GraphQL query per invocation. Resolves blockers from the in-memory sub-issue list. Sorts sub-issues by issue number ascending. Honors a `gh` shim on PATH for offline testing. Surfaces transient API failures with bounded retry before exiting non-zero.
-- **`body-edit`** — Section-level body splicer. CLI: `body-edit <issue-number> <section-heading> <new-content>`. Fetches body, splices (or appends) the named `## <section>` block, PATCHes the result. Used by body-shaped verbs (publish agent brief, record triage notes).
+- **`BINDING.md`** — Contract doc. Realizes the binding verbs (read issue, read feature, list, set state, set metadata, publish brief, record triage notes, comment, create feature, create issue) against GitHub primitives with concrete `gh` commands per verb. Includes: authorship section documenting weakened-on-GitHub semantics; sandbox compatibility section naming `GH_TOKEN` and the egress requirement to `api.github.com`; a documented residual race for concurrent web-UI body edits (no engineered locking) with explicit guidance that the window is wider during interactive `/triage`; the slug-uniqueness contract; the hard-limits table (100 sub-issues, 8 levels nesting, 50-char label name, 65,536-char body); the GHE version prerequisite (sub-issues feature enabled); a note that list order is binding-specific; a note that web-UI comments without the `### <Kind> — <date>` heading are treated as unstructured.
+- **`tracker-snapshot`** — Machine interface. CLI: `tracker-snapshot --list` and `tracker-snapshot <slug>`, returning JSON byte-compatible with local-markdown's schema (the `ref` field's *value format* differs by binding; keys and shape match). Drives a single GraphQL query per invocation. Resolves blockers from the in-memory sub-issue list. Orders sub-issues by the GraphQL `subIssues` connection's priority order with `#N` ASC as tiebreaker. Honors a `gh` shim on PATH for offline testing. Surfaces transient API failures with bounded retry before exiting non-zero. Errors loudly on ≥2 `formann:slug:<slug>` matches with a recovery recipe (see Slug identity).
+- **`body-edit`** — Section-level body splicer. CLI: `body-edit <issue-number> <section-heading> <new-content>`. Fetches body, splices (or appends) the named `## <section>` block, PATCHes the result. Used by body-shaped verbs (publish agent brief, record triage notes). Whole-body write — see Body-shaped write semantics for the documented residual race.
+- **`bootstrap-labels`** — Install-time one-shot script. Idempotent. Creates the binding's static label namespace via `gh label create --force`. Run once per Consumer at install time, or any time the namespace drifts.
 - **`sandbox-env`** — Optional binding-shipped script. Stdout = `KEY=value` env lines for the runner to plumb into the sandbox container. The GH binding's script retrieves `GH_TOKEN` from Keychain and emits it.
-- **`README.md`** — Human doc following local-markdown's README shape: directory contents, authorship explanation, snapshot contract, sandbox compatibility.
+- **`README.md`** — Human doc following local-markdown's README shape: directory contents, authorship explanation, snapshot contract, sandbox compatibility, label-namespace bootstrap procedure.
 
 **Runner-side edits** (no new modules; surgical changes to existing surfaces):
 
 - Move HEAD-archive logic from `take_snapshot` wrapper into `framework/bindings/issue-tracker/local-markdown/tracker-snapshot`. The wrapper shrinks to a thin shell-out; each binding owns its "current state" definition.
 - Add a binding-agnostic `sandbox-env` hook before `docker run`: if `$HOST_REPO/docs/formann/issue-tracker/sandbox-env` is executable, invoke it and append its output to the container env. local-markdown ships no script and the hook is a no-op there.
+- Introduce a runner-internal `binding_native_ref <feature> <N>` helper that looks up the binding-native ref by indexing into the current snapshot's issues array. Downstream callers (`dispatch_one`, `write_abort_flag`, classifier invocations) consume `(feature, N)` pairs and resolve the native ref via this helper whenever they need to pass the ref to a binding script. The CLI parser keeps `^([a-z0-9][a-z0-9-]*)/([0-9]+)$` unchanged.
+- Update `review-issue` agent's commit-scanning regex to recognize both `#N` (GH binding) and `<slug>/NN` (local-markdown).
 - Rewrite `framework/runner/review-and-gate.md` step 6 in binding-agnostic verb language. Replace "Commit as a single `tracker:` commit" with verb-shaped instructions deferring to BINDING.md.
+- Refresh the bail-flow narrative in `framework/afk-runner.md` and `framework/lifecycle.md` to clarify that `tracker:`-prefixed commits and the commit-then-propagate dance are local-markdown's mechanics, not a runner contract. Under GH binding, a `/implement` bail makes an API call and lands no commit; the abort-flag logic must still work in the no-commit case.
 - Refresh comments around `gate_dirty → gate-failed` to drop the file-binding-specific rationale; the check itself stays universal.
-- Refresh narrative in `framework/afk-runner.md` and `framework/lifecycle.md` to clarify that `tracker:`-prefixed commits are local-markdown's convention, not a runner contract.
 
-**ADR-0005** — Records the architectural choice "parent issue with sub-issues" over milestones, labels-only, and Projects v2. Hard-to-reverse, surprising without context, real trade-off — all three ADR-warrant tests pass.
+**ADR-0005** — Records two related architectural choices: (a) "parent issue with sub-issues" over milestones, labels-only, and Projects v2; (b) "slug as label" over body-marker, title-prefix, and no-slug-storage. The PRD captures the *what*; the ADR captures the *why we didn't pick the obvious alternatives*.
 
 ### Verb realizations (summary; full detail in BINDING.md)
 
-- **Read the issue** — `gh issue view <N> --json body,labels,state,stateReason,comments`.
-- **List issues in a feature** — `tracker-snapshot <slug>` (the snapshot is the canonical "list" output).
+- **Read the issue** — `gh issue view <N> --json title,body,labels,state,stateReason,comments`.
+- **Read the feature** — `gh issue view <parent-N> --json title,body,labels`. The parent is identified by querying for `formann:feature` AND `formann:slug:<slug>`. Local-markdown realization: read `.features/<slug>/PRD.md`.
+- **List issues in a feature** — `tracker-snapshot <slug>` (canonical "list" output).
 - **Set the state to `<state>`** — label add/remove for non-terminal; `gh issue close --reason completed|not_planned` for terminal.
 - **Set issue metadata** — label add/remove for category and type; body section edit (via `body-edit`) for `## Blocked by`.
 - **Publish the agent brief** — `body-edit <N> "Agent Brief" @brief.md`.
 - **Record triage notes** — `body-edit <N> "Triage Notes" @notes.md`; on transition out of `needs-info`, `body-edit <N> "Triage Notes" /dev/null` (deletes the section).
 - **Comment with `<kind>`** — `gh issue comment <N> --body @content.md`. The comment's first line is `### <Kind> — <YYYY-MM-DD>`.
+- **Create a feature** — Pre-flight slug uniqueness check (`gh issue list --label formann:slug:<slug> --state all` returns 0); `gh label create formann:slug:<slug> --force` (on-demand label creation; idempotent); `gh issue create --title <title> --body @prd.md --label formann:feature,formann:slug:<slug>`; create and switch to the feature branch. The static label namespace is assumed pre-created via `bootstrap-labels`.
+- **Create an issue (slice)** — `gh issue create --title <title> --body @issue.md --label formann:status:needs-triage,formann:category:<cat>,formann:type:<type>`; `gh api graphql -f query='mutation { addSubIssue ... }'` to link to the parent.
 
 ### Refs
 
-Refs keep the `<slug>/N` shape. `N` is the GitHub global issue number, not a per-feature ordinal. The slug stays in the ref so:
+The binding's native ref is GitHub's `#N`. Inside `## Blocked by`, prose, and commit messages, the maintainer writes `#N` and GitHub autolinks it.
 
-- `dispatch_one`'s regex parser keeps working unchanged.
-- Abort-flag paths (`<feature>/<NN>`) keep working.
-- The runner's `feature` and `nn` derivation from refs keeps working.
-- `review-issue`'s commit-message scanning keeps working with the existing `<slug>/N` convention from local-markdown's BINDING.md.
+The runner's CLI accepts the portable `<feature>/<N>` form (e.g., `--issue github-issues-binding/3`). The runner translates to the binding-native ref via `binding_native_ref(feature, N)`, which indexes into the current snapshot. This keeps the operator's CLI muscle memory binding-agnostic while letting the binding control its native ref shape.
 
-`#N` alone (without slug prefix) is *not* a canonical ref in tracker-mutation contexts — but stays usable inside `## Blocked by` and prose, since GitHub renders it as a link. The snapshot's blocker extractor matches both forms.
+The snapshot's blocker extractor matches `#N` against the parent's in-memory sub-issue set:
+- If `N` is a sub-issue of the snapshotted parent → in-feature blocker; eligibility resolves from its `status`.
+- If `N` is not in the in-memory set → unresolved blocker; eligibility is conservative-false (matching local-markdown's cross-feature behavior).
+
+The snapshot's `ref` field is the same `#N` string. The slug travels separately as the snapshot's top-level `feature` field, which every consumer already has in scope.
+
+### Slug identity and uniqueness
+
+GitHub labels carry no uniqueness constraint. The binding enforces slug uniqueness at every point of contact:
+
+- **At feature creation (`/to-prd`):** Run `gh issue list --label formann:slug:<slug> --state all` before creating. If any match exists, refuse with a clear error naming the existing issue. The maintainer picks a different slug.
+- **At snapshot read (`tracker-snapshot <slug>`):** Query for `formann:slug:<slug>` AND `formann:feature`. If 0 matches → emit empty snapshot `{"feature":"<slug>","issues":[]}`, exit 0 (mirrors local-markdown's missing-feature-dir behavior). If 1 match → normal snapshot. If ≥2 matches → exit non-zero with a stderr message naming both parent issues and a recovery recipe ("remove the `formann:slug:<slug>` label from one of: #N, #M").
+- **At snapshot list (`tracker-snapshot --list`):** Query for `is:open label:formann:feature`, extract each issue's `formann:slug:*` label. Deduplicate by parent issue number; if two parents share a slug label, list the slug once and write a stderr warning naming both parents.
+
+Together, these checks make the slug a reliable identifier even though GitHub doesn't enforce it. Maintainers can still violate by hand-applying labels; every entry point catches it. ADR-0005 records why the alternatives (body-marker, title-prefix, no-slug-storage) were rejected.
+
+### Framework refactor scope
+
+Three call sites currently consume the ref by regex-parsing `<feature>/<NN>`. Each switches to consuming a `(feature, N)` pair plus, where needed, the binding-native ref form retrieved via the new `binding_native_ref(feature, N)` helper:
+
+1. **Runner's `dispatch_one`** — the snapshot's `feature` field and the issue's `nn` are both in scope at the call site. Pass them explicitly to downstream helpers instead of regex-parsing the ref. When passing a ref into a binding script, resolve via `binding_native_ref`.
+2. **Abort flag path** — `.runner-state/aborted/<feature>/<NN>`. Continues to use `<feature>/<N>` filesystem path; both halves come from the `(feature, N)` pair, never from regex-parsing the binding-native ref.
+3. **`review-issue` agent's commit scanning** — under GH binding, commits reference `#N` natively. The agent already knows the feature from its branch context. Update the scanning regex to recognize `#N` in addition to the existing `<slug>/NN`.
+
+The runner's CLI argument parser (`--issue <feature>/<N>`) is unchanged. The snapshot's JSON schema is byte-compatible with local-markdown's schema: same keys, same shape; the `ref` field's value format differs by binding (`<feature>/NN` for local-markdown, `#N` for GH).
 
 ### Sub-issue ordering
 
-The binding sorts sub-issues by issue number ascending. The GraphQL `subIssues` connection returns priority-ordered results (UI-mutable via drag-and-drop), which the binding deliberately discards. Issue number is monotonically assigned by GitHub and not reorderable, providing the stable source order the runner's `next_eligible_ref` semantics depend on.
+The binding orders sub-issues by the GraphQL `subIssues` connection's priority order (UI-mutable via drag-and-drop), with `#N` ascending as the tiebreaker. The maintainer's drag-to-prioritize gesture in the GitHub UI becomes the AFK runner's dispatch signal: dragging an issue to the top of the sub-issue panel makes it the next eligible pick.
+
+The framework contract is unchanged: `next_eligible_ref` picks the first eligible entry from the snapshot array. The binding controls what "first" means; this is per-binding behaviour (local-markdown orders by filename / creation, GH binding orders by maintainer-set priority).
 
 ### Archive
 
@@ -121,11 +160,19 @@ Close the parent issue with `state_reason=completed` and apply `formann:archived
 
 ### Authorship
 
-The disclaimer convention from local-markdown's BINDING.md transfers verbatim: AI-produced body-shaped content leads with `> *This was generated by AI during <skill>.*` on its first content line; comments lead with the same. The binding's BINDING.md documents the weakened semantics: GitHub erases git-blame attribution (all writes come from the maintainer's PAT), so the disclaimer is the only authorship signal. The `formann:ai-authored` label idea from earlier drafts is dropped — GitHub labels apply to issues only, not to comments.
+The disclaimer convention from local-markdown's BINDING.md transfers verbatim: AI-produced body-shaped content leads with `> *This was generated by AI during <skill>.*` on its first content line; comments lead with the same. The binding's BINDING.md documents the weakened semantics: all API writes come from the maintainer's PAT, so git-blame attribution is absent — the disclaimer is the only authorship signal. The `formann:ai-authored` label idea from earlier drafts is dropped (GitHub labels apply to issues only, not to comments).
 
 ### Body-shaped write semantics
 
-`body-edit` operates section-level, not whole-body. It fetches the current body, identifies the target `## <Section>` heading, replaces from there to the next `## ` heading (or end of body), and writes back. Un-edited sections are preserved. A concurrent web-UI edit between fetch and write can clobber either side — this is documented in BINDING.md as a residual race with no engineered mitigation (GitHub provides no optimistic-concurrency primitive on issue bodies).
+`body-edit` operates section-level, not whole-body in intent — but the write is whole-body in mechanics. It fetches the current body, identifies the target `## <Section>` heading, replaces from there to the next `## ` heading (or end of body), and PATCHes the entire body back.
+
+**Residual race:** A concurrent web-UI edit to **any** section of the body between fetch and write gets silently clobbered. The skill's whole-body write wins. This is the documented mechanics and there's no engineered mitigation (GitHub provides no optimistic-concurrency primitive on issue bodies).
+
+The window matters:
+- **AFK runner** (narrow window, maintainer away): the race is rare in practice.
+- **Interactive `/triage`** (wide window, maintainer at keyboard): the race is plausible — a maintainer editing the body in the GH UI while `/triage` is computing can lose their edit.
+
+BINDING.md documents both windows explicitly and advises the maintainer not to hand-edit the issue body in the UI while a Formann skill is running on that issue.
 
 ### Sandbox plumbing
 
@@ -140,6 +187,19 @@ This keeps `run-the-queue.sh` binding-agnostic by construction — the runner ne
 
 The Consumer's `Dockerfile` is responsible for installing whatever tools the chosen binding requires. The github-issues binding's BINDING.md documents that `gh` CLI must be present in the sandbox image. local-markdown has no such requirement. The installer scaffolds an initial Dockerfile but doesn't pin tool choices — that's the Consumer's call.
 
+### Label namespace bootstrap
+
+The binding ships `bootstrap-labels`, an idempotent install-time script that creates the static label namespace via `gh label create --force`:
+
+- `formann:feature`, `formann:archived`
+- `formann:status:needs-triage`, `formann:status:needs-info`, `formann:status:ready-for-agent`, `formann:status:ready-for-human`, `formann:status:in-review`, `formann:status:wontfix` (no `done` label; terminal `done` uses closed-with-reason)
+- `formann:category:bug`, `formann:category:enhancement`
+- `formann:type:afk`, `formann:type:hitl`
+
+Dynamic per-feature labels (`formann:slug:<slug>`) are created on demand by `/to-prd`'s **Create a feature** verb realization.
+
+Running `bootstrap-labels` is a one-time install step (documented in the binding's README). Rerunning is harmless; missing labels are recreated. The script is what stands between a clean repo and a first `/to-prd` that fails with HTTP 422 from `gh issue create --label`.
+
 ### Migration
 
 The Formann repo itself flips its tracker binding from local-markdown to github-issues as part of this feature. The flip is a flag-day: `self-install` is already archived, the `.features/.archived/` directory stays in git history (no backfill into GitHub), and future features author on GH from the start. Other Consumers stay on local-markdown unless they opt to switch.
@@ -150,16 +210,18 @@ A good test exercises external behavior — the contract a caller relies on — 
 
 ### What gets tested
 
-- **`tracker-snapshot` (GH binding)** — Fixture-based, offline. A `gh` shim placed on PATH reads recorded GraphQL responses from a fixture directory; each scenario specifies request → response → expected snapshot JSON. The schema, eligibility rule, blocker resolution, archive filtering, and sub-issue ordering are all observable through the JSON output. Prior art: `framework/runner/tests/tracker-snapshot.bats` and `framework/runner/tests/fixtures/<scenario>/{issues/,expected.json}` for the local-markdown binding.
-- **`body-edit`** — Pure input/output. Test scenarios: section exists → replaced; section absent → appended; new-content empty → section removed; multiple `##` headings → only the named one mutated. Prior art: any input/output bats test in the runner suite (`run-the-queue.bats`'s helper-function tests).
+- **`tracker-snapshot` (GH binding)** — Fixture-based, offline. A `gh` shim placed on PATH reads recorded GraphQL responses from a fixture directory; each scenario specifies request → response → expected snapshot JSON. Schema compatibility, eligibility rule, blocker resolution (including `#N` against the in-memory sub-issue set), archive filtering, sub-issue priority ordering (with `#N` tiebreaker), and the slug-uniqueness cardinality cases (0/1/≥2 matches) are all observable through the JSON output and exit code. Prior art: `framework/runner/tests/tracker-snapshot.bats` and `framework/runner/tests/fixtures/<scenario>/{issues/,expected.json}` for the local-markdown binding.
+- **`body-edit`** — Pure input/output. Test scenarios: section exists → replaced; section absent → appended; new-content empty → section removed; multiple `##` headings → only the named one mutated.
+- **`bootstrap-labels`** — Idempotency check: run twice against a `gh` shim that records label-create calls; second run completes without error (`--force` makes it idempotent). Missing-token check: shim simulates a missing-token environment; script surfaces a clear stderr error.
 - **`sandbox-env` (GH binding)** — A single end-to-end check that the script emits `GH_TOKEN=...` on stdout when the Keychain entry is present, and a clear stderr error when it's absent. Mirrors `retrieve-token.sh`'s existing test pattern.
-- **Runner decoupling edits** — No new tests. Re-run the existing `run-the-queue.bats` and `tracker-snapshot.bats` suites against the refactored wrapper to confirm the local-markdown path still behaves identically. The "wrapper shrinks; binding absorbs HEAD-archive" change is a pure refactor with regression coverage from the existing tests.
-- **End-to-end smoke walk** — One manual end-to-end run against a scratch feature on `jervell/formann`: `/to-prd` → `/to-issues` → `/triage` → `/implement` → review → `/triage` archive. Recorded as a smoke artifact under `.runner-state/smoke-runs/YYYY-MM-DD-github-issues-binding.md` per the existing `.claude/rules/runner-smoke-artifacts.md` convention. Prior art: `framework/runner/tests/smoke.bats` and the smoke-runs convention for the AFK runner.
+- **`binding_native_ref` helper and `(feature, N)` refactor** — Re-run `run-the-queue.bats` and `tracker-snapshot.bats` after the refactor. The local-markdown path must behave identically. New cases cover GH-shaped refs flowing through the runner's dispatch path without regex-parsing.
+- **End-to-end smoke walk** — One manual end-to-end run against a scratch feature on `jervell/formann`: `/to-prd` → `/to-issues` → `/triage` → `/implement` → review → `/triage` archive. Recorded as a smoke artifact under `.runner-state/smoke-runs/YYYY-MM-DD-github-issues-binding.md` per the existing `.claude/rules/runner-smoke-artifacts.md` convention.
 
 ### What deliberately isn't tested
 
 - GitHub's API behavior itself (rate limit responses, 5xx, auth). We trust `gh` to surface these; the binding's retry/backoff is exercised by the fixture's recorded-error scenarios, not by live failures.
-- Concurrent web-UI edit races. Documented as residual; no engineered mitigation, no test.
+- Concurrent web-UI edit races on `body-edit`. Documented as residual; no engineered mitigation, no test.
+- Multi-call atomicity failures (e.g., comment posted but state-flip rate-limited on retry). Documented; the runner's classifier surfaces the failure and the maintainer reconciles.
 
 ## Out of Scope
 
@@ -167,6 +229,9 @@ A good test exercises external behavior — the contract a caller relies on — 
 - **Cross-repo features.** A feature lives in one GitHub repo's issues. Multi-repo orchestration is a separate problem.
 - **GitHub Projects v2 integration.** Status fields, kanban views, and project-level rollups are out — they require a different binding shape and offer no benefit to the existing skill flows.
 - **Real-time concurrency control for body edits.** Documented as a residual race; not engineered around.
+- **Idempotent retry of multi-call verbs.** A failed comment + state-flip sequence may double-post the comment on re-dispatch; the runner's classifier surfaces the failure and the maintainer reconciles. Not engineered around.
+- **Engineered enforcement of slug uniqueness.** The binding detects collisions at creation and at every read; it does not prevent hand-applied label dupes.
+- **GitHub Enterprise Server versions without sub-issues GA.** The binding requires sub-issues; BINDING.md documents the prerequisite. Supporting older GHE would require a different parent-link mechanism and is deferred.
 - **The inbox binding.** The other inbox item ("Make the inbox a binding") is a separate feature; the inbox stays as `.inbox.md` in-repo for both bindings until that work lands.
 - **Per-feature binding override.** A Consumer picks one binding per role. Mixed-binding features within one Consumer are not supported.
 - **Caching `tracker-snapshot` output.** Each invocation hits the API fresh; the single-query design keeps that cheap enough for current scale.
@@ -174,8 +239,16 @@ A good test exercises external behavior — the contract a caller relies on — 
 
 ## Further Notes
 
-- **ADR-0005** records the architectural choice "parent issue with sub-issues" over milestones, labels-only, and Projects v2. The PRD captures the *what*; the ADR captures the *why we didn't pick the obvious alternatives*.
-- **Hard limits.** GitHub enforces 100 sub-issues per parent and 8 levels of nesting. The binding's BINDING.md documents both; features approaching the cap should split into siblings (a separate feature with its own parent), not extend nesting.
+- **ADR-0005** records two architectural choices: (a) "parent issue with sub-issues" over milestones, labels-only, and Projects v2; (b) "slug as label" over body-marker, title-prefix, and no-slug-storage. The PRD captures the *what*; the ADR captures the *why we didn't pick the obvious alternatives*.
+- **Hard limits, all documented in BINDING.md with failure mode and workaround:**
+  - 100 sub-issues per parent — features approaching this cap should split into siblings, not extend nesting.
+  - 8 levels of sub-issue nesting — irrelevant in practice (Formann uses 1 level: feature → slices).
+  - 50-char label name — `formann:slug:` is 13 chars, leaving 37 for the slug. `/to-prd` validates slug length at pick time and rejects early.
+  - 65,536-char issue body — PRDs approaching this cap should split content out of the parent body (e.g., into a comment thread or a linked design doc).
+- **GitHub Enterprise Server prerequisite.** Sub-issues went GA on github.com in 2025; GHE versions that haven't absorbed the feature can't host this binding. BINDING.md states the requirement explicitly; consumers on older GHE stay on local-markdown.
 - **API budget.** GraphQL gives 5000 points/hour. Each snapshot invocation is one query (≈5 points) — comfortably below the budget for any plausible drain-mode load.
-- **Runner refactor scope.** The runner decoupling edits are surgical: one wrapper, one prompt paragraph, one comment block, and narrative refreshes in two doc files. The runner's control flow stays binding-agnostic as ADR-0004 promised.
-- **Disclaimer convention is softer on GitHub.** The binding's BINDING.md says so explicitly. Maintainers who want stronger attribution have no recourse from the binding side; the trade-off is intrinsic to the platform.
+- **List ordering is binding-specific.** Local-markdown lists features alphabetically; GH binding lists by `#N` ascending. Each BINDING.md documents its own order. Consumers must not assume cross-binding parity.
+- **Comment convention noise.** A maintainer posting a comment in the web UI naturally won't follow the `### <Kind> — <date>` heading convention. The binding treats unmatched comments as unstructured notes; nothing breaks, but kind-classification only works for skill-produced comments.
+- **Disclaimer convention is softer on GitHub.** All writes come from the maintainer's PAT; git-blame is uniform across human and AI writes. BINDING.md says so explicitly.
+- **Multi-call atomicity.** Under local-markdown, all tracker writes for a single skill operation land as one git commit (atomic). Under GH, each API call is independent — a partial failure can leave an issue mid-mutation (e.g., comment posted, state not flipped). The runner's classifier handles this gracefully (no state flip → `blocked` / `gate-failed`); the maintainer reads the resulting log and reconciles. Not engineered around.
+- **Runner refactor scope.** Surgical: one wrapper (HEAD-archive moves into local-markdown's snapshot), one new helper (`binding_native_ref`), three call-site updates (`dispatch_one`, `write_abort_flag`, `review-issue` regex), one prompt rewrite (`review-and-gate.md`), narrative refreshes in two doc files. The runner's CLI surface and control flow stay binding-agnostic as ADR-0004 promised.
