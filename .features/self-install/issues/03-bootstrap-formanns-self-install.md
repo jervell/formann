@@ -31,7 +31,8 @@ One-off live operation that lands the dogfood loop. Run the self-install-aware `
 
 ## Blocked by
 
-`self-install/01` — the installer must support self-install mode before bootstrap is meaningful.
+- `self-install/01` — the installer must support self-install mode before bootstrap is meaningful.
+- `self-install/04` — the runner must see framework wiring from host `.claude/` before the bootstrap's [human] AC ("Claude Code discovers `/triage` via `.claude/skills/triage`") can be verified end-to-end on a self-installed Formann.
 
 ## Agent Brief
 
