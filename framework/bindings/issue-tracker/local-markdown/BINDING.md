@@ -27,6 +27,12 @@ Read the full content of an issue: its metadata, body sections (title, what to b
 
 **Local-markdown realization:** Read the file at `.features/<feature>/issues/<NN>-<slug>.md`.
 
+### Read the feature
+
+Retrieve the parent feature's PRD body.
+
+**Local-markdown realization:** Read the file at `.features/<slug>/PRD.md`. The slug is the feature slug — by convention, identical to the current git branch name. If the file does not exist, the feature is not found; report the error and stop.
+
 ### List issues in a feature
 
 Return the set of issues in a feature with their metadata (ref, status, category, type, blocked-by).

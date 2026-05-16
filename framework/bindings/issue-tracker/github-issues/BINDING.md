@@ -25,7 +25,38 @@ Two structural types underpin the contract:
 
 Read the full content of an issue: its metadata, body sections (title, what to build, acceptance criteria, blocked-by, agent brief, triage notes), and its comment timeline.
 
-**GitHub-issues realization:** *(stub — to be filled in by a later slice)*
+**GitHub-issues realization:** Run:
+
+```bash
+gh issue view <N> --json title,body,labels,state,stateReason,comments
+```
+
+Returns a JSON object with the issue's full content: `title` (string), `body` (the raw Markdown body), `labels` (array of objects with a `name` field — the status, category, type, and slug labels are extractable from here), `state` (`OPEN` or `CLOSED`), `stateReason` (`COMPLETED`, `NOT_PLANNED`, or `null`), and `comments` (array of comment objects with `author`, `body`, `createdAt`, and `updatedAt` fields). The comment timeline is in `comments`, ordered chronologically.
+
+### Read the feature
+
+Retrieve the parent feature's PRD body and labels. Under this binding, sub-issue bodies omit `## Parent` (see [Issue template](#issue-template)); the parent is located via label query, not by parsing the sub-issue body.
+
+**GitHub-issues realization:** Derive the feature slug from the current git branch name (by convention, the feature branch is named with the feature slug). Run:
+
+```bash
+gh issue list \
+  --label "formann:feature" \
+  --label "formann:slug:<slug>" \
+  --state open \
+  --json number,title \
+  --jq '.'
+```
+
+This returns all open issues labelled with both `formann:feature` and `formann:slug:<slug>`. Cardinality handling mirrors the [snapshot's slug-uniqueness contract](#slug-identity-and-uniqueness):
+
+| Count | Behaviour |
+|---|---|
+| 0 | Feature not found (parent may be archived/closed). Report the error and stop. |
+| 1 | Issue `#N` is the parent. Retrieve its PRD body and labels: `gh issue view <N> --json title,body,labels` |
+| ≥ 2 | Slug collision. Report the error naming both parents with the recovery recipe: "remove the `formann:slug:<slug>` label from one of: #N, #M". |
+
+The 1-match result provides `title` (feature name), `body` (the PRD Markdown), and `labels`.
 
 ### List issues in a feature
 

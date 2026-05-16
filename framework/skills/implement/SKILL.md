@@ -21,7 +21,7 @@ An issue reference.
 
 1. **Verify eligibility.** All `Blocked by` references must be in state `done`. If any are not, report to the user and stop. (Console only — don't post a tracker comment.)
 
-2. **Gather context.** Read the issue (body, agent brief, comments), the parent (PRD or parent issue), and recent commits to detect partial progress. Explore the relevant areas of the codebase using the domain glossary and respecting ADRs.
+2. **Gather context.** Read the issue (body, agent brief, comments) per the **Read the issue** verb in `docs/formann/issue-tracker/BINDING.md`. Read the parent PRD per the **Read the feature** verb in the same file (no `## Parent`-parsing — the binding provides the realization). Read recent commits to detect partial progress. Explore the relevant areas of the codebase using the domain glossary and respecting ADRs.
 
 3. **Implement.** Use `/tdd`. For type `HITL` issues, pause at each gate listed in the brief and check in with the maintainer before proceeding.
 
