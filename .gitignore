@@ -3,3 +3,23 @@
 *.iml
 /.claude/settings.local.json
 __pycache__/
+# === Formann self-install (managed by installer — do not edit) ===
+/.formann
+/.claude/skills/grill-me
+/.claude/skills/grill-with-docs
+/.claude/skills/implement
+/.claude/skills/tdd
+/.claude/skills/to-issues
+/.claude/skills/to-prd
+/.claude/skills/triage
+/.claude/agents/review-feature.md
+/.claude/agents/review-issue.md
+/docs/formann/issue-tracker
+/docs/formann/lifecycle.md
+/docs/formann/inbox.md
+/docs/formann/domain.md
+/docs/formann/triage-states.md
+/docs/formann/afk-runner.md
+/docs/formann/afk-runner-flow.md
+/runner/Dockerfile
+# === /Formann self-install ===
