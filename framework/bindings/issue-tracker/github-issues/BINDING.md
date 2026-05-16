@@ -12,6 +12,8 @@ Apply to **every AI-produced surface in the tracker**: issue body, PRD, `## Agen
 
 **An unmarked artifact carries maintainer authority.** When the maintainer hand-edits an AI-produced body-shaped artifact, they remove the disclaimer — so absence of the marker (even on an artifact whose history shows AI authorship) means the maintainer has adopted the content.
 
+**Weakened semantics on GitHub:** Under this binding, all issue-body and comment writes come from the maintainer's personal access token (PAT). GitHub records every write as authored by the PAT's account — git-blame attribution is absent (there is no git history for GitHub issue content). The AI disclaimer is therefore the only authorship signal distinguishing AI-produced content from maintainer-written content. The `formann:ai-authored` label is not used; the disclaimer is the only marker.
+
 ## Tracker operations
 
 These are the binding-agnostic verbs skills use when touching the issue tracker. Each verb describes *what* the skill does; the "GitHub-issues realization" subsection under each verb describes *how* this binding implements it.
@@ -20,6 +22,8 @@ Two structural types underpin the contract:
 
 - **Timeline-shaped** — append-only; history preserved. Corresponds to posting a comment on GitHub. **Comment with `<kind>`** is the only timeline-shaped verb.
 - **Body-shaped** — single canonical place; rewriting supersedes the prior value. Corresponds to editing the issue body on GitHub. All other verbs are body-shaped.
+
+**Multi-call atomicity:** Each API call in a verb realization is independent. A partial failure — for example, a comment posted but the subsequent state-flip rate-limited on retry — leaves the issue mid-mutation. There is no engineered rollback or transaction. The runner's classifier surfaces this as a `gate-failed` or `blocked` outcome; the maintainer reads the log and reconciles by hand. Skills should sequence calls so that the most recoverable partial state is left if interrupted.
 
 ### Read the issue
 
@@ -68,31 +72,175 @@ Return the set of issues in a feature with their metadata (ref, status, category
 
 Transition an issue to a new lifecycle state.
 
-**GitHub-issues realization:** *(stub — to be filled in by a later slice)*
+**GitHub-issues realization:** Read the issue's current labels and close state first to determine the prior status (`gh issue view <N> --json labels,state,stateReason`). Then apply the transition:
+
+**Non-terminal transitions** (any target state except `done` or `wontfix`):
+
+```bash
+gh issue edit <N> --remove-label "formann:status:<prev>"
+gh issue edit <N> --add-label "formann:status:<new>"
+```
+
+`<prev>` is the value from the current `formann:status:*` label (e.g., `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `in-review`). If the issue carries no status label, the `--remove-label` call is a no-op — GitHub silently ignores remove requests for labels the issue doesn't have. Re-running the same transition (current state → same state) removes and re-adds the same label, leaving the issue's final state unchanged; this is idempotent.
+
+If the issue is currently in a terminal state (`done` or `wontfix`), reopen it before applying the non-terminal label:
+
+```bash
+gh issue reopen <N>
+gh issue edit <N> --add-label "formann:status:<new>"
+```
+
+**Terminal `done`:** Remove any open status label, then close the issue with `state_reason=completed`:
+
+```bash
+gh issue edit <N> --remove-label "formann:status:<prev>"
+gh issue close <N> --reason completed
+```
+
+The `done` state is encoded in GitHub's closed + `state_reason=COMPLETED` — no `formann:status:*` label is added.
+
+**Terminal `wontfix`:** Remove any open status label, then close the issue with `state_reason=not_planned`:
+
+```bash
+gh issue edit <N> --remove-label "formann:status:<prev>"
+gh issue close <N> --reason not_planned
+```
+
+The `wontfix` state is encoded in GitHub's closed + `state_reason=NOT_PLANNED` — no `formann:status:*` label is added.
+
+**Reopening from a terminal state** (`done` or `wontfix` → any non-terminal state):
+
+```bash
+gh issue reopen <N>
+gh issue edit <N> --add-label "formann:status:<new>"
+```
+
+`gh issue reopen` clears the close-reason and reopens the issue; then the target status label is applied.
 
 ### Set issue metadata
 
 Set the category, type, or blocked-by of an issue.
 
-**GitHub-issues realization:** *(stub — to be filled in by a later slice)*
+**GitHub-issues realization:**
+
+**Category and type (label-flip):** To update `category` or `type`, remove the existing label and add the new one in a single `gh issue edit` call:
+
+```bash
+# Change category
+gh issue edit <N> \
+  --remove-label "formann:category:<old-cat>" \
+  --add-label "formann:category:<new-cat>"
+
+# Change type
+gh issue edit <N> \
+  --remove-label "formann:type:<old-type>" \
+  --add-label "formann:type:<new-type>"
+```
+
+`gh issue edit` accepts multiple `--remove-label` and `--add-label` flags in one invocation, making the swap a single API call. If no existing `formann:category:*` (or `formann:type:*`) label is present, the `--remove-label` flag is a no-op.
+
+**Blocked-by (body-section write):** Rewrite the `## Blocked by` section via `body-edit`:
+
+```bash
+body-edit <N> "Blocked by" @blockers.md
+```
+
+The content of `@blockers.md` must use GitHub's native `#N` autolink form — not the portable `<feature>/<N>` form. Example content:
+
+```markdown
+- #5
+- #8
+```
+
+`body-edit` replaces the entire `## Blocked by` section; surrounding sections are preserved verbatim. To clear all blockers, pass an empty file or `/dev/null`:
+
+```bash
+body-edit <N> "Blocked by" /dev/null
+```
 
 ### Publish the agent brief
 
 Write (or replace) the agent brief for this issue. Body-shaped: re-publishing overwrites the prior brief; prior content is not preserved.
 
-**GitHub-issues realization:** *(stub — to be filled in by a later slice)*
+**GitHub-issues realization:** Run:
+
+```bash
+body-edit <N> "Agent Brief" @brief.md
+```
+
+This splices (or appends) the `## Agent Brief` section in the issue body, replacing any prior content of that section. Surrounding sections are preserved verbatim. Re-running with new content overwrites the prior brief.
+
+If the brief is AI-produced, include the AI disclaimer as the first content line of `@brief.md`:
+
+```markdown
+> *This was generated by AI during triage.*
+
+…brief content…
+```
 
 ### Record triage notes
 
 Write (or replace) the triage notes for this issue. Body-shaped: recording overwrites the prior notes. Used only on `needs-info` transitions; the section is removed when the issue leaves `needs-info`.
 
-**GitHub-issues realization:** *(stub — to be filled in by a later slice)*
+**GitHub-issues realization:** To write or update triage notes:
+
+```bash
+body-edit <N> "Triage Notes" @notes.md
+```
+
+To remove the section when the issue transitions out of `needs-info`, pass `/dev/null` (or an empty file) as the new content:
+
+```bash
+body-edit <N> "Triage Notes" /dev/null
+```
+
+`body-edit` with empty new-content removes the section heading and its contents; surrounding sections are preserved verbatim.
 
 ### Comment with `<kind>`
 
 Append a comment to the issue's timeline. Timeline-shaped: append-only, history is preserved. The kind names the producing context — examples: `Implementation`, `Verification`, `Rework notes`, `Wontfix explanation`, `Post-mortem`, `Review (AFK gate)`, `Note`.
 
-**GitHub-issues realization:** *(stub — to be filled in by a later slice)*
+**GitHub-issues realization:** Prepare the comment body in a file and run:
+
+```bash
+gh issue comment <N> --body @content.md
+```
+
+**Heading convention:** The comment file's first line must be:
+
+```
+### <Kind> — <YYYY-MM-DD>
+```
+
+where `<Kind>` is the kind name (capitalised first letter; e.g., `Implementation`, `Post-mortem`, `Review (AFK gate)`) and `<YYYY-MM-DD>` is the UTC date at the time of posting.
+
+**AI disclaimer:** If the comment is produced by a skill, the disclaimer appears immediately after the heading, as the second line of the file:
+
+```markdown
+### Implementation — 2026-05-16
+
+> *This was generated by AI during implementation.*
+
+…body of the comment…
+```
+
+**Same-day same-kind collisions:** When two comments of the same kind land on the same UTC date, the second and subsequent ones append a numeric suffix to the heading — the same convention as local-markdown, keeping the parse rule portable across bindings:
+
+```
+### Implementation (2) — 2026-05-16
+### Implementation (3) — 2026-05-16
+```
+
+To determine the suffix, scan the issue's existing comment timeline before posting:
+
+```bash
+gh issue view <N> --json comments \
+  --jq '[.comments[].body | split("\n")[0]] | map(select(startswith("### <Kind> — <YYYY-MM-DD>"))) | length'
+```
+
+If the count is `0`, post without a suffix. If the count is `n ≥ 1`, use suffix `(n+1)`.
+
+**Web-UI comments:** Comments posted through the GitHub web UI that do not carry the `### <Kind> — <date>` heading are treated as unstructured notes. Nothing breaks — the comment-timeline reader ignores them for kind-classification purposes; they remain visible in the timeline.
 
 ### Create a feature
 
