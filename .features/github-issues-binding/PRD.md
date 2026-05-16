@@ -61,6 +61,8 @@ A maintainer chooses the binding by where the role-surface symlink points; the c
 
 ### Object model
 
+ADR-0005 records why parent-issue-with-sub-issues and slug-as-label beat their respective alternatives.
+
 | Concept | GitHub representation |
 |---|---|
 | Feature | Open issue labelled `formann:feature`. Title is the feature title. Body is the PRD. |
