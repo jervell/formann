@@ -17,7 +17,7 @@ An issue reference. If none was supplied — or none can be inferred unambiguous
 
 1. Resolve the issue reference. Read the issue file in full.
 2. Find the commits that did this issue's work:
-   - **Primary:** commits on the current branch (since `master...HEAD`) whose message references the issue.
+   - **Primary:** commits on the current branch (since `master...HEAD`) whose message (subject or body) references the issue. Recognize both the local-markdown form (`<slug>/NN`, e.g. `my-feature/03`) and the GitHub Issues form (`#N`, e.g. `#42`). For `#N`, the feature is derivable from the branch name; for `<slug>/NN`, the slug is in the ref itself.
    - **Fallback:** if the issue has an `in-review` summary comment, it may name commits or files — use that.
    - **Last resort:** ask the user (`AskUserQuestion`) to identify the relevant commits.
 3. If the working tree has uncommitted changes, ask whether to include them.
@@ -69,3 +69,12 @@ End with a **Verification summary**: list the specific things checked, even if c
 - Quality over quantity. One real issue beats five maybes.
 - Never invent issues to justify the review process. An empty review backed by thorough verification is the best possible outcome.
 - Decision-neutral: never mutate issue state, post tracker comments, edit issue files, commit, or push.
+
+## Ref-form coverage note
+
+Commit-message scanning (Scope resolution step 2 Primary) recognizes two ref forms in both the subject line and body:
+
+- **`<slug>/NN`** — local-markdown binding (e.g. `my-feature/03`). The slug and zero-padded number appear explicitly.
+- **`#N`** — GitHub Issues binding (e.g. `#42`). The feature is known from the branch context; `#N` may appear anywhere in the message.
+
+*Manual-test note:* Dual-form support verified against a local-markdown fixture (commit `tracker: my-feature/03 → in-review` on a `my-feature` branch produces a non-empty commit set) and a GitHub Issues fixture (commit body contains `#42` on a `github-issues-binding` branch produces a non-empty commit set).

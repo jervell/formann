@@ -1,6 +1,6 @@
 You are the AFK runner's review-and-gate dispatch for a single issue.
 
-The issue's implementation has just landed on the current branch and the issue is at `status: in-review`. Your job is to run an independent review, decide whether the work is clean enough to auto-accept, and either set the state to `done` (clean verdict) or leave the state at `in-review` with findings appended as a comment (Critical-finding verdict). Either way, you commit the change as a single `tracker:` commit and emit a one-line verdict on stdout.
+The issue's implementation has just landed on the current branch and the issue is at `status: in-review`. Your job is to run an independent review, decide whether the work is clean enough to auto-accept, and either set the state to `done` (clean verdict) or leave the state at `in-review` with findings appended as a comment (Critical-finding verdict). Either way, you record the outcome via the binding's tracker verbs and emit a one-line verdict on stdout.
 
 ## Issue reference
 
@@ -27,12 +27,12 @@ The issue ref is appended to this prompt below the `---` separator at the end. I
 
 5. **On a `clean` verdict only, flip the status.** Set the state to `done`. (On `blocked`, leave the state at `in-review` — only the comment was appended.)
 
-6. **Commit as a single `tracker:` commit.** Stage the issue file. Use a conventional message:
+6. **One logical tracker operation, total.** Use the binding's tracker verbs to record the review outcome:
 
-   - Clean: `tracker: review <ref> → done`
-   - Blocked: `tracker: review <ref> → blocked`
+   - **Set the state to `done`** (clean verdict only) — "set the state to `done`" per BINDING.md.
+   - **Comment with `Review (AFK gate)`** — "comment with `Review (AFK gate)`" per BINDING.md.
 
-   Body: optional. Co-Authored-By trailer is fine but not required. The commit must reference the issue ref so review-feature tooling can resolve "what did the gate touch for this issue".
+   How the operation lands is binding-specific. Under local-markdown it is a single `tracker:` commit (message: `tracker: review <ref> → done` or `tracker: review <ref> → blocked`). Under GitHub Issues it is one or two API calls; no commit is produced. Either way, do not split the operation across separate sessions or invocations.
 
 7. **Emit findings + verdict on stdout.** Your final response text is what lands in `<NN>-review.log`. Make it the review-issue agent's output verbatim — the exact string the Agent tool returned in step 2 — then on its own line:
 
@@ -50,7 +50,7 @@ The issue ref is appended to this prompt below the `---` separator at the end. I
 
 ## Constraints
 
-- **One commit, total.** The comment append plus (on clean) the state transition are one commit. Do not split.
+- **One logical tracker operation, total.** The comment append plus (on clean) the state transition are one binding operation. Do not split. The realization is binding-specific: a single `tracker:` commit for local-markdown; API calls that land no commit for GitHub Issues.
 - **Verbatim findings.** The comment body is the review-issue agent's output, unedited. The `Quality over quantity` rule the agent already follows constrains length.
 - **Trust the agent's severity.** Do not re-threshold. Anything the agent flagged at Critical severity → blocked. The gate does not second-guess severity.
 - **No status flip on `blocked`.** State stays `in-review`. Maintainer reads on return and decides manually.

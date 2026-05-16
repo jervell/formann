@@ -1617,9 +1617,9 @@ dispatch_one() {
   gate_verdict="$(classify_gate_outcome "$post_implement_json" "$post_gate_json" "$ref" "$gate_rc")"
 
   # Uncommitted edits after the gate dispatch can't be trusted — the
-  # session may have updated the issue file without committing, making
-  # a `blocked` verdict indistinguishable from an LLM failure. Override
-  # the classifier's verdict so the dirty path is always gate-failed.
+  # session is off-mission if it leaves the runner-checkout dirty.
+  # Override the classifier's verdict so the dirty path is always
+  # gate-failed. This check is universal across bindings.
   if [ -n "$gate_dirty" ]; then
     gate_verdict="gate-failed"
   fi
