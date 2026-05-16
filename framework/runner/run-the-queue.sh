@@ -1185,10 +1185,18 @@ run_sandbox_container() {
   # dispatch indistinguishable from a slow one. Side effect: PTY
   # translates `\n` to `\r\n` in the log file; cat/grep/tail handle it
   # transparently.
+  # `.formann` is a per-host symlink (untracked) pointing at the Formann
+  # framework checkout — `.claude/skills/<name>` symlinks resolve through
+  # it. The runner-checkout doesn't carry `.formann` (it's outside the
+  # tracked tree), so without this mount every framework-shaped skill is a
+  # dangling symlink inside the container and claude reports `Unknown
+  # command: /implement` on dispatch. `:ro` because the framework is
+  # shared host state — a container should not write to it.
   docker run --rm -t \
     --cidfile "$cid_file" \
     --network "$NET_NAME" \
     -v "$HOST_CHECKOUT:$RUNNER_CONTAINER_REPO_PATH" \
+    -v "$HOST_REPO/.formann:$RUNNER_CONTAINER_REPO_PATH/.formann:ro" \
     -v "$MVN_VOLUME:$RUNNER_CONTAINER_M2_PATH" \
     --env-file <(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOKEN") \
     "$RUNNER_IMAGE_NAME" \

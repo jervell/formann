@@ -3131,3 +3131,32 @@ EOF
   # tolerant), not byte-for-byte equality.
   diff <(jq -S '.' "$RUN_DIR/discovery.json") <(jq -S '.' <<<'["alpha","beta"]')
 }
+
+# Regression: framework-shaped skills (`.claude/skills/implement` and friends)
+# are symlinks resolving through `.formann/` to the Formann checkout. Without
+# the `.formann` bind-mount, the container sees a dangling symlink and claude
+# reports `Unknown command: /implement` on first dispatch. Pin the mount.
+@test "run_sandbox_container — bind-mounts .formann into /repo so framework-shaped skills resolve" {
+  HOST_REPO="$BATS_TEST_TMPDIR/host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR/runner-state"
+  MVN_VOLUME="test-mvn"
+  NET_NAME="test-net"
+  RUNNER_IMAGE_NAME="test-image"
+  TOKEN="test-token"
+  RUNNER_INTERRUPTED=0
+  IN_FLIGHT_CID_FILE=""
+  mkdir -p "$HOST_REPO" "$HOST_CHECKOUT" "$HOST_RUNNER_STATE"
+
+  local args_file="$BATS_TEST_TMPDIR/docker-args"
+  docker() {
+    printf '%s\n' "$@" > "$args_file"
+    return 0
+  }
+
+  run_sandbox_container "$BATS_TEST_TMPDIR/log" claude -p "/implement f/01"
+
+  # The mount value `<host-repo>/.formann:/repo/.formann:ro` must appear as a
+  # standalone arg on the `docker run` line (i.e. the value following a `-v`).
+  grep -qFx -- "$HOST_REPO/.formann:/repo/.formann:ro" "$args_file"
+}
