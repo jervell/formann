@@ -3,6 +3,7 @@
   "issues": [
     {
       "ref": "non-ready-states/01",
+      "nn": "01",
       "status": "needs-triage",
       "category": "enhancement",
       "type": "AFK",
@@ -11,6 +12,7 @@
     },
     {
       "ref": "non-ready-states/02",
+      "nn": "02",
       "status": "needs-info",
       "category": "enhancement",
       "type": "AFK",
@@ -19,6 +21,7 @@
     },
     {
       "ref": "non-ready-states/03",
+      "nn": "03",
       "status": "ready-for-human",
       "category": "enhancement",
       "type": "AFK",
@@ -27,6 +30,7 @@
     },
     {
       "ref": "non-ready-states/04",
+      "nn": "04",
       "status": "in-review",
       "category": "enhancement",
       "type": "AFK",
@@ -35,6 +39,7 @@
     },
     {
       "ref": "non-ready-states/05",
+      "nn": "05",
       "status": "wontfix",
       "category": "enhancement",
       "type": "AFK",
@@ -43,6 +48,7 @@
     },
     {
       "ref": "non-ready-states/06",
+      "nn": "06",
       "status": "done",
       "category": "enhancement",
       "type": "AFK",

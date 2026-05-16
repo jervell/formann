@@ -251,6 +251,29 @@ next_eligible_feature() {
   done < <(jq -r '.[]' <<<"$discovery_json")
 }
 
+# Look up the binding-native ref for a (feature, N) pair by indexing into a
+# snapshot's issues array. Returns the ref on stdout. Fails loudly (non-zero
+# + stderr message) if (feature, N) is not present in the snapshot.
+#
+# Args: $1=feature  $2=nn  $3=snapshot_json
+#
+# Why index by nn rather than constructing the ref from parts: the binding-
+# native ref shape varies by binding (local-markdown: `<feature>/NN`;
+# github-issues: `#N`). The snapshot's `nn` field is the binding-agnostic
+# numeric key; this function is the single place where nn → native ref
+# resolution lives.
+binding_native_ref() {
+  local feature="$1" nn="$2" snapshot_json="$3"
+  local ref
+  ref="$(jq -r --arg n "$nn" \
+    'first(.issues[] | select(.nn == $n) | .ref) // empty' <<<"$snapshot_json")"
+  if [ -z "$ref" ]; then
+    echo "runner: binding_native_ref: ($feature, $nn) not found in snapshot" >&2
+    return 1
+  fi
+  printf '%s\n' "$ref"
+}
+
 # === Helpers ===============================================================
 
 now_ts() { date +"%Y%m%d-%H%M%S"; }
@@ -445,13 +468,13 @@ fail_invariant() {
   exit 2
 }
 
-# Write (or overwrite) the runner-private abort flag for a ref. Written on
-# any dispatch failure that leaves the ref stuck — i.e., where the next
-# iteration's eligibility filter would otherwise re-pick it (implement failure
-# with status still eligible) or where a unified "stuck" surface is useful
-# to the maintainer even when the snapshot already excludes it (gate-failed,
-# propagation halt). Overwrites on repeat so the file always reflects the
-# most recent failure.
+# Write (or overwrite) the runner-private abort flag for a (feature, nn) pair.
+# Written on any dispatch failure that leaves the ref stuck — i.e., where the
+# next iteration's eligibility filter would otherwise re-pick it (implement
+# failure with status still eligible) or where a unified "stuck" surface is
+# useful to the maintainer even when the snapshot already excludes it
+# (gate-failed, propagation halt). Overwrites on repeat so the file always
+# reflects the most recent failure.
 #
 # The maintainer removes the flag with `rm` to re-include the ref.
 # Flag format (plain text, no parser needed):
@@ -461,15 +484,10 @@ fail_invariant() {
 #   exit: <container exit code>
 #   log: <repo-relative path to dispatch log>
 #
-# Args: $1=ref  $2=dispatch(implement|gate)  $3=exit_code  $4=log_file
+# Args: $1=feature  $2=nn  $3=dispatch(implement|gate)  $4=exit_code  $5=log_file
 write_abort_flag() {
-  local ref="$1" dispatch="$2" exit_code="$3" log_file="$4"
+  local feature="$1" nn="$2" dispatch="$3" exit_code="$4" log_file="$5"
   [[ "$RUNNER_INTERRUPTED" -eq 1 ]] && return 0
-  if [[ ! "$ref" =~ ^([a-z0-9][a-z0-9-]*)/([0-9]+)$ ]]; then
-    echo "runner: write_abort_flag: invalid ref '$ref'" >&2
-    return 1
-  fi
-  local feature="${BASH_REMATCH[1]}" nn="${BASH_REMATCH[2]}"
   local abort_feature_dir="$HOST_ABORT_DIR/$feature"
   mkdir -p "$abort_feature_dir"
   local at rel_log
@@ -1100,27 +1118,21 @@ preflight() {
 # would never reach the host. Reading from HEAD makes the classifier's
 # verdict match what actually propagates.
 #
-# Implementation: extract HEAD's `.features/` into a temp dir via
-# `git archive | tar`, snapshot from there, clean up.
+# The HEAD-archive step is delegated to the binding's tracker-snapshot via
+# SNAPSHOT_CHECKOUT_DIR: the local-markdown binding extracts .features/ from
+# that repo's committed HEAD before snapshotting. Each binding owns its
+# "current state of the world" definition; the wrapper here is binding-agnostic.
+#
+# Capture rc explicitly: command-substitution-into-local-assignment under
+# `set -e` does not propagate a non-zero from the inner command, so a
+# tracker-snapshot crash would otherwise surface as an empty snapshot
+# indistinguishable from "no issues" — and run_loop would report a
+# misleading queue-empty stop.
 take_snapshot() {
   local feature="$1"
-  local tmp result
-  tmp="$(mktemp -d -t runner-snap.XXXXXX)"
-  if ! git -C "$HOST_CHECKOUT" archive HEAD .features 2>/dev/null \
-       | tar -xC "$tmp" 2>/dev/null; then
-    rm -rf "$tmp"
-    echo "runner: failed to extract committed .features/ from runner-checkout HEAD" >&2
-    return 1
-  fi
-  # Capture rc explicitly: command-substitution-into-local-assignment
-  # under `set -e` does not propagate a non-zero from the inner command,
-  # so a tracker-snapshot crash would otherwise surface as an empty
-  # snapshot indistinguishable from "no issues" — and run_loop would
-  # report a misleading queue-empty stop.
-  local rc=0
-  result="$(TRACKER_ROOT="$tmp/.features" \
+  local rc=0 result
+  result="$(SNAPSHOT_CHECKOUT_DIR="$HOST_CHECKOUT" \
     bash "$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot" "$feature")" || rc=$?
-  rm -rf "$tmp"
   if [ "$rc" -ne 0 ]; then
     echo "runner: tracker-snapshot exited non-zero ($rc) for feature $feature" >&2
     return 1
@@ -1331,37 +1343,23 @@ MSG
 
 # === Top-level dispatch ====================================================
 
-# Dispatch one issue end-to-end inside the run dir at $1. Mutates only
-# files under that dir; classifier verdict is derived from snapshots
-# taken in the runner-checkout. Sets $RUNNER_LAST_OUTCOME to the
-# **propagated** outcome (`success` only when the host actually
-# advanced; `failure` for classifier failure, propagation halt, or
-# fast-forward refusal). Return code mirrors that — 0 for success, 1
-# otherwise. The loop trusts the return code as the per-iteration
-# pass/fail signal; an earlier version computed the verdict from the
-# classifier alone, which let propagation halts pass as success and
+# Dispatch one issue end-to-end inside the run dir at $3. Consumes a
+# (feature, nn) pair — never regex-parses the binding-native ref. The
+# binding-native ref is resolved via `binding_native_ref` from the pre-
+# dispatch snapshot. Mutates only files under the run dir; classifier
+# verdict is derived from snapshots taken in the runner-checkout.
+#
+# Sets $RUNNER_LAST_OUTCOME to the **propagated** outcome (`success` only
+# when the host actually advanced; `failure` for classifier failure,
+# propagation halt, or fast-forward refusal). Return code mirrors that — 0
+# for success, 1 otherwise. The loop trusts the return code as the per-
+# iteration pass/fail signal; an earlier version computed the verdict from
+# the classifier alone, which let propagation halts pass as success and
 # re-dispatch the same issue indefinitely on the next iteration.
+#
+# Args: $1=feature  $2=nn  $3=run_dir
 dispatch_one() {
-  local ref="$1" run_dir="$2"
-  if [[ ! "$ref" =~ ^([a-z0-9][a-z0-9-]*)/([0-9]+)$ ]]; then
-    echo "runner: dispatch_one: invalid ref '$ref'" >&2
-    RUNNER_LAST_OUTCOME="failure"
-    record_dispatch "$ref" "FAIL" 0
-    return 1
-  fi
-  local nn="${BASH_REMATCH[2]}"
-  local feature="${BASH_REMATCH[1]}"
-  # Defensive: in single/loop modes the per-feature mode is gated up front,
-  # so a stale TARGET_FEATURE shouldn't disagree with the ref's feature
-  # segment. TARGET_FEATURE wins when set so the narrowed-mode invariant
-  # surfaces any disagreement; fall back to the ref's feature segment
-  # otherwise. In drain mode TARGET_FEATURE tracks the feature currently
-  # being drained and therefore always matches the ref's feature segment —
-  # skip the override so the ref-derived segment stays the single source
-  # of truth.
-  if [ -n "$TARGET_FEATURE" ] && [ "$TARGET_FEATURE" != "$feature" ] && [ "$RUN_MODE" != "drain" ]; then
-    feature="$TARGET_FEATURE"
-  fi
+  local feature="$1" nn="$2" run_dir="$3"
 
   local log_dir log_basename
   if [ "$RUN_LOG_LAYOUT" = "nested" ]; then
@@ -1379,9 +1377,21 @@ dispatch_one() {
 
   local pre_json post_implement_json post_gate_json
   if ! pre_json="$(take_snapshot "$feature")"; then
-    echo "runner: dispatch_one: tracker-snapshot failed (pre stage) for ref '$ref'" >&2
+    echo "runner: dispatch_one: tracker-snapshot failed (pre stage) for feature '$feature' issue '$nn'" >&2
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:pre"
-    record_dispatch "$ref" "FAIL" 0
+    record_dispatch "$feature/$nn" "FAIL" 0
+    return 1
+  fi
+
+  # Resolve the binding-native ref from the pre-snapshot.  The classifier
+  # and dispatch container both receive this ref so they query / invoke
+  # the correct binding-native identifier. For local-markdown this is
+  # `<feature>/NN`; for github-issues it is `#N`.
+  local ref
+  if ! ref="$(binding_native_ref "$feature" "$nn" "$pre_json")"; then
+    echo "runner: dispatch_one: ($feature, $nn) not found in pre-snapshot" >&2
+    RUN_STOP_REASON="snapshot-failed-mid-dispatch:pre"
+    record_dispatch "$feature/$nn" "FAIL" 0
     return 1
   fi
 
@@ -1480,7 +1490,7 @@ dispatch_one() {
       local halt_duration
       halt_duration=$(( $(date +%s) - started_at ))
       format_progress_outcome "$(now_clock)" "$ref" "implement" "halt → FAIL" "$halt_duration"
-      write_abort_flag "$ref" "implement" "$impl_rc" "$log_file"
+      write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_file"
       record_dispatch "$ref" "FAIL" "$halt_duration"
       RUNNER_LAST_OUTCOME="failure"
       RUNNER_HALT_OCCURRED=1
@@ -1497,7 +1507,7 @@ dispatch_one() {
     post_eligible="$(jq -r --arg r "$ref" \
       '(.issues[] | select(.ref == $r) | .eligible) // "false"' <<<"$post_implement_json")"
     if [ "$post_eligible" = "true" ]; then
-      write_abort_flag "$ref" "implement" "$impl_rc" "$log_file"
+      write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_file"
     fi
     record_dispatch "$ref" "FAIL" "$impl_duration"
     RUNNER_LAST_OUTCOME="failure"
@@ -1582,7 +1592,7 @@ dispatch_one() {
   fi
 
   if [ "$gate_verdict" = "gate-failed" ]; then
-    write_abort_flag "$ref" "gate" "$gate_rc" "$review_log_file"
+    write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file"
     record_dispatch "$ref" "$combined_label" "$iter_duration" "y"
     RUNNER_LAST_OUTCOME="failure"
     return 1
@@ -1600,7 +1610,7 @@ dispatch_one() {
     gate_halt_duration=$(( $(date +%s) - gate_started_at ))
     iter_halt_duration=$(( impl_duration + gate_halt_duration ))
     format_progress_outcome "$(now_clock)" "$ref" "review" "halt → gate-failed" "$gate_halt_duration"
-    write_abort_flag "$ref" "gate" "$gate_rc" "$review_log_file"
+    write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file"
     record_dispatch "$ref" "gate-failed" "$iter_halt_duration" "y"
     RUNNER_LAST_OUTCOME="failure"
     RUNNER_HALT_OCCURRED=1
@@ -1639,8 +1649,10 @@ run_single() {
     return 2
   fi
 
-  entry="$(jq -c --arg r "$ARG_ISSUE_REF" \
-    'first(.issues[] | select(.ref == $r)) // empty' <<<"$snap")"
+  # Look up the issue entry by nn (binding-agnostic) rather than by the
+  # portable ref string, so this works for any binding's native ref shape.
+  entry="$(jq -c --arg n "$ISSUE_NN" \
+    'first(.issues[] | select(.nn == $n)) // empty' <<<"$snap")"
   if [ -z "$entry" ]; then
     reason="missing"
     detail="ref '$ARG_ISSUE_REF' is not present in feature '$ISSUE_FEATURE'"
@@ -1675,7 +1687,7 @@ run_single() {
   fi
 
   local rc=0
-  dispatch_one "$ARG_ISSUE_REF" "$RUN_DIR" || rc=$?
+  dispatch_one "$ISSUE_FEATURE" "$ISSUE_NN" "$RUN_DIR" || rc=$?
   if [ "$rc" -eq 0 ]; then
     RUN_STOP_REASON="single-dispatch (success)"
   else
@@ -1720,23 +1732,25 @@ run_loop() {
       return 1
     fi
 
-    # Select the first eligible ref that does not have an abort flag.
-    # Iterate through all eligible refs in source order; emit a skip
-    # line (with the rm recipe) for each aborted one.
-    local ref=""
+    # Select the first eligible (feature, nn) pair that does not have an abort
+    # flag. Iterate through all eligible issues in source order (emitting a
+    # skip line with the rm recipe for each aborted one). The abort flag path
+    # uses `nn` from the snapshot — never derived from the binding-native ref —
+    # so local-markdown and github-issues flags share the same layout.
+    local ref="" nn_sel=""
     local abort_feature_dir="$HOST_ABORT_DIR/$TARGET_FEATURE"
-    local candidate flag_nn abort_flag
-    while IFS= read -r candidate; do
-      [ -z "$candidate" ] && continue
-      flag_nn="${candidate##*/}"
-      abort_flag="$abort_feature_dir/$flag_nn"
+    local candidate_ref candidate_nn abort_flag
+    while IFS=$'\t' read -r candidate_ref candidate_nn; do
+      [ -z "$candidate_ref" ] && continue
+      abort_flag="$abort_feature_dir/$candidate_nn"
       if [ -f "$abort_flag" ]; then
-        echo "[$(now_clock)] runner: skipping aborted $candidate — rm $abort_flag to resume"
+        echo "[$(now_clock)] runner: skipping aborted $candidate_ref — rm $abort_flag to resume"
         continue
       fi
-      ref="$candidate"
+      ref="$candidate_ref"
+      nn_sel="$candidate_nn"
       break
-    done < <(jq -r '.issues[] | select(.eligible == true) | .ref' <<<"$snap")
+    done < <(jq -r '.issues[] | select(.eligible == true) | "\(.ref)\t\(.nn)"' <<<"$snap")
 
     if [ -z "$ref" ]; then
       echo "[$(now_clock)] runner: queue empty — no eligible issues remain in '$TARGET_FEATURE'"
@@ -1758,7 +1772,7 @@ run_loop() {
     RUNNER_LAST_OUTCOME=""
     RUNNER_HALT_OCCURRED=0
     local dispatch_rc=0
-    dispatch_one "$ref" "$RUN_DIR" || dispatch_rc=$?
+    dispatch_one "$TARGET_FEATURE" "$nn_sel" "$RUN_DIR" || dispatch_rc=$?
 
     # If Ctrl-C arrived during the dispatch, exit immediately.
     if [ "$RUNNER_INTERRUPTED" -eq 1 ]; then
@@ -1950,19 +1964,19 @@ drain_one_feature() {
 
 # Per-feature queue-shape probe. Returns 0 if the snapshot has at least
 # one eligible ref without an abort flag, 1 otherwise. Mirrors the
-# selection logic in `run_loop`'s top-of-iteration block.
+# selection logic in `run_loop`'s top-of-iteration block. Uses `nn` from
+# the snapshot for abort flag lookup — binding-agnostic.
 feature_has_dispatchable_ref() {
   local feature="$1" snap="$2"
   local abort_dir="$HOST_ABORT_DIR/$feature"
-  local ref nn
-  while IFS= read -r ref; do
-    [ -z "$ref" ] && continue
-    nn="${ref##*/}"
-    if [ -f "$abort_dir/$nn" ]; then
+  local candidate_ref candidate_nn
+  while IFS=$'\t' read -r candidate_ref candidate_nn; do
+    [ -z "$candidate_ref" ] && continue
+    if [ -f "$abort_dir/$candidate_nn" ]; then
       continue
     fi
     return 0
-  done < <(jq -r '.issues[] | select(.eligible == true) | .ref' <<<"$snap")
+  done < <(jq -r '.issues[] | select(.eligible == true) | "\(.ref)\t\(.nn)"' <<<"$snap")
   return 1
 }
 

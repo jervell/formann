@@ -354,6 +354,7 @@ for (( _i=0; _i < _issue_count; _i++ )); do
 
   # Emit issue JSON object.
   printf '{"ref":%s' "$(printf '#%s' "$_num" | jq -Rs '.')"
+  printf ',"nn":%s' "$(printf '%s' "$_num" | jq -Rs '.')"
   printf ',"status":%s' "$(printf '%s' "$_status" | jq -Rs '.')"
   printf ',"category":%s' "$(printf '%s' "$_category" | jq -Rs '.')"
   printf ',"type":%s' "$(printf '%s' "$_type" | jq -Rs '.')"

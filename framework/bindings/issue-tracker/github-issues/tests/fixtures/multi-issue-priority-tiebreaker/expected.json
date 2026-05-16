@@ -3,6 +3,7 @@
   "issues": [
     {
       "ref": "#10",
+      "nn": "10",
       "status": "done",
       "category": "enhancement",
       "type": "AFK",
@@ -11,6 +12,7 @@
     },
     {
       "ref": "#7",
+      "nn": "7",
       "status": "ready-for-agent",
       "category": "enhancement",
       "type": "AFK",
@@ -19,6 +21,7 @@
     },
     {
       "ref": "#15",
+      "nn": "15",
       "status": "ready-for-agent",
       "category": "bug",
       "type": "AFK",

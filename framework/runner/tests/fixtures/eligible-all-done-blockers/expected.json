@@ -3,6 +3,7 @@
   "issues": [
     {
       "ref": "eligible-all-done-blockers/01",
+      "nn": "01",
       "status": "done",
       "category": "enhancement",
       "type": "AFK",
@@ -11,6 +12,7 @@
     },
     {
       "ref": "eligible-all-done-blockers/02",
+      "nn": "02",
       "status": "ready-for-agent",
       "category": "enhancement",
       "type": "AFK",

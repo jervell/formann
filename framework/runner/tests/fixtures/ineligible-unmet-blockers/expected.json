@@ -3,6 +3,7 @@
   "issues": [
     {
       "ref": "ineligible-unmet-blockers/01",
+      "nn": "01",
       "status": "in-review",
       "category": "enhancement",
       "type": "AFK",
@@ -11,6 +12,7 @@
     },
     {
       "ref": "ineligible-unmet-blockers/02",
+      "nn": "02",
       "status": "ready-for-agent",
       "category": "enhancement",
       "type": "AFK",

@@ -143,6 +143,65 @@ assert_snapshot_matches_golden() {
   [ "$slugs" = "auto-discovered" ]
 }
 
+# === SNAPSHOT_CHECKOUT_DIR — read from a git repo's committed HEAD ===========
+#
+# When SNAPSHOT_CHECKOUT_DIR is set, tracker-snapshot archives .features/ from
+# that repo's committed HEAD rather than reading from TRACKER_ROOT or PWD.
+# This is how the runner's take_snapshot wrapper avoids working-tree noise.
+
+@test "SNAPSHOT_CHECKOUT_DIR — snapshots committed .features/ from a git repo" {
+  local repo="$BATS_TEST_TMPDIR/snap-checkout-repo"
+  local feature_dir="$repo/.features/snap-feature/issues"
+  mkdir -p "$feature_dir"
+  printf -- '---\nstatus: ready-for-agent\ncategory: enhancement\ntype: AFK\n---\n\n# Snap test\n\n## Blocked by\n\nNone.\n' \
+    >"$feature_dir/01-snap.md"
+  git -C "$repo" init --quiet
+  git -C "$repo" -c user.email=t@t -c user.name=t add .features
+  git -C "$repo" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m init
+
+  # Unset TRACKER_ROOT so the env-var fallback cannot interfere.
+  unset TRACKER_ROOT
+  SNAPSHOT_CHECKOUT_DIR="$repo" run "$TRACKER_SNAPSHOT" "snap-feature"
+  assert_success
+
+  local status_out nn_out eligible_out
+  status_out="$(printf '%s\n' "$output" | jq -r '.issues[0].status')"
+  nn_out="$(printf '%s\n' "$output" | jq -r '.issues[0].nn')"
+  eligible_out="$(printf '%s\n' "$output" | jq -r '.issues[0].eligible')"
+  [ "$status_out" = "ready-for-agent" ]
+  [ "$nn_out" = "01" ]
+  [ "$eligible_out" = "true" ]
+}
+
+@test "SNAPSHOT_CHECKOUT_DIR — ignores working-tree changes not yet committed" {
+  local repo="$BATS_TEST_TMPDIR/snap-wt-repo"
+  local feature_dir="$repo/.features/snap-wt/issues"
+  mkdir -p "$feature_dir"
+  printf -- '---\nstatus: ready-for-agent\ncategory: enhancement\ntype: AFK\n---\n\n# Committed\n' \
+    >"$feature_dir/01-committed.md"
+  git -C "$repo" init --quiet
+  git -C "$repo" -c user.email=t@t -c user.name=t add .features
+  git -C "$repo" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m init
+
+  # Add a second issue file to the working tree but do NOT commit it.
+  printf -- '---\nstatus: ready-for-agent\ncategory: enhancement\ntype: AFK\n---\n\n# Uncommitted\n' \
+    >"$feature_dir/02-uncommitted.md"
+
+  unset TRACKER_ROOT
+  SNAPSHOT_CHECKOUT_DIR="$repo" run "$TRACKER_SNAPSHOT" "snap-wt"
+  assert_success
+
+  # Only the committed issue (01) should appear; the uncommitted (02) must not.
+  local issue_count
+  issue_count="$(printf '%s\n' "$output" | jq '.issues | length')"
+  [ "$issue_count" = "1" ]
+  local ref_out
+  ref_out="$(printf '%s\n' "$output" | jq -r '.issues[0].ref')"
+  [ "$ref_out" = "snap-wt/01" ]
+}
+
 @test "CRLF-encoded issue files are parsed, not silently dropped" {
   # Regression: parse_frontmatter compared each line to the bare string
   # `---`, but `read -r` does not strip a trailing `\r`. A CRLF-saved

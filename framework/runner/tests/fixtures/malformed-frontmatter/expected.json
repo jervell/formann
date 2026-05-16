@@ -3,6 +3,7 @@
   "issues": [
     {
       "ref": "malformed-frontmatter/01",
+      "nn": "01",
       "status": "",
       "category": "",
       "type": "",

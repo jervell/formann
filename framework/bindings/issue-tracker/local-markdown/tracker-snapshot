@@ -22,15 +22,35 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
-# Resolve the tracker root. Tests pass TRACKER_ROOT explicitly.
-# Production consumer invocations (bare `tracker-snapshot ...` reached through
-# the role-surface symlink) walk $PWD upward for the `.formann` ancestor —
-# same shape build-image.sh uses to find HOST_REPO. Walking $PWD instead of
-# resolving relative to BASH_SOURCE is the only correct strategy: the role
-# surface entry point (`docs/formann/issue-tracker/`) is a directory symlink
-# into the framework checkout, so any `..` arithmetic from the script's path
-# would physically follow the symlink and land in the wrong namespace.
-if [ -n "${TRACKER_ROOT:-}" ]; then
+# Resolve the tracker root.
+#
+# Priority:
+#   1. SNAPSHOT_CHECKOUT_DIR — set by the runner when it wants committed state.
+#      Archive .features/ from that git repo's HEAD into a temp dir and use
+#      the temp dir as tracker_root. The runner's take_snapshot wrapper
+#      delegates the git-archive step here so the binding owns its "current
+#      state of the world" definition.
+#   2. TRACKER_ROOT — explicit override used by tests.
+#   3. PWD-walk — production consumer invocations (bare `tracker-snapshot …`
+#      reached through the role-surface symlink) walk $PWD upward for the
+#      `.formann` ancestor — same shape build-image.sh uses to find HOST_REPO.
+#      Walking $PWD instead of resolving relative to BASH_SOURCE is the only
+#      correct strategy: the role surface entry point
+#      (`docs/formann/issue-tracker/`) is a directory symlink into the
+#      framework checkout, so any `..` arithmetic from the script's path would
+#      physically follow the symlink and land in the wrong namespace.
+_snap_tmp=""
+if [ -n "${SNAPSHOT_CHECKOUT_DIR:-}" ]; then
+  _snap_tmp="$(mktemp -d -t tracker-snap.XXXXXX)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$_snap_tmp'" EXIT
+  if ! git -C "$SNAPSHOT_CHECKOUT_DIR" archive HEAD .features 2>/dev/null \
+       | tar -xC "$_snap_tmp" 2>/dev/null; then
+    echo "tracker-snapshot: failed to extract committed .features/ from $SNAPSHOT_CHECKOUT_DIR" >&2
+    exit 1
+  fi
+  tracker_root="$_snap_tmp/.features"
+elif [ -n "${TRACKER_ROOT:-}" ]; then
   tracker_root="$TRACKER_ROOT"
 else
   walk_dir="$PWD"
@@ -320,6 +340,7 @@ for ((i = 0; i < issue_count; i++)); do
 
   printf '{'
   printf '"ref":"%s",' "$(json_escape "$ref")"
+  printf '"nn":"%s",' "$(json_escape "$num")"
   printf '"status":"%s",' "$(json_escape "$status")"
   printf '"category":"%s",' "$(json_escape "$category")"
   printf '"type":"%s",' "$(json_escape "$type")"

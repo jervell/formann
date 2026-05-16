@@ -3,6 +3,7 @@
   "issues": [
     {
       "ref": "eligible-no-blockers/01",
+      "nn": "01",
       "status": "ready-for-agent",
       "category": "enhancement",
       "type": "AFK",

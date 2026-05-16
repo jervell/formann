@@ -324,15 +324,15 @@ setup_loop_test() {
       printf '{"feature":"f","issues":[]}'
       return 0
     fi
-    printf '{"feature":"f","issues":[{"ref":"%s","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' "$first"
+    printf '{"feature":"f","issues":[{"ref":"f/%s","nn":"%s","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' "$first" "$first"
   }
 
   ensure_runner_checkout() { :; }
   propagate_to_host() { :; }
 
   dispatch_one() {
-    local ref="$1"
-    echo "$ref" >>"$TEST_DISPATCHED_FILE"
+    local feature="$1" nn="$2"
+    echo "$feature/$nn" >>"$TEST_DISPATCHED_FILE"
     # Pop the head of the queue.
     local rest
     rest="$(tail -n +2 "$TEST_QUEUE_FILE" 2>/dev/null || true)"
@@ -380,7 +380,7 @@ plant_outcomes()   { printf '%s\n' "$@" >"$TEST_OUTCOMES_FILE"; }
 
 @test "run_loop — drains a 2-issue queue then stops on empty" {
   setup_loop_test
-  plant_queue f/01 f/02
+  plant_queue 01 02
 
   run run_loop
   assert_success
@@ -403,12 +403,12 @@ plant_outcomes()   { printf '%s\n' "$@" >"$TEST_OUTCOMES_FILE"; }
 
 @test "run_loop — interrupt mid-dispatch prevents further iterations" {
   setup_loop_test
-  plant_queue f/01 f/02 f/03
+  plant_queue 01 02 03
   # Intercept dispatch_one to flip the interrupt flag during the first
   # call — simulates Ctrl-C arriving during the in-flight container.
   dispatch_one() {
-    local ref="$1"
-    echo "$ref" >>"$TEST_DISPATCHED_FILE"
+    local feature="$1" nn="$2"
+    echo "$feature/$nn" >>"$TEST_DISPATCHED_FILE"
     local rest
     rest="$(tail -n +2 "$TEST_QUEUE_FILE" 2>/dev/null || true)"
     printf '%s\n' "$rest" >"$TEST_QUEUE_FILE"
@@ -438,7 +438,7 @@ plant_outcomes()   { printf '%s\n' "$@" >"$TEST_OUTCOMES_FILE"; }
   # the call in `if ! snap=…` and sets a distinct stop reason so SUMMARY.md
   # tells the operator what actually broke.
   setup_loop_test
-  plant_queue f/01
+  plant_queue 01
 
   take_snapshot() {
     echo "runner: simulated tracker-snapshot failure" >&2
@@ -459,7 +459,7 @@ plant_outcomes()   { printf '%s\n' "$@" >"$TEST_OUTCOMES_FILE"; }
 
 @test "run_loop — interrupt at the top of an iteration bails before dispatch" {
   setup_loop_test
-  plant_queue f/01 f/02
+  plant_queue 01 02
   RUNNER_INTERRUPTED=1
 
   run run_loop
@@ -577,9 +577,9 @@ setup_dispatch_one_test() {
     phase="$(cat "$TEST_SNAPSHOT_PHASE")"
     if [ "$phase" = "pre" ]; then
       echo "post" >"$TEST_SNAPSHOT_PHASE"
-      printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
     else
-      printf '{"feature":"f","issues":[{"ref":"f/01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
     fi
   }
 
@@ -621,14 +621,14 @@ install_afk_snapshots() {
     case "$phase" in
       pre)
         echo "post-implement" >"$TEST_SNAPSHOT_PHASE"
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
         ;;
       post-implement)
         echo "post-gate" >"$TEST_SNAPSHOT_PHASE"
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
         ;;
       post-gate)
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"%s","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}' \
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"%s","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}' \
           "$TEST_POST_GATE_STATUS"
         ;;
     esac
@@ -647,7 +647,7 @@ install_afk_snapshots() {
 
   RUNNER_LAST_OUTCOME=""
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -666,7 +666,7 @@ install_afk_snapshots() {
   setup_dispatch_one_test
   propagate_to_host() { return 1; }
 
-  run dispatch_one "f/01" "$TEST_RUN_DIR"
+  run dispatch_one "f" "01" "$TEST_RUN_DIR"
 
   [ "$status" -ne 0 ]
   # Original outcome line preserved — implement step itself succeeded.
@@ -694,7 +694,7 @@ install_afk_snapshots() {
   }
   run_gate_container() { return 0; }
 
-  run dispatch_one "f/01" "$TEST_RUN_DIR"
+  run dispatch_one "f" "01" "$TEST_RUN_DIR"
 
   [ "$status" -ne 0 ]
   assert_output --partial "review → clean → done"
@@ -769,10 +769,10 @@ setup_loop_halt_test() {
     echo $((n + 1)) >"$SNAP_CALL_FILE"
     case "$n" in
       0|1)
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
         ;;
       *)
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
         ;;
     esac
   }
@@ -824,13 +824,13 @@ setup_loop_halt_test() {
     echo $((n + 1)) >"$SNAP_CALL_FILE"
     case "$n" in
       0|1)
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
         ;;
       2)
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
         ;;
       *)
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"done","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"done","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
         ;;
     esac
   }
@@ -893,15 +893,13 @@ setup_loop_halt_test() {
   RUN_DISPATCHES=()
   RUN_STOP_REASON=""
 
-  SNAP_CALL_FILE="$BATS_TEST_TMPDIR/snap-calls"
-  echo 0 >"$SNAP_CALL_FILE"
   take_snapshot() {
     echo "runner: simulated tracker-snapshot failure" >&2
     return 1
   }
 
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR" 2>/dev/null
+  dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
   local rc=$?
   set -e
 
@@ -923,7 +921,7 @@ setup_loop_halt_test() {
     n="$(cat "$SNAP_CALL_FILE")"
     echo $((n + 1)) >"$SNAP_CALL_FILE"
     if [ "$n" -eq 0 ]; then
-      printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
       return 0
     fi
     echo "runner: simulated tracker-snapshot failure" >&2
@@ -931,7 +929,7 @@ setup_loop_halt_test() {
   }
 
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR" 2>/dev/null
+  dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
   local rc=$?
   set -e
 
@@ -955,11 +953,11 @@ setup_loop_halt_test() {
     echo $((n + 1)) >"$SNAP_CALL_FILE"
     case "$n" in
       0)
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
         return 0
         ;;
       1)
-        printf '{"feature":"f","issues":[{"ref":"f/01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
         return 0
         ;;
       *)
@@ -979,7 +977,7 @@ setup_loop_halt_test() {
   run_gate_container() { return 0; }
 
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR" 2>/dev/null
+  dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
   local rc=$?
   set -e
 
@@ -1023,8 +1021,9 @@ setup_run_single_test() {
   setup_run_single_test
   ARG_ISSUE_REF="f/01"
   ISSUE_FEATURE="f"
+  ISSUE_NN="01"
   take_snapshot() {
-    printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"HITL","blocked_by":[],"eligible":false}]}'
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"HITL","blocked_by":[],"eligible":false}]}'
   }
 
   set +e
@@ -1044,8 +1043,9 @@ setup_run_single_test() {
   setup_run_single_test
   ARG_ISSUE_REF="f/01"
   ISSUE_FEATURE="f"
+  ISSUE_NN="01"
   take_snapshot() {
-    printf '{"feature":"f","issues":[{"ref":"f/01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
   }
 
   set +e
@@ -1064,8 +1064,9 @@ setup_run_single_test() {
   setup_run_single_test
   ARG_ISSUE_REF="f/99"
   ISSUE_FEATURE="f"
+  ISSUE_NN="99"
   take_snapshot() {
-    printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
   }
 
   set +e
@@ -1084,8 +1085,9 @@ setup_run_single_test() {
   setup_run_single_test
   ARG_ISSUE_REF="f/01"
   ISSUE_FEATURE="f"
+  ISSUE_NN="01"
   take_snapshot() {
-    printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
   }
 
   set +e
@@ -1272,7 +1274,7 @@ setup_eligibility_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -1307,7 +1309,7 @@ setup_eligibility_test() {
   run_gate_container() { return 0; }
 
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   set -e
 
   [ "$(wc -l <"$TEST_PROPAGATE_ARGS" | tr -d ' ')" = "2" ]
@@ -1333,7 +1335,7 @@ setup_eligibility_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -1363,7 +1365,7 @@ setup_eligibility_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -1389,7 +1391,7 @@ setup_eligibility_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -1425,7 +1427,7 @@ setup_eligibility_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -1462,7 +1464,7 @@ setup_eligibility_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -1628,10 +1630,10 @@ afk-runner/05|FAIL|3|'
     phase="$(cat "$TEST_SNAPSHOT_PHASE")"
     if [ "$phase" = "pre" ]; then
       echo "post" >"$TEST_SNAPSHOT_PHASE"
-      printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
     else
       # Status didn't move — classifier should call this failure.
-      printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
     fi
   }
 
@@ -1649,7 +1651,7 @@ afk-runner/05|FAIL|3|'
 
   RUNNER_LAST_OUTCOME=""
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -1682,7 +1684,7 @@ afk-runner/05|FAIL|3|'
     if [ "$phase" = "pre" ]; then
       echo "post" >"$TEST_SNAPSHOT_PHASE"
     fi
-    printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
   }
 
   # Mirror an /implement bail: comment-only `tracker:` commit lands.
@@ -1702,7 +1704,7 @@ afk-runner/05|FAIL|3|'
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -1725,7 +1727,7 @@ afk-runner/05|FAIL|3|'
     if [ "$phase" = "pre" ]; then
       echo "post" >"$TEST_SNAPSHOT_PHASE"
     fi
-    printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
   }
 
   run_dispatch_container() {
@@ -1744,7 +1746,7 @@ afk-runner/05|FAIL|3|'
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
@@ -1771,7 +1773,8 @@ setup_loop_output_test() {
   # The loop's mock dispatch_one only sets RUNNER_LAST_OUTCOME. Layer on
   # record_dispatch so the records make it into RUN_DISPATCHES.
   dispatch_one() {
-    local ref="$1"
+    local feature="$1" nn="$2"
+    local ref="$feature/$nn"
     echo "$ref" >>"$TEST_DISPATCHED_FILE"
     local rest
     rest="$(tail -n +2 "$TEST_QUEUE_FILE" 2>/dev/null || true)"
@@ -1806,13 +1809,13 @@ setup_loop_output_test() {
 
 @test "run_loop + finalize_run — drains queue, writes SUMMARY.md, prints stdout table" {
   setup_loop_output_test
-  plant_queue f/01 f/02
+  plant_queue 01 02
 
   run bash -c '
     source "'"$RUNNER_SCRIPT"'"
     '"$(declare -f setup_loop_test setup_loop_output_test plant_queue plant_outcomes)"'
     setup_loop_output_test
-    plant_queue f/01 f/02
+    plant_queue 01 02
     run_loop
     finalize_run
   '
@@ -1942,7 +1945,7 @@ setup_abort_test() {
   local flag_file="$flag_dir/01"
   local log_path="$HOST_REPO/.runner-state/runs/20260507-141233/01.log"
 
-  write_abort_flag "f/01" "implement" 137 "$log_path"
+  write_abort_flag "f" "01" "implement" 137 "$log_path"
 
   [ -f "$flag_file" ]
   grep -q '^type: technical$' "$flag_file"
@@ -1955,7 +1958,7 @@ setup_abort_test() {
 @test "write_abort_flag — gate dispatch stores dispatch: gate" {
   setup_abort_test
   local flag_file="$HOST_ABORT_DIR/f/01"
-  write_abort_flag "f/01" "gate" 0 "$HOST_REPO/.runner-state/runs/ts/01-review.log"
+  write_abort_flag "f" "01" "gate" 0 "$HOST_REPO/.runner-state/runs/ts/01-review.log"
   grep -q '^dispatch: gate$' "$flag_file"
 }
 
@@ -1964,13 +1967,13 @@ setup_abort_test() {
   local flag_file="$HOST_ABORT_DIR/f/01"
   local log="$HOST_REPO/.runner-state/runs/ts/01.log"
 
-  write_abort_flag "f/01" "implement" 137 "$log"
+  write_abort_flag "f" "01" "implement" 137 "$log"
   local first_at
   first_at="$(grep '^at:' "$flag_file")"
 
   # Small sleep so timestamp differs.
   sleep 1
-  write_abort_flag "f/01" "implement" 1 "$log"
+  write_abort_flag "f" "01" "implement" 1 "$log"
   local second_at
   second_at="$(grep '^at:' "$flag_file")"
 
@@ -1982,7 +1985,7 @@ setup_abort_test() {
 @test "write_abort_flag — log path is repo-relative" {
   setup_abort_test
   local flag_file="$HOST_ABORT_DIR/f/01"
-  write_abort_flag "f/01" "implement" 0 "$HOST_REPO/.runner-state/runs/ts/01.log"
+  write_abort_flag "f" "01" "implement" 0 "$HOST_REPO/.runner-state/runs/ts/01.log"
   grep -q '^log: .runner-state/' "$flag_file"
   # Must not contain the absolute host-repo prefix.
   local log_line
@@ -2000,7 +2003,7 @@ setup_abort_test() {
     if [ "$phase" = "pre" ]; then
       echo "post" >"$TEST_SNAPSHOT_PHASE"
     fi
-    printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
   }
   run_dispatch_container() { return 0; }
   propagate_to_host() { return 0; }
@@ -2008,7 +2011,7 @@ setup_abort_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   set -e
 
   [ -f "$HOST_ABORT_DIR/f/01" ]
@@ -2024,9 +2027,9 @@ setup_abort_test() {
     phase="$(cat "$TEST_SNAPSHOT_PHASE")"
     if [ "$phase" = "pre" ]; then
       echo "post" >"$TEST_SNAPSHOT_PHASE"
-      printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
     else
-      printf '{"feature":"f","issues":[{"ref":"f/01","status":"needs-info","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"needs-info","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
     fi
   }
   run_dispatch_container() {
@@ -2039,7 +2042,7 @@ setup_abort_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   set -e
 
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
@@ -2055,7 +2058,7 @@ setup_abort_test() {
     if [ "$phase" = "pre" ]; then
       echo "post" >"$TEST_SNAPSHOT_PHASE"
     fi
-    printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
   }
   run_dispatch_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
@@ -2067,7 +2070,7 @@ setup_abort_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   set -e
 
   [ -f "$HOST_ABORT_DIR/f/01" ]
@@ -2084,7 +2087,7 @@ setup_abort_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   set -e
 
   [ -f "$HOST_ABORT_DIR/f/01" ]
@@ -2109,7 +2112,7 @@ setup_abort_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   set -e
 
   [ -f "$HOST_ABORT_DIR/f/01" ]
@@ -2130,7 +2133,7 @@ setup_abort_test() {
     if [ "$phase" = "pre" ]; then
       echo "post" >"$TEST_SNAPSHOT_PHASE"
     fi
-    printf '{"feature":"f","issues":[{"ref":"f/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
   }
   # Simulate the signal trap firing: RUNNER_INTERRUPTED is set and the
   # container exits with SIGTERM's conventional code.
@@ -2144,7 +2147,7 @@ setup_abort_test() {
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
-  dispatch_one "f/01" "$TEST_RUN_DIR"
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
   set -e
 
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
@@ -2153,27 +2156,27 @@ setup_abort_test() {
 @test "run_loop — aborted ref is skipped with rm recipe in stdout" {
   setup_loop_test
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
-  plant_queue f/01 f/02
+  plant_queue 01 02
 
   # Override take_snapshot to return ALL remaining queue items as eligible
-  # so the abort filter can skip f/01 and still find f/02.
+  # so the abort filter can skip 01 and still find 02.
   take_snapshot() {
-    local issues="" ref
-    while IFS= read -r ref; do
-      [ -z "$ref" ] && continue
+    local issues="" nn
+    while IFS= read -r nn; do
+      [ -z "$nn" ] && continue
       [ -n "$issues" ] && issues="$issues,"
-      issues="${issues}{\"ref\":\"$ref\",\"status\":\"ready-for-agent\",\"category\":\"enhancement\",\"type\":\"AFK\",\"blocked_by\":[],\"eligible\":true}"
+      issues="${issues}{\"ref\":\"f/$nn\",\"nn\":\"$nn\",\"status\":\"ready-for-agent\",\"category\":\"enhancement\",\"type\":\"AFK\",\"blocked_by\":[],\"eligible\":true}"
     done <"$TEST_QUEUE_FILE"
     printf '{"feature":"f","issues":[%s]}' "$issues"
   }
 
-  # Override dispatch_one to pop the DISPATCHED ref from the queue (not the
-  # head), so skipping f/01 doesn't cause f/02 to be dispatched twice.
+  # Override dispatch_one to pop the DISPATCHED nn from the queue (not the
+  # head), so skipping 01 doesn't cause 02 to be dispatched twice.
   dispatch_one() {
-    local ref="$1"
-    echo "$ref" >>"$TEST_DISPATCHED_FILE"
+    local feature="$1" nn="$2"
+    echo "$feature/$nn" >>"$TEST_DISPATCHED_FILE"
     local remaining
-    remaining="$(grep -v "^${ref}$" "$TEST_QUEUE_FILE" 2>/dev/null || true)"
+    remaining="$(grep -v "^${nn}$" "$TEST_QUEUE_FILE" 2>/dev/null || true)"
     printf '%s\n' "$remaining" >"$TEST_QUEUE_FILE"
     [ -s "$TEST_QUEUE_FILE" ] || : >"$TEST_QUEUE_FILE"
     RUNNER_LAST_OUTCOME="success"
@@ -2198,7 +2201,7 @@ setup_abort_test() {
 @test "run_loop — all eligible refs aborted → queue empty" {
   setup_loop_test
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
-  plant_queue f/01
+  plant_queue 01
 
   mkdir -p "$HOST_ABORT_DIR/f"
   printf 'type: technical\ndispatch: implement\nat: 2026-05-07T10:00:00Z\nexit: 0\nlog: .runner-state/runs/ts/01.log\n' \
@@ -2213,19 +2216,19 @@ setup_abort_test() {
 @test "run_loop — rm abort flag re-includes ref on next iteration" {
   setup_loop_test
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
-  plant_queue f/01
+  plant_queue 01
 
   mkdir -p "$HOST_ABORT_DIR/f"
   printf 'type: technical\ndispatch: implement\nat: 2026-05-07T10:00:00Z\nexit: 0\nlog: .runner-state/runs/ts/01.log\n' \
     >"$HOST_ABORT_DIR/f/01"
 
-  # Override dispatch_one to remove the abort flag and push f/01 back onto
+  # Override dispatch_one to remove the abort flag and push 01 back onto
   # the queue so the loop sees it as eligible again on the next iteration.
   TEST_ITER_FILE="$BATS_TEST_TMPDIR/iter"
   echo 0 >"$TEST_ITER_FILE"
   dispatch_one() {
-    local ref="$1"
-    echo "$ref" >>"$TEST_DISPATCHED_FILE"
+    local feature="$1" nn="$2"
+    echo "$feature/$nn" >>"$TEST_DISPATCHED_FILE"
     local iter
     iter="$(cat "$TEST_ITER_FILE")"
     echo $((iter + 1)) >"$TEST_ITER_FILE"
@@ -2238,7 +2241,7 @@ setup_abort_test() {
   }
 
   # Start with the flag present — first pass: f/01 should be skipped.
-  # Then remove the flag and plant f/01 again.
+  # Then remove the flag and plant 01 again.
   # (This test drives a single loop iteration and verifies skip happens,
   #  then simulates removal by running run_loop a second time without the flag.)
 
@@ -2250,7 +2253,7 @@ setup_abort_test() {
 
   # Remove the flag and run again.
   rm "$HOST_ABORT_DIR/f/01"
-  plant_queue f/01
+  plant_queue 01
   : >"$TEST_DISPATCHED_FILE"
 
   run run_loop
@@ -2677,7 +2680,7 @@ setup_drain_test() {
       # Empty queue — no eligible refs.
       printf '{"feature":"%s","issues":[]}' "$feature"
     else
-      printf '{"feature":"%s","issues":[{"ref":"%s/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' "$feature" "$feature"
+      printf '{"feature":"%s","issues":[{"ref":"%s/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' "$feature" "$feature"
     fi
   }
   ensure_mvn_cache_for() {
@@ -2844,12 +2847,12 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   BETA_DRAINED_FILE="$BATS_TEST_TMPDIR/beta-drained"
   : >"$BETA_DRAINED_FILE"
   dispatch_one() {
-    local ref="$1"
-    if [[ "$ref" == alpha/* ]]; then
-      echo "dispatch_one unexpectedly invoked for $ref" >"$BATS_TEST_TMPDIR/alpha-dispatch-leak"
+    local feature="$1" nn="$2"
+    if [ "$feature" = "alpha" ]; then
+      echo "dispatch_one unexpectedly invoked for alpha/$nn" >"$BATS_TEST_TMPDIR/alpha-dispatch-leak"
       return 1
     fi
-    echo "$ref" >>"$BETA_DRAINED_FILE"
+    echo "$feature/$nn" >>"$BETA_DRAINED_FILE"
     RUNNER_LAST_OUTCOME="success"
     return 0
   }
@@ -2863,7 +2866,7 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
       printf '{"feature":"beta","issues":[]}'
       return 0
     fi
-    printf '{"feature":"%s","issues":[{"ref":"%s/01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' "$feature" "$feature"
+    printf '{"feature":"%s","issues":[{"ref":"%s/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' "$feature" "$feature"
   }
 
   # Real run_loop needs HOST_CHECKOUT defined for the wrapper's diagnostic;
@@ -3278,4 +3281,104 @@ _setup_mount_capture() {
   grep -qFx -- "$HOST_REPO/.claude/skills:/repo/.claude/skills:ro" "$args_file"
   grep -qFx -- "$HOST_REPO/.claude/agents:/repo/.claude/agents:ro" "$args_file"
   grep -qFx -- "$HOST_REPO/.claude/rules:/repo/.claude/rules:ro" "$args_file"
+}
+
+# === binding_native_ref — pure lookup =========================================
+#
+# Binding-agnostic ref resolution: given (feature, nn, snapshot_json), returns
+# the binding-native ref from the snapshot's `ref` field. The ref shape varies
+# by binding (local-markdown: `feature/NN`; github-issues: `#N`). This is the
+# single source of truth for nn → native ref resolution in the runner.
+
+@test "binding_native_ref — returns correct ref for local-markdown-shaped snapshot" {
+  local snap='{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  result="$(binding_native_ref "f" "01" "$snap")"
+  [ "$result" = "f/01" ]
+}
+
+@test "binding_native_ref — returns correct ref for github-issues-shaped snapshot" {
+  local snap='{"feature":"f","issues":[{"ref":"#42","nn":"42","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  result="$(binding_native_ref "f" "42" "$snap")"
+  [ "$result" = "#42" ]
+}
+
+@test "binding_native_ref — fails with non-zero exit and stderr message for unknown (feature, N)" {
+  local snap='{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  run binding_native_ref "f" "99" "$snap"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"binding_native_ref"* ]]
+  [[ "$output" == *"not found"* ]]
+}
+
+@test "binding_native_ref — picks the right ref when snapshot has multiple issues" {
+  local snap='{"feature":"f","issues":[
+    {"ref":"#10","nn":"10","status":"done","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false},
+    {"ref":"#42","nn":"42","status":"ready-for-agent","category":"bug","type":"AFK","blocked_by":[],"eligible":true}
+  ]}'
+  result="$(binding_native_ref "f" "10" "$snap")"
+  [ "$result" = "#10" ]
+  result="$(binding_native_ref "f" "42" "$snap")"
+  [ "$result" = "#42" ]
+}
+
+# === dispatch_one — GH-shaped ref plumbing ====================================
+#
+# Verifies that dispatch_one resolves the binding-native ref via
+# binding_native_ref and forwards it to the dispatch container and classifier
+# without regex-parsing. The ref shape "#N" (github-issues binding) differs
+# from the local-markdown "feature/NN" shape — both must work identically.
+
+@test "dispatch_one — GH-shaped binding-native ref forwarded to dispatch container and classifier" {
+  setup_dispatch_one_test
+  # Override snapshots to use GH-style refs: ref="#42", nn="42".
+  local snap_phase_file="$TEST_SNAPSHOT_PHASE"
+  echo "pre" >"$snap_phase_file"
+  take_snapshot() {
+    local phase
+    phase="$(cat "$snap_phase_file")"
+    case "$phase" in
+      pre)
+        echo "post-implement" >"$snap_phase_file"
+        printf '{"feature":"f","issues":[{"ref":"#42","nn":"42","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+        ;;
+      post-implement)
+        echo "post-gate" >"$snap_phase_file"
+        printf '{"feature":"f","issues":[{"ref":"#42","nn":"42","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+        ;;
+      post-gate)
+        printf '{"feature":"f","issues":[{"ref":"#42","nn":"42","status":"done","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+        ;;
+    esac
+  }
+
+  # Capture the ref that run_dispatch_container and run_gate_container receive.
+  TEST_DISPATCH_REF="$BATS_TEST_TMPDIR/dispatch-ref"
+  TEST_GATE_REF="$BATS_TEST_TMPDIR/gate-ref"
+  run_dispatch_container() {
+    printf '%s' "$1" >"$TEST_DISPATCH_REF"
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: #42 (test)"
+    return 0
+  }
+  run_gate_container() {
+    printf '%s' "$1" >"$TEST_GATE_REF"
+    return 0
+  }
+  propagate_to_host() { return 0; }
+
+  RUNNER_LAST_OUTCOME=""
+  RUN_DISPATCHES=()
+  set +e
+  dispatch_one "f" "42" "$TEST_RUN_DIR"
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$RUNNER_LAST_OUTCOME" = "success" ]
+  # The binding-native ref "#42" was forwarded to both dispatch stages.
+  [ "$(cat "$TEST_DISPATCH_REF")" = "#42" ]
+  [ "$(cat "$TEST_GATE_REF")" = "#42" ]
+  # record_dispatch uses the native ref "#42".
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == "#42|done|"* ]]
 }
