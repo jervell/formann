@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+###
+### body-edit — section-level body splicer for the github-issues binding.
+###
+### Usage: body-edit <issue-number> <section-heading> <new-content-file>
+###
+###   <issue-number>      GitHub issue number (integer).
+###   <section-heading>   The section heading text WITHOUT the leading "## ".
+###   <new-content-file>  File containing the replacement content for the
+###                       section (the text under the heading, NOT including
+###                       the heading line itself).  Pass /dev/null or an
+###                       empty file to delete the section entirely.
+###
+### NOTE — whole-body write mechanics:
+###   Although the intent is section-level, this script writes the entire
+###   issue body back on every call.
+###     Step 1: fetch the current body via `gh issue view --json body`.
+###     Step 2: locate the target `## <heading>` line in memory.
+###     Step 3: replace content from that heading to the next `## ` heading
+###             (exclusive) or end of body with the new content; if the
+###             heading is absent, append it at the end; if new content is
+###             empty, remove the section (heading + old content).
+###     Step 4: PATCH the full body back via `gh issue edit --body-file`.
+###
+###   Consequence: a concurrent web-UI edit to ANY section of the body
+###   between the fetch (step 1) and the write (step 4) will be silently
+###   clobbered.  See BINDING.md §"Body-shaped write semantics" for the
+###   documented race and guidance to maintainers.
+###
+### Bash 3.2 compatible.
+###
+
+set -eu
+set -o pipefail
+
+# ── Prerequisites ─────────────────────────────────────────────────────────────
+if ! command -v gh >/dev/null 2>&1; then
+  echo "body-edit: 'gh' CLI not found in PATH." >&2
+  exit 2
+fi
+
+if [ "$#" -ne 3 ]; then
+  echo "usage: body-edit <issue-number> <section-heading> <new-content-file>" >&2
+  exit 2
+fi
+
+_issue_num="$1"
+_section_heading="$2"
+_new_content_file="$3"
+
+# ── Validate arguments ────────────────────────────────────────────────────────
+if ! printf '%s' "$_issue_num" | grep -qE '^[0-9]+$'; then
+  echo "body-edit: issue number must be a positive integer, got: $_issue_num" >&2
+  exit 2
+fi
+
+if [ ! -e "$_new_content_file" ]; then
+  echo "body-edit: new-content file not found: $_new_content_file" >&2
+  exit 2
+fi
+
+# ── Determine operation mode ──────────────────────────────────────────────────
+# Empty file or /dev/null signals "delete the section".
+_delete_section=0
+if [ ! -s "$_new_content_file" ]; then
+  _delete_section=1
+fi
+
+# ── Fetch current body ────────────────────────────────────────────────────────
+_body="$(gh issue view "$_issue_num" --json body -q '.body // ""')"
+
+# ── Splice body in memory, write result to a temp file ───────────────────────
+_tmp_out="$(mktemp /tmp/body-edit-XXXXXX)"
+trap 'rm -f "$_tmp_out"' EXIT
+
+_heading_line="## ${_section_heading}"
+
+# New content is passed to awk via the file path (not -v) to avoid awk's
+# -v escape-sequence processing mangling backslashes or multiline content.
+printf '%s' "$_body" | awk \
+  -v heading="$_heading_line" \
+  -v content_file="$_new_content_file" \
+  -v delete_section="$_delete_section" \
+  'BEGIN {
+    found         = 0
+    in_section    = 0
+    body_nonempty = 0
+    new_content   = ""
+    first_line    = 1
+    while ((getline cline < content_file) > 0) {
+      if (!first_line) new_content = new_content "\n"
+      new_content = new_content cline
+      first_line  = 0
+    }
+    close(content_file)
+  }
+  {
+    body_nonempty = 1
+
+    if (!in_section && $0 == heading) {
+      found      = 1
+      in_section = 1
+      if (!delete_section) {
+        print heading
+        if (new_content != "") print new_content
+      }
+      next
+    }
+
+    if (in_section) {
+      if ($0 ~ /^## /) {
+        in_section = 0
+        # fall through: print the next section heading below
+      } else {
+        next
+      }
+    }
+
+    print
+  }
+  END {
+    # Section was absent and we have content to add — append it.
+    if (!found && !delete_section && new_content != "") {
+      if (body_nonempty) print ""
+      print heading
+      print new_content
+    }
+  }' > "$_tmp_out"
+
+# ── Write back to GitHub ──────────────────────────────────────────────────────
+gh issue edit "$_issue_num" --body-file "$_tmp_out"

@@ -161,9 +161,29 @@ Exit codes:
 
 The script never makes a live API call in CI if the shim intercepts all `gh` calls. Test fixtures live under `framework/bindings/issue-tracker/github-issues/tests/fixtures/<scenario>/recorded-responses/`.
 
-## Body-edit residual race
+## Body-shaped write semantics
 
-*(stub — to be filled in by a later slice)*
+`body-edit` operates section-level in intent, but the write is whole-body in
+mechanics. It fetches the current body via `gh issue view --json body`, locates
+the target `## <section>` heading in memory, replaces from there to the next
+`## ` heading (exclusive) or end of body, and PATCHes the entire body back via
+`gh issue edit --body-file`.
+
+**Residual race:** A concurrent web-UI edit to **any** section of the body
+between the fetch and the write gets silently clobbered. There is no engineered
+mitigation — GitHub provides no optimistic-concurrency primitive on issue
+bodies.
+
+The window's practical impact depends on who is running the skill:
+
+- **AFK runner** (narrow window, maintainer away): the race is rare in
+  practice. The fetch-to-write round trip is seconds.
+- **Interactive `/triage`** (wide window, maintainer at keyboard): the race is
+  plausible. A maintainer hand-editing the same issue body in the GitHub UI
+  while `/triage` is computing can lose their edit.
+
+**Guidance for maintainers:** do not hand-edit an issue body in the GitHub UI
+while a Formann skill is running on that issue.
 
 ## Sandbox compatibility
 
