@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Idempotent install-time script: creates the static Formann label namespace
+# via `gh label create --force`. Re-running is harmless — --force updates
+# existing labels in place.
+#
+# Run once per Consumer repo before first use:
+#   bash framework/bindings/issue-tracker/github-issues/bootstrap-labels
+#
+# Prerequisites: gh CLI installed and authenticated (GH_TOKEN or gh auth login).
+
+set -euo pipefail
+
+# --- auth guard ------------------------------------------------------------
+
+if ! command -v gh &>/dev/null; then
+  cat >&2 <<MSG
+bootstrap-labels: 'gh' CLI not found or not in PATH.
+
+Install from https://cli.github.com, then authenticate:
+  gh auth login
+MSG
+  exit 1
+fi
+
+if [[ -z "${GH_TOKEN:-}" ]] && ! gh auth status &>/dev/null 2>&1; then
+  cat >&2 <<MSG
+bootstrap-labels: not authenticated with GitHub.
+
+To authenticate, either:
+  1. Set GH_TOKEN to a personal access token with 'repo' scope, or
+  2. Run: gh auth login
+
+Then re-run this script.
+MSG
+  exit 1
+fi
+
+# --- label creation --------------------------------------------------------
+
+create_label() {
+  local name="$1" color="$2" description="$3"
+  gh label create --force --name "$name" --color "$color" --description "$description"
+}
+
+# Feature lifecycle
+create_label "formann:feature"  "0075ca" "Issue belongs to an active Formann feature"
+create_label "formann:archived" "e4e669" "Issue belongs to an archived Formann feature"
+
+# Status (no formann:status:done — terminal done uses closed+state_reason=completed)
+create_label "formann:status:needs-triage"    "d93f0b" "Status: needs-triage"
+create_label "formann:status:needs-info"      "e4e669" "Status: needs-info"
+create_label "formann:status:ready-for-agent" "0e8a16" "Status: ready-for-agent"
+create_label "formann:status:ready-for-human" "1d76db" "Status: ready-for-human"
+create_label "formann:status:in-review"       "5319e7" "Status: in-review"
+create_label "formann:status:wontfix"         "ffffff" "Status: wontfix"
+
+# Category
+create_label "formann:category:bug"         "d93f0b" "Category: bug"
+create_label "formann:category:enhancement" "0075ca" "Category: enhancement"
+
+# Type
+create_label "formann:type:afk"  "bfd4f2" "Type: AFK (agent runs to completion)"
+create_label "formann:type:hitl" "d4c5f9" "Type: HITL (human-in-the-loop gates)"
