@@ -63,6 +63,65 @@ Append a comment to the issue's timeline. Timeline-shaped: append-only, history 
 
 **GitHub-issues realization:** *(stub — to be filled in by a later slice)*
 
+### Create a feature
+
+Create a new feature: validate the slug, check for uniqueness, create the slug label on demand, publish the parent issue, and set up the feature branch. This is `/to-prd`'s entry point and the first verb that writes to GitHub. One logical operation performed in four steps, with a pre-flight slug-length check before any API call.
+
+**GitHub-issues realization:**
+
+**Pre-flight — slug-length validation.** The GitHub label name cap is 50 characters; `formann:slug:` occupies 13, leaving at most 37 characters for the slug. Before any API call, validate the slug length:
+
+```
+if [ ${#slug} -gt 37 ]; then
+  echo "Error: slug \"$slug\" is ${#slug} characters; the github-issues binding limits slugs to 37 characters (github labels are capped at 50; \"formann:slug:\" occupies 13)." >&2
+  exit 1
+fi
+```
+
+If the slug is too long, refuse immediately with a clear error. No labels are created and no issues are opened.
+
+**Step 1 — Pre-flight uniqueness check.** Run:
+
+```bash
+gh issue list --label "formann:slug:<slug>" --state all --json number,title
+```
+
+`--state all` returns both open and closed issues, so re-using an archived slug is also caught. If the command returns any results, the slug is already in use. Refuse with a clear error naming the existing issue:
+
+```
+Error: slug "<slug>" is already in use by issue #<N> ("<title>").
+Choose a different slug.
+```
+
+No labels are created and no parent issue is opened.
+
+**Step 2 — On-demand slug-label creation.** Run:
+
+```bash
+gh label create "formann:slug:<slug>" --force
+```
+
+`--force` makes this idempotent: if the label already exists from a prior aborted attempt, the command succeeds without error. The static label namespace (`formann:feature`, `formann:status:*`, etc.) is assumed pre-created via `bootstrap-labels`.
+
+**Step 3 — Parent issue creation.** Run:
+
+```bash
+gh issue create \
+  --title "<title>" \
+  --body @prd.md \
+  --label "formann:feature,formann:slug:<slug>"
+```
+
+The title goes in GitHub's native title field. The PRD content (`@prd.md`) goes in the issue body verbatim. `# Title` is **not** duplicated inside the body. The parent issue carries both `formann:feature` and `formann:slug:<slug>` labels.
+
+**Step 4 — Feature branch creation.** Create and switch to the feature branch (slug → branch name):
+
+- If HEAD is not the project's main branch, warn the maintainer and confirm before branching.
+- If the working tree is dirty, ask the maintainer how to proceed before branching.
+- Create a git branch named with the feature slug from the current HEAD and switch to it.
+
+This step is binding-agnostic and follows the same convention as the local-markdown binding.
+
 ## Snapshot contract
 
 `tracker-snapshot` is the machine-readable interface for the github-issues binding. It requires `jq` on PATH. Usage:
@@ -214,7 +273,12 @@ The runner's sandbox network (`afk-runner-sandbox`) restricts RFC1918 outbound b
 
 ## Hard limits
 
-*(stub — to be filled in by a later slice)*
+| Limit | Value | Failure mode | Workaround |
+|---|---|---|---|
+| Sub-issues per parent | 100 | `gh api graphql` returns an error when the 101st sub-issue is linked | Split the feature into sibling features before reaching the cap; do not extend via nesting |
+| Sub-issue nesting levels | 8 | GitHub silently drops the link beyond 8 levels | Irrelevant in practice — Formann uses 1 level (feature → slices) |
+| Label name length | 50 chars | `gh label create` fails with HTTP 422; `gh issue create --label` fails with HTTP 422 | `/to-prd` validates slug length ≤ 37 characters at the pick step before any API call (see [Create a feature](#create-a-feature)); `formann:slug:` occupies 13 of the 50 characters |
+| Issue body length | 65,536 chars | `gh issue create` / `gh issue edit` truncates or fails with HTTP 422 | Split large PRD content into a comment thread or a linked design doc |
 
 ## GitHub Enterprise (GHE) prerequisite
 
