@@ -1,0 +1,13 @@
+{
+  "feature": "single-issue-feature",
+  "issues": [
+    {
+      "ref": "#42",
+      "status": "ready-for-agent",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": true
+    }
+  ]
+}

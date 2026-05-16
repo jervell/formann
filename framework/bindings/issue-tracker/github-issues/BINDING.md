@@ -31,7 +31,7 @@ Read the full content of an issue: its metadata, body sections (title, what to b
 
 Return the set of issues in a feature with their metadata (ref, status, category, type, blocked-by).
 
-**GitHub-issues realization:** *(stub — to be filled in by a later slice)*
+**GitHub-issues realization:** Run `tracker-snapshot <slug>` to get the full snapshot for one feature (parent + all sub-issues). Run `tracker-snapshot --list` to enumerate all active feature slugs. Both forms emit JSON byte-compatible with the local-markdown binding's schema; only the `ref` value format differs (`#N` here, `<feature>/NN` there). See the [Snapshot contract](#snapshot-contract) section for the full schema, ordering rules, blocker resolution, slug-uniqueness cardinality handling, and transient-failure behaviour.
 
 ### Set the state to `<state>`
 
@@ -65,7 +65,101 @@ Append a comment to the issue's timeline. Timeline-shaped: append-only, history 
 
 ## Snapshot contract
 
-*(stub — to be filled in by a later slice)*
+`tracker-snapshot` is the machine-readable interface for the github-issues binding. It requires `jq` on PATH. Usage:
+
+```
+tracker-snapshot --list
+tracker-snapshot <feature-slug>
+```
+
+Override the GitHub repo via `GH_TRACKER_REPO=owner/repo` (used by tests; production auto-detects from the `origin` git remote).
+
+### JSON schema
+
+Both invocation forms emit JSON byte-compatible with the local-markdown binding. Only the `ref` field's *value format* differs by binding.
+
+**`tracker-snapshot <slug>`** emits one object:
+
+```json
+{
+  "feature": "<slug>",
+  "issues": [
+    {
+      "ref":        "#N",
+      "status":     "ready-for-agent",
+      "category":   "enhancement",
+      "type":       "AFK",
+      "blocked_by": ["#5", "#8"],
+      "eligible":   true
+    }
+  ]
+}
+```
+
+**`tracker-snapshot --list`** emits a JSON array of feature slug strings:
+
+```json
+["alpha-feature", "beta-feature"]
+```
+
+Field notes:
+
+- `ref` — GitHub's native `#N` (the sub-issue's issue number, with `#` prefix). Differs from local-markdown's `<feature>/NN` form. The top-level `feature` field carries the slug; every snapshot consumer already has the slug in scope.
+- `status` — Derived from GitHub state + stateReason + `formann:status:*` label. `CLOSED + state_reason=COMPLETED` → `"done"`. `CLOSED + state_reason=NOT_PLANNED` → `"wontfix"`. Open issues: value from the `formann:status:<value>` label; empty string if no such label.
+- `category` — Value from the `formann:category:<value>` label; empty string if absent.
+- `type` — Value from the `formann:type:<value>` label, normalised to uppercase (`afk` → `"AFK"`, `hitl` → `"HITL"`); empty string if absent.
+- `blocked_by` — Array of `#N` refs extracted from the `## Blocked by` section of the sub-issue body. Empty array if the section is absent or contains no `#N` tokens.
+- `eligible` — `true` iff `status == "ready-for-agent"` AND `type == "AFK"` AND every `blocked_by` ref is a known sub-issue of this parent with `status == "done"`. Any unmatched `#N` (not in the parent's sub-issue set) is treated as conservative-false.
+
+### Ordering rules
+
+**`tracker-snapshot <slug>` sub-issue order:**
+Sub-issues are emitted in the order returned by the GraphQL `subIssues` connection, which reflects GitHub's UI priority order (maintainer-adjustable via drag-and-drop). `#N` ascending is applied as a stable tiebreaker within equal-priority groups. Dragging a sub-issue to the top of the sub-issue panel makes it the next eligible pick for the AFK runner.
+
+**`tracker-snapshot --list` order:**
+Features are returned ordered by parent issue number ascending (`#N` ASC). This is the GitHub-issues binding's list order; local-markdown lists alphabetically. Consumers must not assume cross-binding parity.
+
+### Blocker resolution rules
+
+Blocker eligibility resolves from the in-memory sub-issue snapshot — no extra API calls. `#N` refs inside `## Blocked by` are matched against the parent's sub-issue set:
+
+- If `N` is in the sub-issue set and `status == "done"` → blocker satisfied.
+- If `N` is in the sub-issue set but not done → blocker unsatisfied; `eligible = false`.
+- If `N` is **not** in the sub-issue set → unresolved external ref; conservative-false (`eligible = false`). This mirrors local-markdown's cross-feature blocker behaviour.
+
+### Slug identity and uniqueness
+
+The slug is stored as label `formann:slug:<slug>` on the parent issue. GitHub enforces no uniqueness constraint. `tracker-snapshot` checks cardinality at every read:
+
+| Parent count | Behaviour |
+|---|---|
+| 0 | Emit `{"feature":"<slug>","issues":[]}`, exit 0 (mirrors local-markdown's missing-feature-dir behaviour). Occurs naturally when the parent is archived (closed). |
+| 1 | Normal snapshot. |
+| ≥ 2 | Exit non-zero (code 4). Stderr names both parent issues and the recovery recipe: `"remove the 'formann:slug:<slug>' label from one of: #N, #M"`. |
+
+`tracker-snapshot --list` deduplicates parents sharing a slug label: the slug appears once in the output array, and a warning is emitted to stderr naming both parents.
+
+### Transient-failure handling
+
+`tracker-snapshot` retries `gh api graphql` up to 3 times on non-zero exit (rate limit, 5xx, auth-expired), with exponential backoff starting at 1 second. On persistent failure it exits with code 3 and prints a diagnostic to stderr. The runner's classifier can distinguish code 3 ("binding transient failure") from code 4 ("slug collision") and from code 0 ("success").
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 2 | Usage error or prerequisite missing (`jq` not found, no git remote) |
+| 3 | Persistent API failure after retry exhaustion |
+| 4 | Slug collision (≥ 2 matching parent issues) |
+
+### Offline testing / `gh` shim
+
+`tracker-snapshot` invokes `gh api graphql` unconditionally. For offline CI testing, place a `gh` shim earlier on `PATH` that:
+1. Records each `gh api graphql` invocation to a log file (via the `CALL_LOG` env var).
+2. Optionally fails the first N calls (via `FAIL_FIRST_N`).
+3. Serves pre-recorded fixture responses from a directory (via `FIXTURE_RESPONSES_DIR`).
+
+The script never makes a live API call in CI if the shim intercepts all `gh` calls. Test fixtures live under `framework/bindings/issue-tracker/github-issues/tests/fixtures/<scenario>/recorded-responses/`.
 
 ## Body-edit residual race
 

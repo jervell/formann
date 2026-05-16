@@ -1,0 +1,29 @@
+{
+  "feature": "multi-issue",
+  "issues": [
+    {
+      "ref": "#10",
+      "status": "done",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": false
+    },
+    {
+      "ref": "#7",
+      "status": "ready-for-agent",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": ["#10"],
+      "eligible": true
+    },
+    {
+      "ref": "#15",
+      "status": "ready-for-agent",
+      "category": "bug",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": true
+    }
+  ]
+}

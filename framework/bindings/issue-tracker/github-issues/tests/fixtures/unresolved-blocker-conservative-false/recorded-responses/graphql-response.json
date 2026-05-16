@@ -1,0 +1,30 @@
+{
+  "data": {
+    "repository": {
+      "issues": {
+        "nodes": [
+          {
+            "number": 30,
+            "subIssues": {
+              "nodes": [
+                {
+                  "number": 15,
+                  "state": "OPEN",
+                  "stateReason": null,
+                  "body": "## What to build\n\nDependent work.\n\n## Blocked by\n\n- #99",
+                  "labels": {
+                    "nodes": [
+                      {"name": "formann:status:ready-for-agent"},
+                      {"name": "formann:category:enhancement"},
+                      {"name": "formann:type:afk"}
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

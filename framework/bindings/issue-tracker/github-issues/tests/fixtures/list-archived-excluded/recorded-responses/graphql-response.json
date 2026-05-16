@@ -1,0 +1,28 @@
+{
+  "data": {
+    "repository": {
+      "issues": {
+        "nodes": [
+          {
+            "number": 3,
+            "labels": {
+              "nodes": [
+                {"name": "formann:feature"},
+                {"name": "formann:slug:alpha-feature"}
+              ]
+            }
+          },
+          {
+            "number": 7,
+            "labels": {
+              "nodes": [
+                {"name": "formann:feature"},
+                {"name": "formann:slug:beta-feature"}
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

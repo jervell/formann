@@ -1,0 +1,18 @@
+{
+  "data": {
+    "repository": {
+      "issues": {
+        "nodes": [
+          {
+            "number": 8,
+            "subIssues": {"nodes": []}
+          },
+          {
+            "number": 11,
+            "subIssues": {"nodes": []}
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,370 @@
+#!/usr/bin/env bash
+###
+### tracker-snapshot — github-issues binding's machine-readable interface.
+###
+### Usage: tracker-snapshot --list
+###        tracker-snapshot <feature-slug>
+###
+### --list:  Emit a JSON array of active feature slugs (open formann:feature
+###          parent issues, ordered by issue number ascending).
+###
+### <slug>:  Emit a JSON object describing the feature's sub-issues with their
+###          metadata and eligibility.  Schema byte-compatible with the
+###          local-markdown binding's output; only the `ref` value format
+###          differs (`#N` here, `<feature>/NN` there).
+###
+### Override the GitHub repo for tests via GH_TRACKER_REPO (owner/repo format).
+###
+### Bash 3.2 compatible (macOS default): no associative arrays.
+###
+
+set -eu
+set -o pipefail
+
+readonly _MAX_RETRIES=3
+readonly _EXIT_USAGE=2
+readonly _EXIT_TRANSIENT=3
+readonly _EXIT_COLLISION=4
+
+# ── Prerequisites ─────────────────────────────────────────────────────────────
+if ! command -v jq &>/dev/null; then
+  echo "tracker-snapshot: 'jq' not found or not in PATH." >&2
+  exit "$_EXIT_USAGE"
+fi
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: tracker-snapshot <feature-slug> | tracker-snapshot --list" >&2
+  exit "$_EXIT_USAGE"
+fi
+
+# ── Owner/repo detection ──────────────────────────────────────────────────────
+# Tests set GH_TRACKER_REPO=owner/repo to bypass git-remote parsing.
+if [ -n "${GH_TRACKER_REPO:-}" ]; then
+  _gh_owner="${GH_TRACKER_REPO%%/*}"
+  _gh_name="${GH_TRACKER_REPO##*/}"
+else
+  _remote_url=""
+  _remote_url="$(git remote get-url origin 2>/dev/null)" || true
+  if [ -z "$_remote_url" ]; then
+    echo "tracker-snapshot: no git remote 'origin'; set GH_TRACKER_REPO=owner/repo" >&2
+    exit "$_EXIT_USAGE"
+  fi
+  # Parse owner/repo from https://github.com/OWNER/REPO[.git] or git@github.com:OWNER/REPO[.git]
+  _owner_repo="$(printf '%s' "$_remote_url" | \
+    sed 's|^https\?://[^/]*github\.com/||;s|^git@[^:]*github\.com:||;s|\.git$||')"
+  if [ -z "$_owner_repo" ] || ! printf '%s' "$_owner_repo" | grep -q '/'; then
+    echo "tracker-snapshot: cannot parse GitHub owner/repo from '$_remote_url'" >&2
+    exit "$_EXIT_USAGE"
+  fi
+  _gh_owner="${_owner_repo%%/*}"
+  _gh_name="${_owner_repo##*/}"
+fi
+
+# ── GraphQL call with retry on transient failure ──────────────────────────────
+# Calls `gh api graphql` with the supplied args.  Retries up to _MAX_RETRIES
+# times on non-zero exit (rate limit, 5xx, auth-expired), with exponential
+# backoff starting at 1 s.  On persistent failure exits with _EXIT_TRANSIENT.
+_graphql() {
+  local _att=0 _dl=1 _ec _out
+  while [ "$_att" -lt "$_MAX_RETRIES" ]; do
+    _ec=0
+    _out="$(gh api graphql "$@")" || _ec=$?
+    if [ "$_ec" -eq 0 ]; then
+      printf '%s' "$_out"
+      return 0
+    fi
+    _att=$((_att + 1))
+    if [ "$_att" -lt "$_MAX_RETRIES" ]; then
+      sleep "$_dl"
+      _dl=$((_dl * 2))
+    fi
+  done
+  echo "tracker-snapshot: API request failed after $_MAX_RETRIES attempts" >&2
+  exit "$_EXIT_TRANSIENT"
+}
+
+# ── Extract ## Blocked by refs from body text ─────────────────────────────────
+# Args: $1 = issue body text
+# Stdout: one `#N` token per line, in source order (empty if none)
+_extract_blocker_refs() {
+  printf '%s' "$1" | awk '
+    /^## Blocked by[[:space:]]*$/ { in_s=1; next }
+    in_s && /^## /                { in_s=0 }
+    in_s                          { print }
+  ' | grep -oE '#[0-9]+' || true
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# --list mode
+# ═══════════════════════════════════════════════════════════════════════════════
+if [ "$1" = "--list" ]; then
+  _list_query='query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    issues(labels: ["formann:feature"], states: [OPEN], first: 100,
+           orderBy: {field: NUMBER, direction: ASC}) {
+      nodes {
+        number
+        labels(first: 30) { nodes { name } }
+      }
+    }
+  }
+}'
+
+  _resp="$(_graphql -F owner="$_gh_owner" -F name="$_gh_name" -f query="$_list_query")"
+
+  # Extract "<number>\t<slug>" pairs (one per line) from the response.
+  # Issues with no formann:slug:* label are skipped.
+  _pairs="$(printf '%s' "$_resp" | jq -r '
+    .data.repository.issues.nodes[] |
+    . as $issue |
+    ( $issue.labels.nodes
+      | map(.name | select(startswith("formann:slug:")))
+      | .[0]
+    ) as $sl |
+    if $sl then
+      ( ($issue.number | tostring) + "\t" + ($sl | ltrimstr("formann:slug:")) )
+    else empty end
+  ')"
+
+  # Collect slugs with deduplication detection.
+  # Parallel arrays (bash 3.2 compatible):
+  #   _slugs[]         — unique slugs in encounter order
+  #   _slug_refs[]     — space-separated "#N" refs for each slug (for dupe detection)
+  _slugs=()
+  _slug_refs=()
+
+  if [ -n "$_pairs" ]; then
+    while IFS=$'\t' read -r _num _slug; do
+      [ -n "$_num" ] || continue
+      _matched=-1
+      _k=0
+      while [ "$_k" -lt "${#_slugs[@]}" ]; do
+        if [ "${_slugs[$_k]}" = "$_slug" ]; then
+          _matched="$_k"
+          break
+        fi
+        _k=$((_k + 1))
+      done
+      if [ "$_matched" -ge 0 ]; then
+        _slug_refs[$_matched]="${_slug_refs[$_matched]} #${_num}"
+      else
+        _slugs[${#_slugs[@]}]="$_slug"
+        _slug_refs[${#_slug_refs[@]}]="#${_num}"
+      fi
+    done <<< "$_pairs"
+  fi
+
+  # Warn to stderr for any slug with ≥2 parent issues.
+  _k=0
+  while [ "$_k" -lt "${#_slugs[@]}" ]; do
+    _refs="${_slug_refs[$_k]}"
+    # Count words (refs) — a single ref has no spaces
+    _ref_count="${_refs//[! ]/}"
+    if [ "${#_ref_count}" -gt 0 ]; then
+      echo "tracker-snapshot: warning: multiple parents share slug '${_slugs[$_k]}': ${_refs}" >&2
+      echo "tracker-snapshot: remove the 'formann:slug:${_slugs[$_k]}' label from one of:${_refs}" >&2
+    fi
+    _k=$((_k + 1))
+  done
+
+  # Emit JSON array of slugs (in encounter order, which matches #N ascending
+  # because the query orders by NUMBER ASC).
+  printf '['
+  _first=1
+  _k=0
+  while [ "$_k" -lt "${#_slugs[@]}" ]; do
+    if [ "$_first" -eq 1 ]; then _first=0; else printf ','; fi
+    printf '%s' "${_slugs[$_k]}" | jq -Rs '.'
+    _k=$((_k + 1))
+  done
+  printf ']\n'
+  exit 0
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# <slug> mode
+# ═══════════════════════════════════════════════════════════════════════════════
+_slug="$1"
+_slug_label="formann:slug:${_slug}"
+
+_slug_query='query($owner: String!, $name: String!, $slugLabel: String!) {
+  repository(owner: $owner, name: $name) {
+    issues(labels: ["formann:feature", $slugLabel], states: [OPEN], first: 10) {
+      nodes {
+        number
+        subIssues(first: 100) {
+          nodes {
+            number
+            state
+            stateReason
+            body
+            labels(first: 30) { nodes { name } }
+          }
+        }
+      }
+    }
+  }
+}'
+
+_resp="$(_graphql \
+  -F owner="$_gh_owner" \
+  -F name="$_gh_name" \
+  -F slugLabel="$_slug_label" \
+  -f query="$_slug_query")"
+
+# Count parent matches.
+_parent_count="$(printf '%s' "$_resp" | jq '.data.repository.issues.nodes | length')"
+
+# 0 matches → empty snapshot.
+if [ "$_parent_count" -eq 0 ]; then
+  printf '{"feature":"%s","issues":[]}\n' "$_slug" | jq -c '.'
+  exit 0
+fi
+
+# ≥2 matches → collision error.
+if [ "$_parent_count" -ge 2 ]; then
+  _parent_nums="$(printf '%s' "$_resp" | jq -r '.data.repository.issues.nodes[].number | "#" + tostring' | tr '\n' ' ' | sed 's/ $//')"
+  echo "tracker-snapshot: slug collision: ${_parent_count} parents share label '${_slug_label}'" >&2
+  echo "tracker-snapshot: remove the '${_slug_label}' label from one of: ${_parent_nums}" >&2
+  exit "$_EXIT_COLLISION"
+fi
+
+# 1 match — extract sub-issues from the response.
+# The subIssues connection is already in priority order; we preserve that
+# order and use #N ascending as a stable tiebreaker (applied via sort -n
+# on a secondary key, but since each position is unique it never changes
+# the primary ordering).
+
+_sub_json="$(printf '%s' "$_resp" | jq -c '.data.repository.issues.nodes[0].subIssues.nodes[]')"
+
+# Phase 1: collect sub-issue metadata into parallel arrays.
+# Arrays: _nums, _statuses, _categories, _types, _blocked_flat, _blocked_counts
+_nums=()
+_statuses=()
+_categories=()
+_types=()
+_blocked_flat=()   # all blocked_by refs across all issues, concatenated
+_blocked_counts=() # number of blocked_by refs for each issue
+
+_done_nums=""  # space-delimited list of done issue numbers (for eligibility)
+
+if [ -n "$_sub_json" ]; then
+  while IFS= read -r _sub; do
+    [ -n "$_sub" ] || continue
+
+    _num="$(printf '%s' "$_sub" | jq -r '.number')"
+    _state="$(printf '%s' "$_sub" | jq -r '.state')"
+    _state_reason="$(printf '%s' "$_sub" | jq -r '.stateReason // ""')"
+    _body="$(printf '%s' "$_sub" | jq -r '.body // ""')"
+    _label_names="$(printf '%s' "$_sub" | jq -r '.labels.nodes[].name')"
+
+    # Derive status from state + stateReason + labels.
+    if [ "$_state" = "CLOSED" ] && [ "$_state_reason" = "COMPLETED" ]; then
+      _status="done"
+    elif [ "$_state" = "CLOSED" ] && [ "$_state_reason" = "NOT_PLANNED" ]; then
+      _status="wontfix"
+    else
+      _status="$(printf '%s' "$_label_names" | grep '^formann:status:' | head -1 | sed 's/^formann:status://')"
+    fi
+
+    # Derive category and type from labels.
+    _category="$(printf '%s' "$_label_names" | grep '^formann:category:' | head -1 | sed 's/^formann:category://')"
+    _type_raw="$(printf '%s' "$_label_names" | grep '^formann:type:' | head -1 | sed 's/^formann:type://')"
+    # Normalise type to uppercase: afk → AFK, hitl → HITL.
+    case "$_type_raw" in
+      afk)  _type="AFK"  ;;
+      hitl) _type="HITL" ;;
+      *)    _type="$_type_raw" ;;
+    esac
+
+    # Extract #N blocker refs from the ## Blocked by section.
+    _refs_text="$(_extract_blocker_refs "$_body")"
+    _ref_count=0
+    if [ -n "$_refs_text" ]; then
+      while IFS= read -r _ref; do
+        [ -n "$_ref" ] || continue
+        _blocked_flat[${#_blocked_flat[@]}]="$_ref"
+        _ref_count=$((_ref_count + 1))
+      done <<< "$_refs_text"
+    fi
+
+    _nums[${#_nums[@]}]="$_num"
+    _statuses[${#_statuses[@]}]="$_status"
+    _categories[${#_categories[@]}]="$_category"
+    _types[${#_types[@]}]="$_type"
+    _blocked_counts[${#_blocked_counts[@]}]="$_ref_count"
+
+    if [ "$_status" = "done" ]; then
+      _done_nums="$_done_nums $_num"
+    fi
+  done <<< "$_sub_json"
+fi
+
+# Is number $1 in the sub-issue set?
+_is_known_num() {
+  local _n="$1" _i=0
+  while [ "$_i" -lt "${#_nums[@]}" ]; do
+    if [ "${_nums[$_i]}" = "$_n" ]; then return 0; fi
+    _i=$((_i + 1))
+  done
+  return 1
+}
+
+# Is number $1 done?
+_is_done_num() {
+  case " $_done_nums " in
+    *" $1 "*) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
+# Phase 2: emit JSON.
+printf '{"feature":%s,"issues":[' "$(printf '%s' "$_slug" | jq -Rs '.')"
+
+_flat_offset=0
+_issue_count="${#_nums[@]}"
+for (( _i=0; _i < _issue_count; _i++ )); do
+  [ "$_i" -gt 0 ] && printf ','
+
+  _num="${_nums[$_i]}"
+  _status="${_statuses[$_i]}"
+  _category="${_categories[$_i]}"
+  _type="${_types[$_i]}"
+  _count="${_blocked_counts[$_i]}"
+
+  # Collect this issue's blocked_by refs.
+  _this_refs=()
+  for (( _k=0; _k < _count; _k++ )); do
+    _this_refs[${#_this_refs[@]}]="${_blocked_flat[$((_flat_offset + _k))]}"
+  done
+  _flat_offset=$((_flat_offset + _count))
+
+  # Compute eligibility.
+  _eligible="false"
+  if [ "$_status" = "ready-for-agent" ] && [ "$_type" = "AFK" ]; then
+    _eligible="true"
+    for _ref in "${_this_refs[@]+"${_this_refs[@]}"}"; do
+      _bnum="${_ref#\#}"  # strip leading #
+      if ! _is_known_num "$_bnum" || ! _is_done_num "$_bnum"; then
+        _eligible="false"
+        break
+      fi
+    done
+  fi
+
+  # Emit issue JSON object.
+  printf '{"ref":%s' "$(printf '#%s' "$_num" | jq -Rs '.')"
+  printf ',"status":%s' "$(printf '%s' "$_status" | jq -Rs '.')"
+  printf ',"category":%s' "$(printf '%s' "$_category" | jq -Rs '.')"
+  printf ',"type":%s' "$(printf '%s' "$_type" | jq -Rs '.')"
+  printf ',"blocked_by":['
+  _bf=1
+  for _ref in "${_this_refs[@]+"${_this_refs[@]}"}"; do
+    if [ "$_bf" -eq 1 ]; then _bf=0; else printf ','; fi
+    printf '%s' "$_ref" | jq -Rs '.'
+  done
+  printf ']'
+  printf ',"eligible":%s}' "$_eligible"
+done
+
+printf ']}\n'
