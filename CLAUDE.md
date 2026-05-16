@@ -25,4 +25,4 @@ Triage states and their meanings are described in `docs/formann/triage-states.md
 
 ### Domain docs
 
-Domain vocabulary and architectural decisions live in `CONTEXT.md` and `docs/adr/`. See `docs/formann/domain.md` for the domain-doc contract.
+Domain vocabulary and architectural decisions live in `GLOSSARY.md` and `docs/adr/`. See `docs/formann/domain.md` for the domain-doc contract.
