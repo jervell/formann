@@ -3219,6 +3219,13 @@ _setup_mount_capture() {
 }
 
 @test "run_sandbox_container — omits every .claude/* mount when none of the host dirs exist" {
+  # `set -u` mirrors production (main() enables `set -euo pipefail`). It also
+  # pins the defensive `${arr[@]+"${arr[@]}"}` expansion of the mount array:
+  # on bash 3.2 (macOS /bin/bash), the naive `"${arr[@]}"` form errors with
+  # `unbound variable` when the array is empty. Without `set -u` here, a
+  # regression to the naive form would silently pass this test and break in
+  # production on a host with no `.claude/{skills,agents,rules}` dirs.
+  set -u
   _setup_mount_capture ""
 
   # Sanity: the unconditional .formann mount is still present.
