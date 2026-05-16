@@ -77,11 +77,11 @@ Any other combination — including `ready-for-agent + HITL`, any non-`ready-for
 ["slug-one", "slug-two", "slug-three"]
 ```
 
-- Items are direct subdirectory names of `.features/`, excluding `done/`.
+- Items are direct subdirectory names of `.features/`, excluding `.archived/`.
 - Ordering is deterministic (lexicographic by directory name).
 - Non-directory entries (files) directly inside `.features/` are ignored.
 
-**Local-markdown realization:** `find .features/ -mindepth 1 -maxdepth 1 -type d | sort`, then filter out `done/`.
+**Local-markdown realization:** `find .features/ -mindepth 1 -maxdepth 1 -type d | sort`, then filter out `.archived/`.
 
 **What the script does *not* do.** It does not verify that each returned slug has a valid issue directory structure, that any issues exist, or that the feature's branch exists on the host. It returns slugs for directories that exist — further per-feature gating is the runner's responsibility.
 

@@ -191,7 +191,7 @@ def _build_feature(entry: Path, section: str) -> dict | None:
 def build_tree() -> list[dict]:
     """Return the tree of active and archived features.
 
-    Walks both ``.features/<feature>/`` (active) and ``.features/done/<feature>/``
+    Walks both ``.features/<feature>/`` (active) and ``.features/.archived/<feature>/``
     (archive). Each feature carries its ``section`` and ``mtime`` so the
     client can sort and tab-route. Empty feature directories (no PRD, no
     well-formed issues) and stray non-issue files are silently dropped.
@@ -200,14 +200,14 @@ def build_tree() -> list[dict]:
     if not TRACKER_DIR.is_dir():
         return features
     for entry in sorted(TRACKER_DIR.iterdir(), key=lambda p: p.name):
-        if not entry.is_dir() or entry.name == "done":
+        if not entry.is_dir() or entry.name == ".archived":
             continue
         feat = _build_feature(entry, "active")
         if feat is not None:
             features.append(feat)
-    done_dir = TRACKER_DIR / "done"
-    if done_dir.is_dir():
-        for entry in sorted(done_dir.iterdir(), key=lambda p: p.name):
+    archived_dir = TRACKER_DIR / ".archived"
+    if archived_dir.is_dir():
+        for entry in sorted(archived_dir.iterdir(), key=lambda p: p.name):
             if not entry.is_dir():
                 continue
             feat = _build_feature(entry, "archive")

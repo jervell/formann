@@ -4,7 +4,7 @@ Detailed architecture and process flow of the runner that drains a feature's `re
 
 - [`lifecycle.md`](lifecycle.md) — high-level overview and where the runner fits in the pipeline.
 - [`runner/README.md`](runner/README.md) — operator-facing reference (per-run output, sandbox primitives, OAuth setup, smoke test, verification recipes).
-- `.features/afk-runner/PRD.md` (or `.features/done/afk-runner/PRD.md` once archived) — full design rationale, user stories, out-of-scope decisions, and the original module decomposition.
+- `.features/afk-runner/PRD.md` (or `.features/.archived/afk-runner/PRD.md` once archived) — full design rationale, user stories, out-of-scope decisions, and the original module decomposition.
 
 If you want to *use* the runner, start with the README. If you want to *understand* the runner, start here.
 

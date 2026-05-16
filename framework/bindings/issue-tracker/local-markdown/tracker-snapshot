@@ -92,7 +92,7 @@ json_string_array() {
 }
 
 # --list mode: emit a JSON array of active feature slugs. Active means: a
-# direct subdirectory of tracker_root, excluding `done/`.
+# direct subdirectory of tracker_root, excluding `.archived/`.
 if [ "$1" = "--list" ]; then
   printf '['
   first=1
@@ -100,7 +100,7 @@ if [ "$1" = "--list" ]; then
     while IFS= read -r d; do
       [ -n "$d" ] || continue
       slug="$(basename "$d")"
-      [ "$slug" = "done" ] && continue
+      [ "$slug" = ".archived" ] && continue
       if [ "$first" -eq 1 ]; then first=0; else printf ','; fi
       printf '"%s"' "$(json_escape "$slug")"
     done < <(find "$tracker_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)

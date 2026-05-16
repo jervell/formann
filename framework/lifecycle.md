@@ -18,7 +18,7 @@ Indexed by what you have in front of you:
 | an `in-review` issue                            | `/triage`                             | `done` or `ready-for-agent` (rework)         |
 | an `in-review` issue you want a second eye on   | (`review-issue` agent)                | findings; no state change                    |
 | a feature ready before archive/merge            | (`review-feature` agent)              | findings; no state change                    |
-| a feature with all issues terminal              | `/triage` (say "archive `<feature>`") | moved to `.features/done/`                    |
+| a feature with all issues terminal              | `/triage` (say "archive `<feature>`") | moved to `.features/.archived/`               |
 
 ## Layout
 
@@ -35,7 +35,7 @@ Two scopes. Project-level artifacts accumulate across features; feature-level ar
     ├── <feature>/             ← active features
     │   ├── PRD.md             ← spec, no Status
     │   └── issues/NN-*.md     ← work units, with Status / Category / Type
-    └── done/<feature>/        ← archived features (whole dir moved)
+    └── .archived/<feature>/   ← archived features (whole dir moved)
 ```
 
 Project-level artifacts shape and constrain feature work: `CONTEXT.md` (domain glossary), `docs/adr/` (architectural decisions), `.out-of-scope/` (rejected concepts). Every pipeline stage reads from them; some stages write to them. Conventions for `CONTEXT.md` and ADRs live in `docs/formann/domain.md`.
@@ -69,7 +69,7 @@ Agent or human reads the issue, `CONTEXT.md`, `docs/adr/`. Writes code and tests
 Maintainer reads the shipped work + the summary's Evidence block. Trusts `[x]` (verified) coverage by default; walks each `[ ]` (`[human]`) row, posts a `### Verification` comment recording the walk, and sets state to `done` (accept) or `ready-for-agent` with rework notes (reject). A missing or unmappable Evidence block is grounds to reject. `done` is the per-issue signoff; final feature-level signoff happens at Archive. The maintainer may invoke the `review-issue` agent beforehand — decision-neutral, console-only, surfaces bug-hunt / intent-check / Evidence-check findings without touching state. Its output is an input to the maintainer's verify decision; `/triage` itself does not call it.
 
 **7. Archive** — `/triage`
-The feature-level final human gate. Reads the feature dir; collects every `[ ]` row from each `done` issue's latest Implementation comment that hasn't already been walked in a Verification comment, walks them with the maintainer, posts a per-issue Verification comment recording the verdicts, then moves `.features/<feature>/` to `.features/done/<feature>/`. Failed walks move the offending issue back to `ready-for-agent` with rework notes and abort archive. Triggered when every issue is terminal (`done`/`wontfix`) and the maintainer says "archive `<feature>`". The maintainer may invoke the `review-feature` agent before the move — two passes (primary + independent challenger via subagent), decision-neutral, scans the full feature diff for bugs and intent drift. Its output is an input to the maintainer's archive/merge decision; `/triage` itself does not call it.
+The feature-level final human gate. Reads the feature dir; collects every `[ ]` row from each `done` issue's latest Implementation comment that hasn't already been walked in a Verification comment, walks them with the maintainer, posts a per-issue Verification comment recording the verdicts, then moves `.features/<feature>/` to `.features/.archived/<feature>/`. Failed walks move the offending issue back to `ready-for-agent` with rework notes and abort archive. Triggered when every issue is terminal (`done`/`wontfix`) and the maintainer says "archive `<feature>`". The maintainer may invoke the `review-feature` agent before the move — two passes (primary + independent challenger via subagent), decision-neutral, scans the full feature diff for bugs and intent drift. Its output is an input to the maintainer's archive/merge decision; `/triage` itself does not call it.
 
 ### Reads and writes
 
@@ -81,7 +81,7 @@ The feature-level final human gate. Reads the feature dir; collects every `[ ]` 
 | Triage    | `/triage`          | issue, `CONTEXT.md`, `docs/adr/`, `.out-of-scope/`        | state / category / type; outcome comment; agent brief on `ready-for-*`; `.out-of-scope/` entry on `wontfix` of an enhancement |
 | Implement | `/implement`       | issue, `CONTEXT.md`, `docs/adr/`                          | code, tests; new ADR (if surfaced); state `in-review`; summary comment with Evidence block          |
 | Verify    | `/triage`          | shipped work + summary's Evidence block                   | Verification comment with walked-row verdicts; state `done` or `ready-for-agent` (with rework notes) |
-| Archive   | `/triage`          | feature dir + each `done` issue's Evidence block          | per-issue Verification comments for unwalked rows; move `.features/<feature>/` → `.features/done/<feature>/` |
+| Archive   | `/triage`          | feature dir + each `done` issue's Evidence block          | per-issue Verification comments for unwalked rows; move `.features/<feature>/` → `.features/.archived/<feature>/` |
 
 ## Issue state machine
 

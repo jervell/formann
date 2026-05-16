@@ -314,11 +314,11 @@ function renderFeatureOverview(feature) {
 }
 
 function rawPrefix(feature) {
-  // Archived features live under .features/done/<slug>/. The hash route never
-  // includes the `done/` segment (the spec keeps the canonical <feature>/NN
+  // Archived features live under .features/.archived/<slug>/. The hash route never
+  // includes the `.archived/` segment (the spec keeps the canonical <feature>/NN
   // form across active and archive), so we add it only at fetch time based
   // on the feature's section.
-  return feature.section === "archive" ? `done/${feature.slug}` : feature.slug;
+  return feature.section === "archive" ? `.archived/${feature.slug}` : feature.slug;
 }
 
 async function renderPrd(feature) {

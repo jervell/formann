@@ -75,9 +75,9 @@ assert_snapshot_matches_golden() {
   [ "$slugs" = "alpha beta" ]
 }
 
-@test "--list — excludes done/ directory and its contents" {
-  local tracker_root="$BATS_TEST_TMPDIR/tracker-done"
-  mkdir -p "$tracker_root/active" "$tracker_root/done" "$tracker_root/done/archived"
+@test "--list — excludes .archived/ directory and its contents" {
+  local tracker_root="$BATS_TEST_TMPDIR/tracker-archived"
+  mkdir -p "$tracker_root/active" "$tracker_root/.archived" "$tracker_root/.archived/some-feature"
   TRACKER_ROOT="$tracker_root" run "$TRACKER_SNAPSHOT" --list
   assert_success
   local count

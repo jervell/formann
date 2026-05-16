@@ -197,4 +197,4 @@ Tracker mutations — publishing an issue or PRD, changing a header field, posti
 
 ## Archiving a shipped feature
 
-When every issue in a feature dir is terminal (`status: done` or `status: wontfix`) and the feature is shipped, the entire dir moves from `.features/<feature>/` to `.features/done/<feature>/`. The PRD moves with it. Per-issue completion only flips `status`; archival happens at the feature level, on explicit maintainer request (see the `triage` skill).
+When every issue in a feature dir is terminal (`status: done` or `status: wontfix`) and the feature is shipped, the entire dir moves from `.features/<feature>/` to `.features/.archived/<feature>/`. The PRD moves with it. Per-issue completion only flips `status`; archival happens at the feature level, on explicit maintainer request (see the `triage` skill).
