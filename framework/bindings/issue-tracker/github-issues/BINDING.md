@@ -187,9 +187,30 @@ while a Formann skill is running on that issue.
 
 ## Sandbox compatibility
 
-*(stub — to be filled in by a later slice)*
+The github-issues binding requires two sandbox resources that the local-markdown binding does not:
 
-Concretely, this binding's writes need network egress to `api.github.com` and a token (`GH_TOKEN`). The binding doc and the runner's sandbox network policy and credential-passing must both accommodate them.
+| Resource | Value |
+|---|---|
+| Env var | `GH_TOKEN` — a GitHub personal-access token with `repo` scope (Issues read/write) |
+| Network egress | `api.github.com` — all `gh api` and `gh issue` calls target this host |
+
+### How `GH_TOKEN` reaches the container
+
+The binding ships a `sandbox-env` script at the binding folder root. The runner's `collect_binding_env` hook invokes it before `docker run` if the script is executable on the role surface (`docs/formann/issue-tracker/sandbox-env`). The script retrieves `GH_TOKEN` from macOS Keychain and emits `GH_TOKEN=<token>` on stdout; the runner appends this to the container's `--env-file`.
+
+The runner itself contains no GitHub-specific knowledge — it calls the hook and passes the validated output through.
+
+### Setting up the Keychain entry (one-time per machine)
+
+```
+security add-generic-password -s formann-gh-token -a github -w
+```
+
+Paste your GitHub token at the prompt (no trailing newline). Re-running updates the entry in place.
+
+### Network egress
+
+The runner's sandbox network (`afk-runner-sandbox`) restricts RFC1918 outbound by default. The Consumer's `setup-network.sh` must add an allowlist entry for `api.github.com` (port 443) to permit `gh` calls from inside the container. This is a Consumer infrastructure concern; the binding declares the requirement, not the mechanism.
 
 ## Hard limits
 

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Emit the GitHub token as a KEY=value line for the runner's sandbox env.
+#
+# Usage (invoked by the runner's collect_binding_env hook):
+#   sandbox-env
+#
+# Output:
+#   stdout — GH_TOKEN=<token>
+#   stderr — diagnostics on failure. The token is NEVER written to stderr.
+#
+# Exit codes:
+#   0 — GH_TOKEN=<token> printed
+#   1 — Keychain entry missing or unreadable; a how-to-populate hint is
+#       printed to stderr.
+#   2 — environment problem (OS unsupported, 'security' binary absent).
+#
+# Keychain coordinates (macOS):
+#   service: formann-gh-token
+#   account: github
+#
+# To populate (one-time setup):
+#   security add-generic-password -s formann-gh-token -a github -w
+#   (paste your GitHub token at the prompt — no trailing newline)
+#
+# Linux: store the token via libsecret or keyctl and export GH_TOKEN before
+# invoking the runner. Direct Keychain integration on Linux is not implemented
+# here; the script exits 2 on Linux.
+
+set -euo pipefail
+
+GH_KEYCHAIN_SERVICE="formann-gh-token"
+GH_KEYCHAIN_ACCOUNT="github"
+
+if [[ "$OSTYPE" == darwin* ]]; then
+  if ! command -v security >/dev/null 2>&1; then
+    echo "sandbox-env: 'security' binary not found; cannot retrieve GH token from Keychain" >&2
+    exit 2
+  fi
+
+  token=""
+  if ! token="$(security find-generic-password \
+      -s "$GH_KEYCHAIN_SERVICE" \
+      -a "$GH_KEYCHAIN_ACCOUNT" \
+      -w 2>/dev/null)"; then
+    cat >&2 <<MSG
+sandbox-env: GH token not found in Keychain
+  service: $GH_KEYCHAIN_SERVICE
+  account: $GH_KEYCHAIN_ACCOUNT
+
+To populate (one-time, then good until the token expires):
+  security add-generic-password -s "$GH_KEYCHAIN_SERVICE" -a "$GH_KEYCHAIN_ACCOUNT" -w
+  (paste your GitHub personal-access token at the prompt — no trailing newline)
+MSG
+    exit 1
+  fi
+
+  if [[ -z "$token" ]]; then
+    echo "sandbox-env: Keychain entry found but token is empty" >&2
+    exit 1
+  fi
+
+  printf 'GH_TOKEN=%s\n' "$token"
+
+else
+  cat >&2 <<MSG
+sandbox-env: OS '$OSTYPE' is not supported by this script.
+On Linux, export GH_TOKEN in your shell before invoking the runner.
+MSG
+  exit 2
+fi

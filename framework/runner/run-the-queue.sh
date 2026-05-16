@@ -1168,6 +1168,49 @@ handle_preflight_signal() {
   exit 130
 }
 
+# Invoke the binding's sandbox-env hook if executable, validate its output,
+# and print the accepted KEY=value lines to stdout.
+#
+# Args: $1 = path to the sandbox-env script on the role surface
+#            (typically $HOST_REPO/docs/formann/issue-tracker/sandbox-env)
+#
+# Stdout: validated KEY=value lines (one per line). Empty if the script is
+#         absent or produces no output. Returns 0 on success (including
+#         absent script), 1 on script failure or malformed output.
+#
+# Validation policy: empty lines are silently skipped. Any non-empty line
+# that does not match the anchored regex ^[A-Z_][A-Z0-9_]*= is rejected
+# with a clear stderr error and causes this function to return 1. The
+# policy is fail-hard rather than skip-with-warning because a
+# partially-applied env file is more dangerous than a loud abort — the
+# container could run with missing credentials and produce wrong results
+# silently. The key regex mirrors Docker's own env-var name rules.
+collect_binding_env() {
+  local script_path="$1"
+
+  # No script on the role surface → no-op. Handles local-markdown and any
+  # binding that declares no sandbox prerequisites.
+  if [[ ! -x "$script_path" ]]; then
+    return 0
+  fi
+
+  local raw_output
+  raw_output="$("$script_path")" || {
+    echo "runner: sandbox-env exited non-zero; aborting dispatch" >&2
+    return 1
+  }
+
+  local line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ ! "$line" =~ ^[A-Z_][A-Z0-9_]*= ]]; then
+      echo "runner: sandbox-env emitted malformed line (expected KEY=value with uppercase key): $line" >&2
+      return 1
+    fi
+    printf '%s\n' "$line"
+  done <<<"$raw_output"
+}
+
 # `docker run` plumbing shared between the implement dispatch and the
 # review-and-gate dispatch. Both stages run in fresh sandbox containers
 # with the same image, network, runner-checkout mount, mvn cache mount,
@@ -1226,6 +1269,17 @@ run_sandbox_container() {
     fi
   done
 
+  # Collect binding-specific env vars from the role-surface sandbox-env hook.
+  # No-op if the binding declares no script (local-markdown, any binding
+  # without sandbox prerequisites). Fail-hard on script error or malformed
+  # output — see collect_binding_env for the validation policy.
+  local binding_env
+  binding_env="$(collect_binding_env "$HOST_REPO/docs/formann/issue-tracker/sandbox-env")" || return 1
+  local binding_env_args=()
+  if [[ -n "$binding_env" ]]; then
+    binding_env_args=(--env-file <(printf '%s\n' "$binding_env"))
+  fi
+
   docker run --rm -t \
     --cidfile "$cid_file" \
     --network "$NET_NAME" \
@@ -1234,6 +1288,7 @@ run_sandbox_container() {
     ${claude_mounts[@]+"${claude_mounts[@]}"} \
     -v "$MVN_VOLUME:$RUNNER_CONTAINER_M2_PATH" \
     --env-file <(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOKEN") \
+    ${binding_env_args[@]+"${binding_env_args[@]}"} \
     "$RUNNER_IMAGE_NAME" \
     "$@" \
     >"$log_file" 2>&1 &

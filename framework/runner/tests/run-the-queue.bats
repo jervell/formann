@@ -877,6 +877,110 @@ setup_loop_halt_test() {
   [ "$checkout_head" != "$host_head" ]
 }
 
+# === collect_binding_env — sandbox-env hook ================================
+#
+# Verifies the binding-agnostic hook that invokes a role-surface sandbox-env
+# script and validates its output before passing env vars to the container.
+
+@test "collect_binding_env — no script on role surface returns empty (no-op)" {
+  result="$(collect_binding_env "$BATS_TEST_TMPDIR/nonexistent/sandbox-env")"
+  [ -z "$result" ]
+}
+
+@test "collect_binding_env — non-executable script treated as absent (no-op)" {
+  local script="$BATS_TEST_TMPDIR/sandbox-env"
+  printf '#!/usr/bin/env bash\necho GH_TOKEN=tok\n' >"$script"
+  # Do NOT chmod +x — should be treated as absent.
+  result="$(collect_binding_env "$script")"
+  [ -z "$result" ]
+}
+
+@test "collect_binding_env — valid KEY=value lines are passed through" {
+  local script="$BATS_TEST_TMPDIR/sandbox-env"
+  cat >"$script" <<'EOF'
+#!/usr/bin/env bash
+echo "GH_TOKEN=ghp_test_token"
+echo "ANOTHER_VAR=value"
+EOF
+  chmod +x "$script"
+
+  result="$(collect_binding_env "$script")"
+  [ "$result" = "$(printf 'GH_TOKEN=ghp_test_token\nANOTHER_VAR=value')" ]
+}
+
+@test "collect_binding_env — empty lines in script output are silently skipped" {
+  local script="$BATS_TEST_TMPDIR/sandbox-env"
+  cat >"$script" <<'EOF'
+#!/usr/bin/env bash
+echo ""
+echo "GH_TOKEN=tok"
+echo ""
+EOF
+  chmod +x "$script"
+
+  result="$(collect_binding_env "$script")"
+  [ "$result" = "GH_TOKEN=tok" ]
+}
+
+@test "collect_binding_env — malformed line (no =) causes failure with error" {
+  local script="$BATS_TEST_TMPDIR/sandbox-env"
+  cat >"$script" <<'EOF'
+#!/usr/bin/env bash
+echo "NOT_A_VALID_LINE_WITHOUT_EQUALS"
+EOF
+  chmod +x "$script"
+
+  run collect_binding_env "$script"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"malformed line"* ]]
+}
+
+@test "collect_binding_env — lowercase key causes failure (uppercase required)" {
+  local script="$BATS_TEST_TMPDIR/sandbox-env"
+  cat >"$script" <<'EOF'
+#!/usr/bin/env bash
+echo "gh_token=value"
+EOF
+  chmod +x "$script"
+
+  run collect_binding_env "$script"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"malformed line"* ]]
+}
+
+@test "collect_binding_env — script exits non-zero causes failure" {
+  local script="$BATS_TEST_TMPDIR/sandbox-env"
+  cat >"$script" <<'EOF'
+#!/usr/bin/env bash
+echo "sandbox-env: Keychain entry not found" >&2
+exit 1
+EOF
+  chmod +x "$script"
+
+  run collect_binding_env "$script"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"sandbox-env exited non-zero"* ]]
+}
+
+@test "collect_binding_env — fixture script picks up env vars that reach docker" {
+  # Integration proxy: verifies that a fixture sandbox-env script on the role
+  # surface produces valid output that the runner would pass to docker via
+  # --env-file. Does not invoke docker; validates that the hook's output
+  # satisfies the KEY=value contract.
+  local role_surface="$BATS_TEST_TMPDIR/role-surface"
+  mkdir -p "$role_surface"
+  cat >"$role_surface/sandbox-env" <<'EOF'
+#!/usr/bin/env bash
+echo "GH_TOKEN=fixture_token_123"
+EOF
+  chmod +x "$role_surface/sandbox-env"
+
+  result="$(collect_binding_env "$role_surface/sandbox-env")"
+  [ "$result" = "GH_TOKEN=fixture_token_123" ]
+  # Key matches the KEY=value format that docker --env-file accepts.
+  [[ "$result" =~ ^[A-Z_][A-Z0-9_]*=.* ]]
+}
+
 # === dispatch_one — snapshot failure mid-dispatch =========================
 #
 # Regression: the three take_snapshot calls inside dispatch_one were bare
