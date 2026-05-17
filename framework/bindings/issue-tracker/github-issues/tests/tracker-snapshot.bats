@@ -286,3 +286,65 @@ JSON
   [ "$status_val" = "done" ]
   [ "$eligible_val" = "false" ]
 }
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Origin-URL parsing (the GH_TRACKER_REPO fallback path)
+#
+# These tests exercise the code path that runs when GH_TRACKER_REPO is unset.
+# The script reads `git remote get-url origin` and parses owner/repo out of it.
+# Bug history: the pattern `^https\?://...` worked on GNU sed (Linux) but BSD
+# sed (macOS default) treats `\?` literally — so the protocol prefix never got
+# stripped and the parse silently produced garbage owner/name pairs.
+# ════════════════════════════════════════════════════════════════════════════════
+
+# Helper: spin up a scratch git repo with a known origin URL, then run
+# tracker-snapshot from inside it with the GH_TRACKER_REPO override unset.
+# Returns: leaves $CALL_LOG populated; caller asserts on grep'd flags.
+_parse_origin_and_call() {
+  local origin_url="$1" slug="$2"
+  local scratch="$BATS_TEST_TMPDIR/scratch-$BATS_TEST_NUMBER"
+  mkdir -p "$scratch"
+  ( cd "$scratch" && git init -q && git remote add origin "$origin_url" )
+
+  unset GH_TRACKER_REPO
+  export FIXTURE_RESPONSES_DIR="$FIXTURES/empty-feature/recorded-responses"
+
+  cd "$scratch"
+  run "$TRACKER_SNAPSHOT" "$slug"
+}
+
+@test "parses https://github.com/<owner>/<repo>.git origin URL" {
+  _parse_origin_and_call "https://github.com/some-owner/some-repo.git" "some-slug"
+  assert_success
+  # The gh shim records every call with its full arg list; assert the
+  # owner/name flags carry the *parsed* values, not the raw URL fragment.
+  run cat "$CALL_LOG"
+  assert_output --partial "owner=some-owner"
+  assert_output --partial "name=some-repo"
+  refute_output --partial "owner=https:"
+  refute_output --partial "name=some-repo.git"
+}
+
+@test "parses https://github.com/<owner>/<repo> origin URL (no .git suffix)" {
+  _parse_origin_and_call "https://github.com/some-owner/some-repo" "some-slug"
+  assert_success
+  run cat "$CALL_LOG"
+  assert_output --partial "owner=some-owner"
+  assert_output --partial "name=some-repo"
+}
+
+@test "parses http://github.com/<owner>/<repo>.git origin URL" {
+  _parse_origin_and_call "http://github.com/some-owner/some-repo.git" "some-slug"
+  assert_success
+  run cat "$CALL_LOG"
+  assert_output --partial "owner=some-owner"
+  assert_output --partial "name=some-repo"
+}
+
+@test "parses git@github.com:<owner>/<repo>.git origin URL (SSH form)" {
+  _parse_origin_and_call "git@github.com:some-owner/some-repo.git" "some-slug"
+  assert_success
+  run cat "$CALL_LOG"
+  assert_output --partial "owner=some-owner"
+  assert_output --partial "name=some-repo"
+}

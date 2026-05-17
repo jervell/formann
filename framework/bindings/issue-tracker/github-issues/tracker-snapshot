@@ -49,9 +49,13 @@ else
     echo "tracker-snapshot: no git remote 'origin'; set GH_TRACKER_REPO=owner/repo" >&2
     exit "$_EXIT_USAGE"
   fi
-  # Parse owner/repo from https://github.com/OWNER/REPO[.git] or git@github.com:OWNER/REPO[.git]
+  # Parse owner/repo from https://github.com/OWNER/REPO[.git] or git@github.com:OWNER/REPO[.git].
+  # Use ERE (`sed -E`) so `https?` works on both GNU and BSD sed — the prior BRE
+  # form `https\?` matched on GNU sed but BSD sed (macOS default) treats `\?`
+  # literally, so the protocol prefix never got stripped and the parse fell
+  # through to `${_owner_repo%%/*}` producing garbage like `https:` as the owner.
   _owner_repo="$(printf '%s' "$_remote_url" | \
-    sed 's|^https\?://[^/]*github\.com/||;s|^git@[^:]*github\.com:||;s|\.git$||')"
+    sed -E 's|^https?://[^/]*github\.com/||;s|^git@[^:]*github\.com:||;s|\.git$||')"
   if [ -z "$_owner_repo" ] || ! printf '%s' "$_owner_repo" | grep -q '/'; then
     echo "tracker-snapshot: cannot parse GitHub owner/repo from '$_remote_url'" >&2
     exit "$_EXIT_USAGE"
