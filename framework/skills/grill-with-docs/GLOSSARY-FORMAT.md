@@ -3,9 +3,9 @@
 ## Structure
 
 ```md
-# {Context Name}
+# {Project Name}
 
-{One or two sentence description of what this context is and why it exists.}
+{One or two sentence description of what this project is and why this glossary exists.}
 
 ## Terms
 
