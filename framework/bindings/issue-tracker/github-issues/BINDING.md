@@ -235,10 +235,26 @@ To determine the suffix, scan the issue's existing comment timeline before posti
 
 ```bash
 gh issue view <N> --json comments \
-  --jq '[.comments[].body | split("\n")[0]] | map(select(startswith("### <Kind> — <YYYY-MM-DD>"))) | length'
+  --jq '[.comments[].body | split("\n")[0]] |
+    map(select(
+      startswith("### <Kind>") and
+      (ltrimstr("### <Kind>") | test("^( \\([0-9]+\\))? — <YYYY-MM-DD>$"))
+    )) | length'
 ```
 
+The check is split into two parts: `startswith` matches the literal `### <Kind>` prefix; `test()` matches the remainder against a regex that accepts both the un-suffixed form (` — <YYYY-MM-DD>`) and the `(N)`-suffixed form (` (N) — <YYYY-MM-DD>`). Keeping `<Kind>` out of the regex means kind values that contain regex metacharacters — for example, `Review (AFK gate)` contains `(` and `)` — are handled safely by `startswith` with no escaping required.
+
 If the count is `0`, post without a suffix. If the count is `n ≥ 1`, use suffix `(n+1)`.
+
+**Worked example — three same-day Implementation comments:**
+
+| Call | Prior same-day same-kind headings | `count` | New heading |
+|------|-----------------------------------|---------|-------------|
+| 1st  | (none) | 0 | `### Implementation — 2026-05-16` |
+| 2nd  | `### Implementation — 2026-05-16` | 1 | `### Implementation (2) — 2026-05-16` |
+| 3rd  | `### Implementation — 2026-05-16`, `### Implementation (2) — 2026-05-16` | 2 | `### Implementation (3) — 2026-05-16` |
+
+The third call is the case the old recipe mishandled: `startswith("### Implementation — 2026-05-16")` failed to match `### Implementation (2) — 2026-05-16` (the `(2)` suffix shifts the `—` past character 17), so the old recipe returned `count = 1` and posted a duplicate `(2)`. The new recipe matches both the un-suffixed and `(N)`-suffixed headings, returning `count = 2` → suffix `(3)`.
 
 **Web-UI comments:** Comments posted through the GitHub web UI that do not carry the `### <Kind> — <date>` heading are treated as unstructured notes. Nothing breaks — the comment-timeline reader ignores them for kind-classification purposes; they remain visible in the timeline.
 
