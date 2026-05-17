@@ -26,7 +26,7 @@ A maintainer chooses the binding by where the role-surface symlink points; the c
 3. As a maintainer on local-markdown today, I want the GH binding to ship without regressing local-markdown, so my existing repo keeps working untouched.
 4. As a maintainer, I want a feature's title to live in GitHub's native title field and the PRD to live in the parent issue body, so the PRD is rendered markdown and the title appears in every UI surface (lists, search, PR autolinks) without duplication or drift.
 5. As a maintainer, I want feature → vertical-slice hierarchy modelled as parent → sub-issues, so navigation is native in the GitHub UI.
-6. As a maintainer, I want the feature slug stored as the label `formann:slug:<slug>` on the parent issue, so the slug is visible in the UI, queryable via the API, and not lost to a careless body edit. ADR-0005 records why this beat the alternatives (body-marker, title-prefix, no-slug-storage).
+6. As a maintainer, I want the feature slug stored as the label `formann:slug:<slug>` on the parent issue, so the slug is visible in the UI, queryable via the API, and not lost to a careless body edit. ADR-0006 records why this beat the alternatives (body-marker, title-prefix, no-slug-storage).
 7. As a maintainer, I want feature-slug uniqueness detected at creation time and at every snapshot read, so the slug is a reliable identifier even though GitHub labels carry no uniqueness constraint.
 8. As a maintainer, I want binding-native refs to use GitHub's `#N` form (inside `## Blocked by`, prose, and commit messages, where GitHub autolinks them), while the runner's CLI keeps the portable `<feature>/<N>` form across bindings. Skills and the runner translate between the two by indexing into the current snapshot.
 9. As a maintainer, I want the runner and `review-issue` to derive the current feature from the snapshot's `feature` field (not by regex-parsing it out of the ref), so the ref shape stays a binding-internal concern.
@@ -61,7 +61,7 @@ A maintainer chooses the binding by where the role-surface symlink points; the c
 
 ### Object model
 
-ADR-0005 records why parent-issue-with-sub-issues and slug-as-label beat their respective alternatives.
+ADR-0006 records why parent-issue-with-sub-issues and slug-as-label beat their respective alternatives.
 
 | Concept | GitHub representation |
 |---|---|
@@ -103,7 +103,7 @@ ADR-0005 records why parent-issue-with-sub-issues and slug-as-label beat their r
 - Refresh the bail-flow narrative in `framework/afk-runner.md` and `framework/lifecycle.md` to clarify that `tracker:`-prefixed commits and the commit-then-propagate dance are local-markdown's mechanics, not a runner contract. Under GH binding, a `/implement` bail makes an API call and lands no commit; the abort-flag logic must still work in the no-commit case.
 - Refresh comments around `gate_dirty → gate-failed` to drop the file-binding-specific rationale; the check itself stays universal.
 
-**ADR-0005** — Records two related architectural choices: (a) "parent issue with sub-issues" over milestones, labels-only, and Projects v2; (b) "slug as label" over body-marker, title-prefix, and no-slug-storage. The PRD captures the *what*; the ADR captures the *why we didn't pick the obvious alternatives*.
+**ADR-0006** — Records two related architectural choices: (a) "parent issue with sub-issues" over milestones, labels-only, and Projects v2; (b) "slug as label" over body-marker, title-prefix, and no-slug-storage. The PRD captures the *what*; the ADR captures the *why we didn't pick the obvious alternatives*.
 
 ### Verb realizations (summary; full detail in BINDING.md)
 
@@ -138,7 +138,7 @@ GitHub labels carry no uniqueness constraint. The binding enforces slug uniquene
 - **At snapshot read (`tracker-snapshot <slug>`):** Query for `formann:slug:<slug>` AND `formann:feature`. If 0 matches → emit empty snapshot `{"feature":"<slug>","issues":[]}`, exit 0 (mirrors local-markdown's missing-feature-dir behavior). If 1 match → normal snapshot. If ≥2 matches → exit non-zero with a stderr message naming both parent issues and a recovery recipe ("remove the `formann:slug:<slug>` label from one of: #N, #M").
 - **At snapshot list (`tracker-snapshot --list`):** Query for `is:open label:formann:feature`, extract each issue's `formann:slug:*` label. Deduplicate by parent issue number; if two parents share a slug label, list the slug once and write a stderr warning naming both parents.
 
-Together, these checks make the slug a reliable identifier even though GitHub doesn't enforce it. Maintainers can still violate by hand-applying labels; every entry point catches it. ADR-0005 records why the alternatives (body-marker, title-prefix, no-slug-storage) were rejected.
+Together, these checks make the slug a reliable identifier even though GitHub doesn't enforce it. Maintainers can still violate by hand-applying labels; every entry point catches it. ADR-0006 records why the alternatives (body-marker, title-prefix, no-slug-storage) were rejected.
 
 ### Framework refactor scope
 
@@ -241,7 +241,7 @@ A good test exercises external behavior — the contract a caller relies on — 
 
 ## Further Notes
 
-- **ADR-0005** records two architectural choices: (a) "parent issue with sub-issues" over milestones, labels-only, and Projects v2; (b) "slug as label" over body-marker, title-prefix, and no-slug-storage. The PRD captures the *what*; the ADR captures the *why we didn't pick the obvious alternatives*.
+- **ADR-0006** records two architectural choices: (a) "parent issue with sub-issues" over milestones, labels-only, and Projects v2; (b) "slug as label" over body-marker, title-prefix, and no-slug-storage. The PRD captures the *what*; the ADR captures the *why we didn't pick the obvious alternatives*.
 - **Hard limits, all documented in BINDING.md with failure mode and workaround:**
   - 100 sub-issues per parent — features approaching this cap should split into siblings, not extend nesting.
   - 8 levels of sub-issue nesting — irrelevant in practice (Formann uses 1 level: feature → slices).
