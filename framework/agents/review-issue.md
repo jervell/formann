@@ -25,7 +25,7 @@ An issue reference. If none was supplied — or none can be inferred unambiguous
 
 ## What to read
 
-The issue file (including the agent brief's acceptance criteria and the in-review summary's **Evidence** block), the PRD (light read for context), `CONTEXT.md`, ADRs under `docs/adr/` relevant to the changed code, the diff, and changed files in full.
+The issue file (including the agent brief's acceptance criteria and the in-review summary's **Evidence** block), the PRD (light read for context), `GLOSSARY.md`, ADRs under `docs/adr/` relevant to the changed code, the diff, and changed files in full.
 
 Read the diff first, then read changed files in full to understand surrounding patterns and invariants. Focus findings on the changed code, but informed by context.
 

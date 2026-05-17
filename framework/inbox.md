@@ -6,7 +6,7 @@ The inbox is optional. Projects that don't use one simply have no `.inbox.md` fi
 
 ## Conventions
 
-- The inbox lives at the project root, parallel to `CONTEXT.md` and `.out-of-scope/`.
+- The inbox lives at the project root, parallel to `GLOSSARY.md` and `.out-of-scope/`.
 - Short entries are bullets in `.inbox.md`.
 - An entry that needs more than one line is a markdown link to a body file at `.inbox/<slug>.md`. Create `.inbox/` lazily — only when the first long entry appears.
 - Entries are dated where useful (e.g. `2026-04-18 Dropdown misaligned on mobile`). Optional, not required.

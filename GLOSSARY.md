@@ -2,9 +2,13 @@
 
 The framework that lets a maintainer orchestrate autonomous coding agents on tracked issues. Defines the lifecycle, the role surfaces consumed by skills, and the symlink-based shape that consumer repos take when they adopt it.
 
-## Language
+## Terms
 
 ### Framework structure
+
+**Glossary**:
+The single vocabulary file at the consumer's root (`GLOSSARY.md`) that defines the project's canonical terms and redirects legacy aliases to their replacements.
+_Avoid_: context, CONTEXT.md, context map, ubiquitous language doc
 
 **Formann**:
 The framework as a whole — repo, code, docs.

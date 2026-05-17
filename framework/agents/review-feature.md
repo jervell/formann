@@ -22,7 +22,7 @@ A feature name. If none is supplied in the prompt, default to the active feature
 
 ## What to read
 
-The PRD, all issue files in the feature, `CONTEXT.md`, ADRs under `docs/adr/` relevant to the changed code, the diff, and changed files in full.
+The PRD, all issue files in the feature, `GLOSSARY.md`, ADRs under `docs/adr/` relevant to the changed code, the diff, and changed files in full.
 
 Read the diff first, then read changed files in full to understand surrounding patterns and invariants. Focus findings on the changed code, but informed by context.
 
