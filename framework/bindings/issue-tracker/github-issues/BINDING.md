@@ -453,6 +453,10 @@ These are independent API calls. **Sequence matters:** close first so that a par
 
 The `formann:archived` label is durable — it survives `gh issue reopen` and persists as the intentional archive signal even while the issue is temporarily open.
 
+## Commit-message convention
+
+Convention: commits that do work toward an issue reference the issue as `#N` in the commit message. GitHub auto-links the reference and renders it in the issue timeline. Tooling — for example the `review-issue` agent — relies on this to resolve "what changed for issue N" by scanning commits on the current branch. Tracker-mutation commits posted by `/triage` already follow this; extend it to work commits.
+
 ## Issue template
 
 Under the github-issues binding, sub-issue bodies follow the same template as the local-markdown binding, with one per-binding difference: **`## Parent` is omitted**.

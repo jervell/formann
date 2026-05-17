@@ -32,7 +32,7 @@ The issue ref is appended to this prompt below the `---` separator at the end. I
    - **Set the state to `done`** (clean verdict only) — "set the state to `done`" per BINDING.md.
    - **Comment with `Review (AFK gate)`** — "comment with `Review (AFK gate)`" per BINDING.md.
 
-   How the operation lands is binding-specific. Under local-markdown it is a single `tracker:` commit (message: `tracker: review <ref> → done` or `tracker: review <ref> → blocked`). Under GitHub Issues it is one or two API calls; no commit is produced. Either way, do not split the operation across separate sessions or invocations.
+   Do not split the operation across separate sessions or invocations.
 
 7. **Emit findings + verdict on stdout.** Your final response text is what lands in `<NN>-review.log`. Make it the review-issue agent's output verbatim — the exact string the Agent tool returned in step 2 — then on its own line:
 
@@ -50,7 +50,7 @@ The issue ref is appended to this prompt below the `---` separator at the end. I
 
 ## Constraints
 
-- **One logical tracker operation, total.** The comment append plus (on clean) the state transition are one binding operation. Do not split. The realization is binding-specific: a single `tracker:` commit for local-markdown; API calls that land no commit for GitHub Issues.
+- **One logical tracker operation, total.** The comment append plus (on clean) the state transition are one binding operation. Do not split.
 - **Verbatim findings.** The comment body is the review-issue agent's output, unedited. The `Quality over quantity` rule the agent already follows constrains length.
 - **Trust the agent's severity.** Do not re-threshold. Anything the agent flagged at Critical severity → blocked. The gate does not second-guess severity.
 - **No status flip on `blocked`.** State stays `in-review`. Maintainer reads on return and decides manually.
