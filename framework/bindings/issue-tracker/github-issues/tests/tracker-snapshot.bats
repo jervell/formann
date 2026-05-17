@@ -89,8 +89,8 @@ graphql_call_count() {
   assert_snapshot_matches_golden "single-issue-feature" "single-issue-feature"
 }
 
-@test "multi-issue priority ordering — subIssues API order preserved, #N tiebreaker" {
-  assert_snapshot_matches_golden "multi-issue-priority-tiebreaker" "multi-issue"
+@test "multi-issue priority ordering — subIssues API order preserved unchanged" {
+  assert_snapshot_matches_golden "multi-issue-priority-api-order" "multi-issue"
 }
 
 @test "unresolved #N blocker — conservative-false eligibility" {

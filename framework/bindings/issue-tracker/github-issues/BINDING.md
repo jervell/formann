@@ -476,7 +476,7 @@ Field notes:
 ### Ordering rules
 
 **`tracker-snapshot <slug>` sub-issue order:**
-Sub-issues are emitted in the order returned by the GraphQL `subIssues` connection, which reflects GitHub's UI priority order (maintainer-adjustable via drag-and-drop). `#N` ascending is applied as a stable tiebreaker within equal-priority groups. Dragging a sub-issue to the top of the sub-issue panel makes it the next eligible pick for the AFK runner.
+Sub-issues are emitted in the order returned by the GraphQL `subIssues` connection, which reflects GitHub's UI priority order (maintainer-adjustable via drag-and-drop). Each sub-issue occupies a unique position, so the API-returned order is already deterministic; no tiebreaker is applied. Dragging a sub-issue to the top of the sub-issue panel makes it the next eligible pick for the AFK runner.
 
 **`tracker-snapshot --list` order:**
 Features are returned ordered by parent issue number ascending (`#N` ASC). This is the GitHub-issues binding's list order; local-markdown lists alphabetically. Consumers must not assume cross-binding parity.

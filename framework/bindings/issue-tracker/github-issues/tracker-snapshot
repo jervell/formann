@@ -230,10 +230,8 @@ if [ "$_parent_count" -ge 2 ]; then
 fi
 
 # 1 match — extract sub-issues from the response.
-# The subIssues connection is already in priority order; we preserve that
-# order and use #N ascending as a stable tiebreaker (applied via sort -n
-# on a secondary key, but since each position is unique it never changes
-# the primary ordering).
+# The subIssues connection returns items in UI priority order; each position is
+# unique, so the API-returned order is already deterministic. No sort is applied.
 
 _sub_json="$(printf '%s' "$_resp" | jq -c '.data.repository.issues.nodes[0].subIssues.nodes[]')"
 
