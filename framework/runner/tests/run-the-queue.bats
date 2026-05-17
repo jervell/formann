@@ -1010,7 +1010,7 @@ EOF
   [ "$rc" -eq 1 ]
   [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:pre" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|FAIL|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
 }
 
 @test "dispatch_one — post-implement snapshot failure sets named stop reason and records iteration" {
@@ -1040,7 +1040,7 @@ EOF
   [ "$rc" -eq 1 ]
   [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-implement" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|FAIL|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
 }
 
 @test "dispatch_one — post-gate snapshot failure sets named stop reason and records iteration" {
@@ -1088,7 +1088,7 @@ EOF
   [ "$rc" -eq 1 ]
   [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-gate" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|FAIL|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
 }
 
 # === run_single — refusal cases ===========================================
@@ -1386,7 +1386,7 @@ setup_eligibility_test() {
   [ "$RUNNER_LAST_OUTCOME" = "success" ]
   # One record, combined label `done`, review-log marker present.
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|done|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y" ]]
   # Two propagations: post-implement and post-gate.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
@@ -1447,7 +1447,7 @@ setup_eligibility_test() {
   # Blocked is operationally clean — counter resets, no failure.
   [ "$RUNNER_LAST_OUTCOME" = "success" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|blocked|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y" ]]
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
@@ -1476,7 +1476,7 @@ setup_eligibility_test() {
   [ "$rc" -ne 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|gate-failed|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y" ]]
   # Only the post-implement propagation ran; the gate-failed branch
   # does not propagate.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
@@ -1501,7 +1501,7 @@ setup_eligibility_test() {
 
   [ "$rc" -ne 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|gate-failed|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y" ]]
 }
 
 @test "dispatch_one — RUNNER_INTERRUPTED between implement and gate prevents gate dispatch" {
@@ -1541,7 +1541,7 @@ setup_eligibility_test() {
   [ ! -s "$TEST_GATE_CALLED" ]
   # Implement label recorded (in-review since implement succeeded).
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|in-review|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|in-review|"* ]]
 }
 
 @test "dispatch_one — AFK dirty post-gate checkout overrides blocked verdict to gate-failed" {
@@ -1576,7 +1576,7 @@ setup_eligibility_test() {
   [ "$rc" -ne 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|gate-failed|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y" ]]
   # Only the post-implement propagation ran; gate-failed skips gate propagation.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
 }
@@ -1646,8 +1646,8 @@ afk-runner/03|done|301'
 }
 
 @test "format_summary_md — heading, run line, stop reason, per-issue table with logs" {
-  input='afk-runner/01|in-review|42|
-afk-runner/02|FAIL|18|'
+  input='afk-runner|01|afk-runner/01|in-review|42|
+afk-runner|02|afk-runner/02|FAIL|18|'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
@@ -1665,11 +1665,11 @@ afk-runner/02|FAIL|18|'
 }
 
 @test "format_summary_md — gate-bearing rows include the review-log link" {
-  input='afk-runner/01|done|42|y
-afk-runner/02|blocked|36|y
-afk-runner/03|gate-failed|11|y
-afk-runner/04|in-review|17|
-afk-runner/05|FAIL|3|'
+  input='afk-runner|01|afk-runner/01|done|42|y
+afk-runner|02|afk-runner/02|blocked|36|y
+afk-runner|03|afk-runner/03|gate-failed|11|y
+afk-runner|04|afk-runner/04|in-review|17|
+afk-runner|05|afk-runner/05|FAIL|3|'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
@@ -1691,7 +1691,7 @@ afk-runner/05|FAIL|3|'
 }
 
 @test "format_summary_md — interrupted state surfaces in the run line" {
-  result="$(printf 'afk-runner/01|in-review|42\n' | format_summary_md \
+  result="$(printf 'afk-runner|01|afk-runner/01|in-review|42\n' | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:13:27 interrupted interrupted)"
   echo "$result" | grep -q -- '- Run: 20260506-091245.*started 09:12:45.*interrupted 09:13:27' || { echo "$result"; false; }
   echo "$result" | grep -q -- '- Stop reason: interrupted$' || { echo "$result"; false; }
@@ -1703,6 +1703,17 @@ afk-runner/05|FAIL|3|'
   echo "$result" | grep -q '^| issue | outcome | duration | logs |$' || false
   # No data rows expected.
   ! echo "$result" | grep -q '^| afk-' || false
+}
+
+@test "format_summary_md — GH-shaped ref (#N) emits working nn-based log link" {
+  # Record schema: feature|nn|ref|outcome|duration|review_present
+  input='some-feature|42|#42|in-review|37|'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    some-feature 20260506-091245 09:12:45 09:13:22 ended queue-empty)"
+
+  # Issue column shows binding-native ref (#42); log link uses plain nn (42.log).
+  echo "$result" | grep -qF '| #42 | in-review | 37s | [42.log](42.log) |' \
+    || { echo "$result"; false; }
 }
 
 @test "format_preflight_summary_md — names the failing invariant" {
@@ -1818,7 +1829,7 @@ afk-runner/05|FAIL|3|'
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   [ "$(wc -l <"$TEST_PROPAGATE_CALLED" | tr -d ' ')" = "1" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|FAIL|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
 }
 
 @test "dispatch_one — non-success classifier with commit but propagation halt records failure" {
@@ -1860,7 +1871,7 @@ afk-runner/05|FAIL|3|'
   # swallow the halt just because the classifier already said failure.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLED" | tr -d ' ')" = "1" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f/01|FAIL|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
 }
 
 # === run_loop — end-to-end output capture ==================================
@@ -1897,7 +1908,7 @@ setup_loop_output_test() {
     fi
     local label
     if [ "$RUNNER_LAST_OUTCOME" = "success" ]; then label="in-review"; else label="FAIL"; fi
-    record_dispatch "$ref" "$label" 1
+    record_dispatch "$feature" "$nn" "$ref" "$label" 1
     [ "$RUNNER_LAST_OUTCOME" = "success" ]
   }
 
@@ -1939,7 +1950,7 @@ setup_loop_output_test() {
 
   RUN_DIR="$BATS_TEST_TMPDIR/run-summary"
   mkdir -p "$RUN_DIR"
-  RUN_DISPATCHES=("f/01|in-review|42" "f/02|FAIL|18")
+  RUN_DISPATCHES=("f|01|f/01|in-review|42" "f|02|f/02|FAIL|18")
   RUN_STOP_REASON="queue-empty"
   RUNNER_INTERRUPTED=0
 
@@ -2666,10 +2677,10 @@ setup_propagate_test() {
 
 @test "format_multi_feature_summary_md — heading, run line, stop reason, encounter-order sections" {
   input='F|alpha|drained
-I|alpha/01|done|42|y
+I|alpha|01|alpha/01|done|42|y
 F|beta|skipped:branch-missing
 F|gamma|drained
-I|gamma/01|in-review|13|'
+I|gamma|01|gamma/01|in-review|13|'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:30:00 ended completed)"
 
@@ -2723,10 +2734,22 @@ I|gamma/01|in-review|13|'
 }
 
 @test "format_multi_feature_summary_md — interrupted state surfaces in the run line" {
-  result="$(printf 'F|alpha|drained\nI|alpha/01|in-review|3|\n' | format_multi_feature_summary_md \
+  result="$(printf 'F|alpha|drained\nI|alpha|01|alpha/01|in-review|3|\n' | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:10:13 interrupted interrupted)"
   echo "$result" | grep -q -- '- Run: 20260513-101010.*started 10:10:10.*interrupted 10:10:13' || { echo "$result"; false; }
   echo "$result" | grep -q -- '- Stop reason: interrupted$' || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — GH-shaped ref (#N) emits feature-path log link" {
+  # I row schema: I|feature|nn|ref|outcome|duration|review_present
+  # Log path uses feature/nn so per-run artifacts don't collide across features.
+  input='F|some-feature|drained
+I|some-feature|42|#42|done|25|y'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:10:35 ended completed)"
+
+  echo "$result" | grep -qF '| #42 | done | 25s | [some-feature/42.log](some-feature/42.log) [some-feature/42-review.log](some-feature/42-review.log) |' \
+    || { echo "$result"; false; }
 }
 
 # === drain_one_feature + run_drain — outer-loop integration ================
@@ -3184,8 +3207,8 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
     "delta|feature-snapshot-failed"
   )
   RUN_DISPATCHES=(
-    "alpha/01|done|42|y"
-    "gamma/01|in-review|13|"
+    "alpha|01|alpha/01|done|42|y"
+    "gamma|01|gamma/01|in-review|13|"
   )
 
   ( finalize_run ) || true
@@ -3482,7 +3505,7 @@ _setup_mount_capture() {
   # The binding-native ref "#42" was forwarded to both dispatch stages.
   [ "$(cat "$TEST_DISPATCH_REF")" = "#42" ]
   [ "$(cat "$TEST_GATE_REF")" = "#42" ]
-  # record_dispatch uses the native ref "#42".
+  # record_dispatch carries feature, nn, and native ref "#42".
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "#42|done|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|42|#42|done|"* ]]
 }

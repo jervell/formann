@@ -356,11 +356,9 @@ format_summary_md() {
   printf '| issue | outcome | duration | logs |\n'
   printf '|-------|---------|----------|------|\n'
   awk -F'|' '
-    NF >= 3 {
-      ref=$1; out=$2; dur=$3;
-      review=(NF >= 4 ? $4 : "");
-      slash=index(ref, "/");
-      nn = (slash > 0) ? substr(ref, slash+1) : ref;
+    NF >= 5 {
+      feature=$1; nn=$2; ref=$3; out=$4; dur=$5;
+      review=(NF >= 6 ? $6 : "");
       logs = sprintf("[%s.log](%s.log)", nn, nn);
       if (review == "y") {
         logs = logs " [" nn "-review.log](" nn "-review.log)";
@@ -428,12 +426,12 @@ format_multi_feature_summary_md() {
       }
       next;
     }
-    NF >= 4 && $1 == "I" && in_table {
-      ref=$2; out=$3; dur=$4;
-      review=(NF >= 5 ? $5 : "");
-      logs = sprintf("[%s.log](%s.log)", ref, ref);
+    NF >= 6 && $1 == "I" && in_table {
+      feature=$2; nn=$3; ref=$4; out=$5; dur=$6;
+      review=(NF >= 7 ? $7 : "");
+      logs = sprintf("[%s/%s.log](%s/%s.log)", feature, nn, feature, nn);
       if (review == "y") {
-        logs = logs " [" ref "-review.log](" ref "-review.log)";
+        logs = logs " [" feature "/" nn "-review.log](" feature "/" nn "-review.log)";
       }
       printf "| %s | %s | %ss | %s |\n", ref, out, dur, logs;
       next;
@@ -503,9 +501,9 @@ write_abort_flag() {
 # aborts have a per-run dir to land SUMMARY.md and runner.log in) and
 # read by `finalize_run` on EXIT.
 #
-# `RUN_DISPATCHES` is an indexed array of `ref|outcome|duration` strings
-# (bash 3.2 friendly). `record_dispatch` appends; `print_dispatch_records`
-# emits them on stdout for the formatters.
+# `RUN_DISPATCHES` is an indexed array of `feature|nn|ref|outcome|duration`
+# strings (bash 3.2 friendly). `record_dispatch` appends;
+# `print_dispatch_records` emits them on stdout for the formatters.
 
 RUN_TS=""
 RUN_DIR=""
@@ -582,14 +580,14 @@ stop_runner_log_capture() {
   RUNNER_LOG_FIFO=""
 }
 
-# Append a `ref|label|duration|review_present` record to RUN_DISPATCHES.
-# `label` is the iteration's combined outcome — one of `done | blocked |
-# gate-failed | in-review | FAIL`. `review_present` is `y` when the
-# iteration produced a `<NN>-review.log` (any AFK iteration that reached
-# the gate stage) and empty otherwise.
+# Append a `feature|nn|ref|label|duration|review_present` record to
+# RUN_DISPATCHES. `label` is the iteration's combined outcome — one of
+# `done | blocked | gate-failed | in-review | FAIL`. `review_present` is
+# `y` when the iteration produced a `<NN>-review.log` (any AFK iteration
+# that reached the gate stage) and empty otherwise.
 record_dispatch() {
-  local ref="$1" label="$2" duration="$3" review="${4:-}"
-  RUN_DISPATCHES+=("$ref|$label|$duration|$review")
+  local feature="$1" nn="$2" ref="$3" label="$4" duration="$5" review="${6:-}"
+  RUN_DISPATCHES+=("$feature|$nn|$ref|$label|$duration|$review")
 }
 
 # Emit RUN_DISPATCHES records on stdout (one per line) for the table /
@@ -622,10 +620,10 @@ print_multi_feature_records() {
     outcome="${rec#*|}"
     printf 'F|%s|%s\n' "$feature" "$outcome"
     if [ "$outcome" = "drained" ] && [ "${#RUN_DISPATCHES[@]}" -gt 0 ]; then
-      local d_rec d_ref
+      local d_rec d_feature
       for d_rec in "${RUN_DISPATCHES[@]}"; do
-        d_ref="${d_rec%%|*}"
-        if [[ "$d_ref" == "$feature"/* ]]; then
+        d_feature="${d_rec%%|*}"
+        if [ "$d_feature" = "$feature" ]; then
           printf 'I|%s\n' "$d_rec"
         fi
       done
@@ -1434,7 +1432,7 @@ dispatch_one() {
   if ! pre_json="$(take_snapshot "$feature")"; then
     echo "runner: dispatch_one: tracker-snapshot failed (pre stage) for feature '$feature' issue '$nn'" >&2
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:pre"
-    record_dispatch "$feature/$nn" "FAIL" 0
+    record_dispatch "$feature" "$nn" "$feature/$nn" "FAIL" 0
     return 1
   fi
 
@@ -1446,7 +1444,7 @@ dispatch_one() {
   if ! ref="$(binding_native_ref "$feature" "$nn" "$pre_json")"; then
     echo "runner: dispatch_one: ($feature, $nn) not found in pre-snapshot" >&2
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:pre"
-    record_dispatch "$feature/$nn" "FAIL" 0
+    record_dispatch "$feature" "$nn" "$feature/$nn" "FAIL" 0
     return 1
   fi
 
@@ -1480,7 +1478,7 @@ dispatch_one() {
     snap_duration=$(( snap_fail_at - started_at ))
     echo "runner: dispatch_one: tracker-snapshot failed (post-implement stage) for ref '$ref'" >&2
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:post-implement"
-    record_dispatch "$ref" "FAIL" "$snap_duration"
+    record_dispatch "$feature" "$nn" "$ref" "FAIL" "$snap_duration"
     return 1
   fi
 
@@ -1546,7 +1544,7 @@ dispatch_one() {
       halt_duration=$(( $(date +%s) - started_at ))
       format_progress_outcome "$(now_clock)" "$ref" "implement" "halt → FAIL" "$halt_duration"
       write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_file"
-      record_dispatch "$ref" "FAIL" "$halt_duration"
+      record_dispatch "$feature" "$nn" "$ref" "FAIL" "$halt_duration"
       RUNNER_LAST_OUTCOME="failure"
       RUNNER_HALT_OCCURRED=1
       return 1
@@ -1564,7 +1562,7 @@ dispatch_one() {
     if [ "$post_eligible" = "true" ]; then
       write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_file"
     fi
-    record_dispatch "$ref" "FAIL" "$impl_duration"
+    record_dispatch "$feature" "$nn" "$ref" "FAIL" "$impl_duration"
     RUNNER_LAST_OUTCOME="failure"
     return 1
   fi
@@ -1579,7 +1577,7 @@ dispatch_one() {
   # reaching the gate container. Record what we have and exit cleanly so
   # the loop's top-of-iteration check handles the stop.
   if [ "$RUNNER_INTERRUPTED" -eq 1 ]; then
-    record_dispatch "$ref" "$impl_label" "$impl_duration"
+    record_dispatch "$feature" "$nn" "$ref" "$impl_label" "$impl_duration"
     RUNNER_LAST_OUTCOME="success"
     return 0
   fi
@@ -1604,7 +1602,7 @@ dispatch_one() {
     snap_iter_duration=$(( impl_duration + snap_gate_duration ))
     echo "runner: dispatch_one: tracker-snapshot failed (post-gate stage) for ref '$ref'" >&2
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:post-gate"
-    record_dispatch "$ref" "FAIL" "$snap_iter_duration" "y"
+    record_dispatch "$feature" "$nn" "$ref" "FAIL" "$snap_iter_duration" "y"
     return 1
   fi
 
@@ -1648,7 +1646,7 @@ dispatch_one() {
 
   if [ "$gate_verdict" = "gate-failed" ]; then
     write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file"
-    record_dispatch "$ref" "$combined_label" "$iter_duration" "y"
+    record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_duration" "y"
     RUNNER_LAST_OUTCOME="failure"
     return 1
   fi
@@ -1666,13 +1664,13 @@ dispatch_one() {
     iter_halt_duration=$(( impl_duration + gate_halt_duration ))
     format_progress_outcome "$(now_clock)" "$ref" "review" "halt → gate-failed" "$gate_halt_duration"
     write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file"
-    record_dispatch "$ref" "gate-failed" "$iter_halt_duration" "y"
+    record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$iter_halt_duration" "y"
     RUNNER_LAST_OUTCOME="failure"
     RUNNER_HALT_OCCURRED=1
     return 1
   fi
 
-  record_dispatch "$ref" "$combined_label" "$iter_duration" "y"
+  record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_duration" "y"
   RUNNER_LAST_OUTCOME="success"
   return 0
 }
