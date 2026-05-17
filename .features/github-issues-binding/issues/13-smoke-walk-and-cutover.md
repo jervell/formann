@@ -64,6 +64,12 @@ The slice is HITL because the smoke walk requires a maintainer driving the skill
 - `github-issues-binding/10`
 - `github-issues-binding/11`
 - `github-issues-binding/12`
+- `github-issues-binding/14`
+- `github-issues-binding/15`
+- `github-issues-binding/16`
+- `github-issues-binding/17`
+- `github-issues-binding/18`
+- `github-issues-binding/19`
 
 ## Agent Brief
 
