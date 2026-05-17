@@ -39,7 +39,7 @@ fi
 
 create_label() {
   local name="$1" color="$2" description="$3"
-  gh label create --force --name "$name" --color "$color" --description "$description"
+  gh label create --force "$name" --color "$color" --description "$description"
 }
 
 # Feature lifecycle

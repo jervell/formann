@@ -57,8 +57,11 @@ EXPECTED_LABELS=(
   run "$BOOTSTRAP_LABELS"
   assert_success
 
+  # `gh label create` takes the label name as a *positional* argument, not
+  # a --name flag. Assert on the positional form so this test fails when the
+  # script drifts back to --name (which gh CLI rejects with "unknown flag").
   for label in "${EXPECTED_LABELS[@]}"; do
-    assert grep -q -- "--name $label" "$CALL_LOG"
+    assert grep -qE -- "^label create --force $label( |$)" "$CALL_LOG"
   done
 }
 
@@ -111,9 +114,13 @@ EOF
 }
 
 @test "missing gh binary — exits non-zero with a clear stderr message" {
-  # Remove the fake gh so PATH has no gh at all.
+  # Remove the fake gh and isolate PATH to system dirs only — otherwise the
+  # host's real `gh` (Homebrew, etc.) leaks in and the test passes on machines
+  # without gh installed but fails on developer machines with `gh auth login`
+  # already set up.
   rm "$FAKE_BIN/gh"
   unset GH_TOKEN
+  export PATH="/usr/bin:/bin"
 
   run "$BOOTSTRAP_LABELS"
   assert_failure
