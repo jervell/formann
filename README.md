@@ -6,7 +6,7 @@ Methodology and tooling for running autonomous coding agents on tracked issues �
 
 ## What is Formann?
 
-Formann is a framework for running `/triage` and `/implement` as Claude Code skills against an issue tracker, with an optional AFK runner that drains a feature's queue in sandboxed containers while you're away from keyboard. The issue tracker is an abstract role; each consumer picks a binding for it. A consumer repo adopts Formann by symlinking framework content (skills, agents, lifecycle docs) through a single `.formann` indirection — see [`CONTEXT.md`](./CONTEXT.md) for the vocabulary and [`docs/adr/`](./docs/adr/) for the architectural decisions that shape it. Early extraction from a host project; expect churn.
+Formann is a framework for running `/triage` and `/implement` as Claude Code skills against an issue tracker, with an optional AFK runner that drains a feature's queue in sandboxed containers while you're away from keyboard. The issue tracker is an abstract role; each consumer picks a binding for it. A consumer repo adopts Formann by symlinking framework content (skills, agents, lifecycle docs) through a single `.formann` indirection — see [`GLOSSARY.md`](./GLOSSARY.md) for the vocabulary and [`docs/adr/`](./docs/adr/) for the architectural decisions that shape it. Early extraction from a host project; expect churn.
 
 ## Using Formann (consumer)
 
