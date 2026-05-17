@@ -292,9 +292,8 @@ JSON
 #
 # These tests exercise the code path that runs when GH_TRACKER_REPO is unset.
 # The script reads `git remote get-url origin` and parses owner/repo out of it.
-# Bug history: the pattern `^https\?://...` worked on GNU sed (Linux) but BSD
-# sed (macOS default) treats `\?` literally — so the protocol prefix never got
-# stripped and the parse silently produced garbage owner/name pairs.
+# Coverage spans both URL shapes (https://, git@:) and both sed dialects (GNU
+# on Linux, BSD on macOS) — the parse uses ERE so `https?` is portable.
 # ════════════════════════════════════════════════════════════════════════════════
 
 # Helper: spin up a scratch git repo with a known origin URL, then run
