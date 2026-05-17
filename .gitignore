@@ -22,4 +22,5 @@ __pycache__/
 /docs/formann/afk-runner.md
 /docs/formann/afk-runner-flow.md
 /runner/Dockerfile
+/.runner-state/
 # === /Formann self-install ===
