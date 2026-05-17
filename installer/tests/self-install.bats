@@ -134,6 +134,7 @@ _assert_block_lacks() {
   ! grep -qxF "$MARKER_START" "$consumer/.gitignore"
   ! grep -qxF "$MARKER_END" "$consumer/.gitignore"
   grep -qxF '/.formann' "$consumer/.gitignore"
+  grep -qxF '/.runner-state/' "$consumer/.gitignore"
 }
 
 # ---------------------------------------------------------------------------
@@ -191,6 +192,12 @@ _assert_block_lacks() {
   for doc in lifecycle.md inbox.md domain.md triage-states.md afk-runner.md afk-runner-flow.md; do
     _assert_block_contains "$FORMANN_FIXTURE/.gitignore" "/docs/formann/$doc"
   done
+}
+
+@test "managed block contains /.runner-state/ (framework runtime artifact)" {
+  run _run_self_install
+  assert_success
+  _assert_block_contains "$FORMANN_FIXTURE/.gitignore" '/.runner-state/'
 }
 
 @test "managed block contains /runner/Dockerfile" {
@@ -346,7 +353,8 @@ EOF
     '/docs/formann/triage-states.md' \
     '/docs/formann/afk-runner.md' \
     '/docs/formann/afk-runner-flow.md' \
-    '/runner/Dockerfile'
+    '/runner/Dockerfile' \
+    '/.runner-state/'
   do
     _assert_block_contains "$FORMANN_FIXTURE/.gitignore" "$entry"
   done

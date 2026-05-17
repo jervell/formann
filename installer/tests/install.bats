@@ -163,6 +163,12 @@ _run_installer() {
   grep -qxF '/.formann' "$CONSUMER/.gitignore"
 }
 
+@test ".gitignore contains /.runner-state/ after install (framework runtime artifact)" {
+  run _run_installer
+  assert_success
+  grep -qxF '/.runner-state/' "$CONSUMER/.gitignore"
+}
+
 # ---------------------------------------------------------------------------
 # CLAUDE.md snippet printed to stdout
 # ---------------------------------------------------------------------------
