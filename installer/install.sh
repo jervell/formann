@@ -19,6 +19,12 @@ set -euo pipefail
 MANAGED_BLOCK_START='# === Formann self-install (managed by installer — do not edit) ==='
 MANAGED_BLOCK_END='# === /Formann self-install ==='
 
+# Runtime artifacts: directories framework code creates inside the consumer
+# repo at runtime (not installer products). Listed in the consumer's .gitignore
+# alongside installer products so `git status` stays clean after the framework
+# runs. Entries are consumer-root-relative with a leading slash.
+FRAMEWORK_RUNTIME_ARTIFACTS=(/.runner-state/)
+
 # === Path discovery =========================================================
 
 detect_formann_path() {
@@ -232,6 +238,10 @@ write_managed_block() {
   while IFS=$'\t' read -r kind dest target; do
     entries+=("/$dest")
   done
+  local artifact
+  for artifact in "${FRAMEWORK_RUNTIME_ARTIFACTS[@]}"; do
+    entries+=("$artifact")
+  done
 
   local has_block=0
   if grep -qxF "$MANAGED_BLOCK_START" "$gitignore" \
@@ -293,6 +303,12 @@ update_gitignore() {
   if ! grep -qxF '/.formann' "$gitignore"; then
     echo '/.formann' >> "$gitignore"
   fi
+  local artifact
+  for artifact in "${FRAMEWORK_RUNTIME_ARTIFACTS[@]}"; do
+    if ! grep -qxF "$artifact" "$gitignore"; then
+      echo "$artifact" >> "$gitignore"
+    fi
+  done
 }
 
 # === CLAUDE.md snippet =======================================================
