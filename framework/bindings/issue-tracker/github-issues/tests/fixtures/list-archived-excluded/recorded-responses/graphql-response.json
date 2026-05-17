@@ -5,6 +5,7 @@
         "nodes": [
           {
             "number": 3,
+            "state": "OPEN",
             "labels": {
               "nodes": [
                 {"name": "formann:feature"},
@@ -13,7 +14,18 @@
             }
           },
           {
+            "number": 5,
+            "state": "CLOSED",
+            "labels": {
+              "nodes": [
+                {"name": "formann:feature"},
+                {"name": "formann:slug:gamma-feature"}
+              ]
+            }
+          },
+          {
             "number": 7,
+            "state": "OPEN",
             "labels": {
               "nodes": [
                 {"name": "formann:feature"},

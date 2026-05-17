@@ -104,6 +104,7 @@ if [ "$1" = "--list" ]; then
            orderBy: {field: NUMBER, direction: ASC}) {
       nodes {
         number
+        state
         labels(first: 30) { nodes { name } }
       }
     }
@@ -114,8 +115,11 @@ if [ "$1" = "--list" ]; then
 
   # Extract "<number>\t<slug>" pairs (one per line) from the response.
   # Issues with no formann:slug:* label are skipped.
+  # Defence-in-depth: explicitly drop closed entries even if the GraphQL
+  # states:[OPEN] clause were bypassed by a shim returning closed nodes.
   _pairs="$(printf '%s' "$_resp" | jq -r '
     .data.repository.issues.nodes[] |
+    select(.state == null or .state == "OPEN") |
     . as $issue |
     ( $issue.labels.nodes
       | map(.name | select(startswith("formann:slug:")))
