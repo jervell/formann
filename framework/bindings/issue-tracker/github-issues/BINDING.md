@@ -68,6 +68,45 @@ Return the set of issues in a feature with their metadata (ref, status, category
 
 **GitHub-issues realization:** Run `tracker-snapshot <slug>` to get the full snapshot for one feature (parent + all sub-issues). Run `tracker-snapshot --list` to enumerate all active feature slugs. Both forms emit JSON byte-compatible with the local-markdown binding's schema; only the `ref` value format differs (`#N` here, `<feature>/NN` there). See the [Snapshot contract](#snapshot-contract) section for the full schema, ordering rules, blocker resolution, slug-uniqueness cardinality handling, and transient-failure behaviour.
 
+Internally, `tracker-snapshot` drives a single `gh api graphql` query per invocation. Per-feature form:
+
+```bash
+gh api graphql \
+  -F owner="$_gh_owner" \
+  -F name="$_gh_name" \
+  -F slugLabel="formann:slug:<slug>" \
+  -f query='query($owner: String!, $name: String!, $slugLabel: String!) {
+    repository(owner: $owner, name: $name) {
+      issues(labels: ["formann:feature", $slugLabel], states: [OPEN], first: 10) {
+        nodes {
+          number
+          subIssues(first: 100) {
+            nodes { number state stateReason body labels(first: 30) { nodes { name } } }
+          }
+        }
+      }
+    }
+  }'
+```
+
+`--list` form swaps the `issues(...)` selector for the listing query:
+
+```bash
+gh api graphql \
+  -F owner="$_gh_owner" \
+  -F name="$_gh_name" \
+  -f query='query($owner: String!, $name: String!) {
+    repository(owner: $owner, name: $name) {
+      issues(labels: ["formann:feature"], states: [OPEN], first: 100,
+             orderBy: {field: NUMBER, direction: ASC}) {
+        nodes { number state labels(first: 30) { nodes { name } } }
+      }
+    }
+  }'
+```
+
+One GraphQL query per invocation keeps the rate-limit footprint cheap (≈5 points against the 5000-point/hour GraphQL budget). Blockers and eligibility resolve from the in-memory sub-issue set returned by the same query — no follow-up API calls.
+
 ### Set the state to `<state>`
 
 Transition an issue to a new lifecycle state.
@@ -601,4 +640,20 @@ The runner's sandbox network (`afk-runner-sandbox`) restricts RFC1918 outbound b
 
 ## GitHub Enterprise (GHE) prerequisite
 
-*(stub — to be filled in by a later slice)*
+This binding requires GitHub's **sub-issues** feature. Sub-issues went GA on github.com in 2025 and ship there unconditionally; on GitHub Enterprise Server, the feature must be present and enabled in the GHE version your Consumer points at.
+
+**What the binding uses:**
+
+- The `addSubIssue` GraphQL mutation for parent → sub-issue linking (see [Create an issue](#create-an-issue)).
+- The `subIssues` connection on the parent Issue node for snapshot reads and dispatch ordering (see [Snapshot contract](#snapshot-contract)).
+
+**Check before adoption.** From any clone authenticated against the GHE host:
+
+```bash
+gh api graphql -f query='{ __type(name: "Issue") { fields { name } } }' \
+  | jq '.data.__type.fields[] | select(.name == "subIssues")'
+```
+
+A non-empty object means the GHE version supports sub-issues. An empty result means the feature isn't available; this binding cannot be hosted there.
+
+**If your GHE lacks sub-issues:** stay on the `local-markdown` binding. Supporting older GHE versions would require a different parent-link mechanism (label-only, body-marker, milestones) and is deliberately out of scope (see the PRD's Out of Scope section).
