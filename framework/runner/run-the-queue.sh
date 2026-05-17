@@ -319,17 +319,19 @@ format_progress_outcome() {
   printf '[%s] %s %s → %s (%ss)\n' "$clock" "$ref" "$stage" "$label" "$duration"
 }
 
-# End-of-run table. Reads `ref|outcome|duration` records on stdin (one per
-# line). Emits a header row, one row per record, and a trailing
-# `stop reason: <reason>` line. Column widths size to the longest entry,
-# bounded below by the header label widths.
+# End-of-run table. Reads `feature|nn|ref|outcome|duration|review_present`
+# records on stdin (one per line — the `review_present` field is optional
+# and unused here). Emits a header row, one row per record, and a trailing
+# `stop reason: <reason>` line. The `issue` column shows the binding-native
+# `ref`; `feature` and `nn` are ignored for this view. Column widths size
+# to the longest entry, bounded below by the header label widths.
 format_end_of_run_table() {
   local stop_reason="$1"
   awk -v stop="$stop_reason" '
     BEGIN { FS="|"; max_ref=length("issue"); max_out=length("outcome"); max_dur=length("duration") }
-    NF >= 3 {
+    NF >= 5 {
       n++;
-      refs[n]=$1; outs[n]=$2; durs[n]=$3 "s";
+      refs[n]=$3; outs[n]=$4; durs[n]=$5 "s";
       if (length(refs[n]) > max_ref) max_ref = length(refs[n]);
       if (length(outs[n]) > max_out) max_out = length(outs[n]);
       if (length(durs[n]) > max_dur) max_dur = length(durs[n]);

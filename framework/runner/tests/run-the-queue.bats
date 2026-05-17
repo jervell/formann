@@ -1642,20 +1642,35 @@ setup_eligibility_test() {
 }
 
 @test "format_end_of_run_table — header, rows, trailing stop reason" {
-  input='afk-runner/01|in-review|42
-afk-runner/02|FAIL|18
-afk-runner/03|done|301'
+  # New-schema records: feature|nn|ref|outcome|duration|review_present.
+  input='afk-runner|01|afk-runner/01|in-review|42|
+afk-runner|02|afk-runner/02|FAIL|18|
+afk-runner|03|afk-runner/03|done|301|y'
   result="$(printf '%s\n' "$input" | format_end_of_run_table queue-empty)"
   # Header line — column names in order.
   echo "$result" | head -n 1 | grep -q '^issue ' || { echo "header missing 'issue'"; echo "$result"; false; }
   echo "$result" | head -n 1 | grep -q ' outcome ' || { echo "header missing 'outcome'"; false; }
   echo "$result" | head -n 1 | grep -q ' duration' || { echo "header missing 'duration'"; false; }
-  # One row per dispatch.
-  echo "$result" | grep -q 'afk-runner/01.*in-review.*42s' || { echo "row 01 missing"; echo "$result"; false; }
-  echo "$result" | grep -q 'afk-runner/02.*FAIL.*18s' || { echo "row 02 missing"; false; }
-  echo "$result" | grep -q 'afk-runner/03.*done.*301s' || { echo "row 03 missing"; false; }
+  # One row per dispatch — `issue` column shows the binding-native ref.
+  echo "$result" | grep -q '^afk-runner/01 .*in-review.* 42s *$' || { echo "row 01 missing"; echo "$result"; false; }
+  echo "$result" | grep -q '^afk-runner/02 .*FAIL.* 18s *$' || { echo "row 02 missing"; echo "$result"; false; }
+  echo "$result" | grep -q '^afk-runner/03 .*done.* 301s *$' || { echo "row 03 missing"; echo "$result"; false; }
+  # `feature` and `nn` are not exposed in their own columns.
+  ! echo "$result" | head -n 2 | tail -n 1 | grep -qE '^afk-runner +01 ' || { echo "feature/nn leaked into issue/outcome columns"; echo "$result"; false; }
   # Trailing stop-reason line below the table.
   echo "$result" | tail -n 1 | grep -q '^stop reason: queue-empty$' || { echo "stop reason missing"; echo "$result"; false; }
+}
+
+@test "format_end_of_run_table — GH-shaped ref (#N) renders binding-native issue column" {
+  # Under the github-issues binding the ref carries no `/`. The previous
+  # schema relied on the operator-visible `issue` column to be the ref;
+  # this test pins that contract under a GH-shaped ref so future schema
+  # drift can't silently break the operator-facing table.
+  input='afk-runner|42|#42|in-review|12|
+afk-runner|43|#43|FAIL|5|y'
+  result="$(printf '%s\n' "$input" | format_end_of_run_table queue-empty)"
+  echo "$result" | grep -q '^#42 .*in-review.* 12s *$' || { echo "GH row 42 missing"; echo "$result"; false; }
+  echo "$result" | grep -q '^#43 .*FAIL.* 5s *$' || { echo "GH row 43 missing"; echo "$result"; false; }
 }
 
 @test "format_end_of_run_table — empty input still prints header + stop reason" {
@@ -1955,12 +1970,15 @@ setup_loop_output_test() {
   '
   assert_success
 
-  # End-of-run table on stdout — header + 2 rows + stop reason.
+  # End-of-run table on stdout — header + 2 rows + stop reason. Row-shape
+  # regexes anchor `ref` to the issue column and `duration` to its own
+  # column so a future field-index drift can't slip through a partial match
+  # (e.g. `f/01` leaking into the duration column as `f/01s`).
   assert_output --partial "issue"
   assert_output --partial "outcome"
   assert_output --partial "duration"
-  assert_output --partial "f/01"
-  assert_output --partial "f/02"
+  assert_output --regexp 'f/01 +in-review +1s'
+  assert_output --regexp 'f/02 +in-review +1s'
   assert_output --partial "stop reason: queue-empty"
 }
 
