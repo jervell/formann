@@ -53,7 +53,12 @@ EOF
 }
 
 @test "security binary absent — exits 2 with clear stderr error" {
+  # Remove the fake `security` and isolate PATH to a dir that has bash but no
+  # `security` binary — otherwise macOS's `/usr/bin/security` leaks in, finds
+  # the developer's real Keychain entry, and the script succeeds when this
+  # test demands it fail. `/bin` ships bash on macOS but no security tool.
   rm "$FAKE_BIN/security"
+  export PATH="$FAKE_BIN:/bin"
 
   run "$SANDBOX_ENV"
   [ "$status" -eq 2 ]
