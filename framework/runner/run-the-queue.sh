@@ -1202,7 +1202,7 @@ collect_binding_env() {
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     if [[ ! "$line" =~ ^[A-Z_][A-Z0-9_]*= ]]; then
-      echo "runner: sandbox-env emitted malformed line (expected KEY=value with uppercase key): $line" >&2
+      echo "runner: sandbox-env emitted malformed line (expected KEY=value with uppercase key): ${line%%=*}" >&2
       return 1
     fi
     printf '%s\n' "$line"

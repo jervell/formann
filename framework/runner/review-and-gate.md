@@ -4,7 +4,7 @@ The issue's implementation has just landed on the current branch and the issue i
 
 ## Issue reference
 
-The issue ref is appended to this prompt below the `---` separator at the end. It looks like `<feature>/<NN>` (canonical form).
+The issue ref is appended to this prompt below the `---` separator at the end. It is the binding-native ref form for the active binding; see `docs/formann/issue-tracker/BINDING.md` for the per-binding ref shape.
 
 ## Steps
 

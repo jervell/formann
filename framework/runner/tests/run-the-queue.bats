@@ -962,6 +962,25 @@ EOF
   [[ "$output" == *"sandbox-env exited non-zero"* ]]
 }
 
+@test "collect_binding_env — malformed line with uppercase key (mixed case) does not leak value" {
+  # Regression: the error message used to echo the full $line, which would
+  # expose the post-= value (e.g. a token) in stderr/runner.log. The fix
+  # echoes only ${line%%=*} (the key portion).
+  local script="$BATS_TEST_TMPDIR/sandbox-env"
+  cat >"$script" <<'EOF'
+#!/usr/bin/env bash
+echo "gH_TOKEN=ghp_secret-payload"
+EOF
+  chmod +x "$script"
+
+  run collect_binding_env "$script"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"malformed line"* ]]
+  # The secret payload must not appear anywhere in the error output.
+  [[ "$output" != *"secret-payload"* ]]
+  [[ "$output" != *"ghp_"* ]]
+}
+
 @test "collect_binding_env — fixture script picks up env vars that reach docker" {
   # Integration proxy: verifies that a fixture sandbox-env script on the role
   # surface produces valid output that the runner would pass to docker via

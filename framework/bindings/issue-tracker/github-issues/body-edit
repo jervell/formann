@@ -96,6 +96,8 @@ printf '%s' "$_body" | awk \
   }
   {
     body_nonempty = 1
+    # Strip trailing \r so CRLF-encoded bodies match the heading the same as LF bodies.
+    sub(/\r$/, "", $0)
 
     if (!in_section && $0 == heading) {
       found      = 1

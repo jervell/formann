@@ -282,3 +282,28 @@ BODY
   grep -q 'line three' "$WRITTEN_BODY_FILE"
   [[ "$(cat "$WRITTEN_BODY_FILE")" != *"old content"* ]]
 }
+
+# ── CRLF regression: heading match works on CRLF-encoded bodies ─────────────
+
+@test "CRLF-encoded body: heading still matches and section is replaced" {
+  # Regression: awk compared $0 == heading without stripping \r, so a
+  # CRLF-encoded body's "## Agent Brief\r" never matched "## Agent Brief".
+  export BODY_FIXTURE
+  # Build a CRLF body: each line ends with \r\n.
+  BODY_FIXTURE="$(printf '## Agent Brief\r\nold brief content\r\n## Other\r\nother content\r\n')"
+
+  NEW_CONTENT="$BATS_TEST_TMPDIR/new-brief"
+  printf '%s' 'new brief content' >"$NEW_CONTENT"
+
+  run "$BODY_EDIT" 42 "Agent Brief" "$NEW_CONTENT"
+  assert_success
+
+  written="$(cat "$WRITTEN_BODY_FILE")"
+  # Target section updated
+  [[ "$written" == *"new brief content"* ]]
+  [[ "$written" != *"old brief content"* ]]
+  # Heading present, Other section preserved
+  [[ "$written" == *"## Agent Brief"* ]]
+  [[ "$written" == *"## Other"* ]]
+  [[ "$written" == *"other content"* ]]
+}

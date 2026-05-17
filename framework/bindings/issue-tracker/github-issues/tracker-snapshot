@@ -221,7 +221,7 @@ _parent_count="$(printf '%s' "$_resp" | jq '.data.repository.issues.nodes | leng
 
 # 0 matches → empty snapshot.
 if [ "$_parent_count" -eq 0 ]; then
-  printf '{"feature":"%s","issues":[]}\n' "$_slug" | jq -c '.'
+  printf '{"feature":%s,"issues":[]}\n' "$(printf '%s' "$_slug" | jq -Rs '.')" | jq -c '.'
   exit 0
 fi
 
