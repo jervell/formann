@@ -11,7 +11,7 @@ Break a plan into independently-grabbable issues using vertical slices (tracer b
 
 ### 1. Gather context
 
-Work from whatever is already in the conversation context. If the user passes an issue reference (issue number, URL, or path) as an argument, read the issue.
+Work from whatever is already in the conversation context. If the user passes an issue reference (issue number, URL, or path) as an argument, read the issue. Otherwise, the current git branch identifies the feature — look up its PRD in the tracker.
 
 ### 2. Explore the codebase (optional)
 
