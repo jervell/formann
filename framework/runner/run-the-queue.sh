@@ -1707,7 +1707,7 @@ run_single() {
   # Look up the issue entry by nn (binding-agnostic) rather than by the
   # portable ref string, so this works for any binding's native ref shape.
   entry="$(jq -c --arg n "$ISSUE_NN" \
-    'first(.issues[] | select(.nn == $n)) // empty' <<<"$snap")"
+    'first(.issues[] | select((.nn | tonumber) == ($n | tonumber))) // empty' <<<"$snap")"
   if [ -z "$entry" ]; then
     reason="missing"
     detail="ref '$ARG_ISSUE_REF' is not present in feature '$ISSUE_FEATURE'"

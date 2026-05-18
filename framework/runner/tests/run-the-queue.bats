@@ -1223,6 +1223,44 @@ setup_run_single_test() {
   [ -s "$TEST_DISPATCH_CALLED" ]
 }
 
+@test "run_single — padded CLI nn resolves unpadded snapshot entry (03 vs 3)" {
+  setup_run_single_test
+  ARG_ISSUE_REF="f/03"
+  ISSUE_FEATURE="f"
+  ISSUE_NN="03"
+  take_snapshot() {
+    printf '{"feature":"f","issues":[{"ref":"f/3","nn":"3","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  }
+
+  set +e
+  run_single
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$RUN_STOP_REASON" = "single-dispatch (success)" ]
+  [ -s "$TEST_DISPATCH_CALLED" ]
+}
+
+@test "run_single — unpadded CLI nn resolves padded snapshot entry (3 vs 03)" {
+  setup_run_single_test
+  ARG_ISSUE_REF="f/3"
+  ISSUE_FEATURE="f"
+  ISSUE_NN="3"
+  take_snapshot() {
+    printf '{"feature":"f","issues":[{"ref":"f/03","nn":"03","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  }
+
+  set +e
+  run_single
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$RUN_STOP_REASON" = "single-dispatch (success)" ]
+  [ -s "$TEST_DISPATCH_CALLED" ]
+}
+
 # === check_feature_eligibility — CLI-input gate inside preflight ===========
 #
 # `--feature <slug>` / `--issue <feature>/<NN>` get their refusals here
