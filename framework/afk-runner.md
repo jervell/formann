@@ -376,7 +376,7 @@ log: .runner-state/runs/20260507-142133/03.log
 The `dispatch` field is `implement` for implement-stage failures and `gate` for gate-stage failures. The flag is written in three cases:
 
 1. **Implement classifier `failure` + post-status still eligible** — the genuine "stuck" case. The snapshot's `eligible: true` would re-pick it on the next iteration or next run. A logical bail where `/implement` flipped status to `needs-info` is already ineligible and does not trigger a flag — the status change itself prevents re-dispatch.
-2. **Gate-failed (including dirty-checkout override)** — the issue is at `in-review` (non-eligible), so the snapshot filter already excludes it. The flag is still written as a unified "what is the runner stuck on" surface.
+2. **Gate-failed** — the issue is at `in-review` (non-eligible), so the snapshot filter already excludes it. The flag is still written as a unified "what is the runner stuck on" surface.
 3. **Propagation halt** — always written, regardless of post-status, because the dispatched work is stranded in the runner-checkout.
 
 **Exception — operator-initiated interrupts:** When the operator presses Ctrl-C or sends SIGTERM during an active dispatch, `RUNNER_INTERRUPTED` is set and no abort flag is written. The signal-handling path already records the iteration as failed and stops the loop with stop reason `interrupted` — that is the visible record the maintainer needs. No flag is written; the next run re-dispatches the issue normally.

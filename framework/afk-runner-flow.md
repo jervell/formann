@@ -308,17 +308,11 @@ so the propagation branch is a no-op for it.
    run_gate_container(prompt + ref)              ─► writes <NN>-review.log
              │
              ▼
-   gate_dirty = `git status --porcelain` of runner-checkout
-             │
-             ▼
    post_gate = take_snapshot(feature)
              │
              ▼
    v_gate = classify_gate_outcome(post_impl, post_gate, ref, gate_rc)
    (4 args — both the snapshot delta AND the exit code are primary)
-             │
-             ▼
-   [gate_dirty non-empty?] ──yes──► v_gate := "gate-failed"   (override)
              │
              ▼
         [v_gate?]
@@ -353,7 +347,7 @@ so the propagation branch is a no-op for it.
 | Implement classifier `failure` with committed change, propagate ok, post non-eligible | `FAIL`   | `failure`             | 1                 | no                  |
 | Implement classifier `failure` with committed change, propagate halts         | `FAIL`           | `failure`             | 1                 | yes (`implement`)   |
 | Implement classifier `success`, propagate halts                               | `FAIL`           | `failure`             | 1                 | yes (`implement`)   |
-| Gate classifier `gate-failed` (or dirty-checkout override)                    | `gate-failed`    | `failure`             | 1                 | yes (`gate`)        |
+| Gate classifier `gate-failed`                                                 | `gate-failed`    | `failure`             | 1                 | yes (`gate`)        |
 | Gate `clean`/`blocked`, propagate halts                                       | `gate-failed`    | `failure`             | 1                 | yes (`gate`)        |
 | Gate `clean`, propagate ok                                                    | `done`           | `success`             | 0                 | no                  |
 | Gate `blocked`, propagate ok                                                  | `blocked`        | `success`             | 0                 | no                  |

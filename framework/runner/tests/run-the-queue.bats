@@ -1601,11 +1601,15 @@ setup_eligibility_test() {
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|in-review|"* ]]
 }
 
-@test "dispatch_one — AFK dirty post-gate checkout overrides blocked verdict to gate-failed" {
-  # Regression: a gate session that edits the issue file but exits 0
-  # without committing produces a `blocked` verdict from the classifier
-  # (exit 0 + status still in-review). The runner must detect the
-  # uncommitted dirt and classify the iteration as gate-failed instead.
+@test "dispatch_one — AFK gate blocked verdict survives dirty checkout" {
+  # Contract: an inherited working-tree leftover from a prior in-container
+  # crash (here, a 0-byte kernel core dump at `framework/runner/tests/core`)
+  # does not override the classifier's verdict. The gate produces a clean
+  # `blocked` verdict; the runner propagates the gate's tracker commit to
+  # host so the maintainer sees the review's findings. The
+  # implement-stage warning at line ~1524 already reported the leak; the
+  # gate stage does not re-warn. The next iteration's
+  # `ensure_runner_checkout` clears the leftover via `git clean -fd`.
   setup_dispatch_one_test
   install_afk_snapshots in-review
 
@@ -1615,10 +1619,21 @@ setup_eligibility_test() {
     echo "called" >>"$TEST_PROPAGATE_CALLS"
     return 0
   }
+  run_dispatch_container() {
+    # Mirror issue 21's incident shape: the implement stage commits real
+    # tracker work AND leaks an uncommitted file (a kernel core dump from
+    # a crashed in-container subprocess; default `core_pattern=core` writes
+    # CWD-relative). The leftover persists into the gate stage's working
+    # tree without the gate having touched it.
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: f/01 (test)"
+    mkdir -p "$HOST_CHECKOUT/framework/runner/tests"
+    : >"$HOST_CHECKOUT/framework/runner/tests/core"
+    return 0
+  }
   run_gate_container() {
-    # Exit 0 (classifier would return `blocked`) but leave an untracked
-    # file in the runner-checkout so the dirty check fires.
-    touch "$HOST_CHECKOUT/uncommitted-gate-edit.txt"
+    # Exit 0 with no working-tree change of its own; the classifier sees
+    # status unchanged (in-review → in-review) and returns `blocked`.
     return 0
   }
 
@@ -1629,13 +1644,15 @@ setup_eligibility_test() {
   local rc=$?
   set -e
 
-  # Dirty checkout overrides `blocked` → gate-failed.
-  [ "$rc" -ne 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "failure" ]
+  # Classifier verdict (`blocked`) propagates unchanged despite the dirty
+  # working tree.
+  [ "$rc" -eq 0 ]
+  [ "$RUNNER_LAST_OUTCOME" = "success" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y" ]]
-  # Only the post-implement propagation ran; gate-failed skips gate propagation.
-  [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y" ]]
+  # Both the post-implement and post-gate propagations ran — the gate's
+  # tracker commit reaches host.
+  [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
 # === Output formatters =====================================================

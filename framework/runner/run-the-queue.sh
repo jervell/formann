@@ -1594,9 +1594,6 @@ dispatch_one() {
   local gate_rc=0
   run_gate_container "$ref" "$review_log_file" || gate_rc=$?
 
-  local gate_dirty
-  gate_dirty="$(git -C "$HOST_CHECKOUT" status --porcelain)"
-
   if ! post_gate_json="$(take_snapshot "$feature")"; then
     local snap_fail_at snap_gate_duration snap_iter_duration
     snap_fail_at=$(date +%s)
@@ -1616,14 +1613,6 @@ dispatch_one() {
   local gate_verdict
   gate_verdict="$(classify_gate_outcome "$post_implement_json" "$post_gate_json" "$ref" "$gate_rc")"
 
-  # Uncommitted edits after the gate dispatch can't be trusted — the
-  # session is off-mission if it leaves the runner-checkout dirty.
-  # Override the classifier's verdict so the dirty path is always
-  # gate-failed. This check is universal across bindings.
-  if [ -n "$gate_dirty" ]; then
-    gate_verdict="gate-failed"
-  fi
-
   local review_label combined_label
   case "$gate_verdict" in
     clean)
@@ -1641,10 +1630,6 @@ dispatch_one() {
   esac
 
   format_progress_outcome "$(now_clock)" "$ref" "review" "$review_label" "$gate_duration"
-  if [ -n "$gate_dirty" ]; then
-    echo "runner: dispatch left runner-checkout with uncommitted changes:" >&2
-    echo "$gate_dirty" | sed 's/^/  /' >&2
-  fi
 
   if [ "$gate_verdict" = "gate-failed" ]; then
     write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file"
