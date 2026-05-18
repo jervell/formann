@@ -151,8 +151,9 @@ JSON
     <(jq -S . "$FIXTURES/list-archived-excluded/expected.json")
 }
 
-@test "--list: ordered by #N ascending (query uses orderBy NUMBER ASC)" {
-  # Fixture returns issues in order #3, #7 — verify output preserves that order.
+@test "--list: ordered by #N ascending (in-script sort_by(.number))" {
+  # Fixture returns issues out of #N order (#7, #5-closed, #3) — verify the
+  # in-script sort delivers #N ASC output regardless of API return order.
   export FIXTURE_RESPONSES_DIR="$FIXTURES/list-archived-excluded/recorded-responses"
   run "$TRACKER_SNAPSHOT" --list
   assert_success

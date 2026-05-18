@@ -4,12 +4,12 @@
       "issues": {
         "nodes": [
           {
-            "number": 3,
+            "number": 7,
             "state": "OPEN",
             "labels": {
               "nodes": [
                 {"name": "formann:feature"},
-                {"name": "formann:slug:alpha-feature"}
+                {"name": "formann:slug:beta-feature"}
               ]
             }
           },
@@ -24,12 +24,12 @@
             }
           },
           {
-            "number": 7,
+            "number": 3,
             "state": "OPEN",
             "labels": {
               "nodes": [
                 {"name": "formann:feature"},
-                {"name": "formann:slug:beta-feature"}
+                {"name": "formann:slug:alpha-feature"}
               ]
             }
           }

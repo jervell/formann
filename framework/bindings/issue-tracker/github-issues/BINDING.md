@@ -97,13 +97,14 @@ gh api graphql \
   -F name="$_gh_name" \
   -f query='query($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
-      issues(labels: ["formann:feature"], states: [OPEN], first: 100,
-             orderBy: {field: NUMBER, direction: ASC}) {
+      issues(labels: ["formann:feature"], states: [OPEN], first: 100) {
         nodes { number state labels(first: 30) { nodes { name } } }
       }
     }
   }'
 ```
+
+The response nodes are sorted in-script by `.number` ascending via `jq sort_by(.number)` before slug extraction. (`NUMBER` is not a valid `IssueOrderField` enum value in the GitHub GraphQL API; the valid values are `CREATED_AT`, `UPDATED_AT`, and `COMMENTS`. `CREATED_AT` is not a safe substitute because transferred issues preserve their original `createdAt` while being renumbered, so only an explicit `.number` sort guarantees `#N` ASC order under all conditions.)
 
 One GraphQL query per invocation keeps the rate-limit footprint cheap (≈5 points against the 5000-point/hour GraphQL budget). Blockers and eligibility resolve from the in-memory sub-issue set returned by the same query — no follow-up API calls.
 
@@ -562,7 +563,7 @@ Field notes:
 Sub-issues are emitted in the order returned by the GraphQL `subIssues` connection, which reflects GitHub's UI priority order (maintainer-adjustable via drag-and-drop). Each sub-issue occupies a unique position, so the API-returned order is already deterministic; no tiebreaker is applied. Dragging a sub-issue to the top of the sub-issue panel makes it the next eligible pick for the AFK runner.
 
 **`tracker-snapshot --list` order:**
-Features are returned ordered by parent issue number ascending (`#N` ASC). This is the GitHub-issues binding's list order; local-markdown lists alphabetically. Consumers must not assume cross-binding parity.
+Features are returned ordered by parent issue number ascending (`#N` ASC). The GraphQL query carries no `orderBy` clause; the script sorts the returned nodes via `jq sort_by(.number)` before extracting slugs. This is the GitHub-issues binding's list order; local-markdown lists alphabetically. Consumers must not assume cross-binding parity.
 
 ### Blocker resolution rules
 

@@ -102,8 +102,7 @@ _extract_blocker_refs() {
 if [ "$1" = "--list" ]; then
   _list_query='query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
-    issues(labels: ["formann:feature"], states: [OPEN], first: 100,
-           orderBy: {field: NUMBER, direction: ASC}) {
+    issues(labels: ["formann:feature"], states: [OPEN], first: 100) {
       nodes {
         number
         state
@@ -120,7 +119,7 @@ if [ "$1" = "--list" ]; then
   # Defence-in-depth: explicitly drop closed entries even if the GraphQL
   # states:[OPEN] clause were bypassed by a shim returning closed nodes.
   _pairs="$(printf '%s' "$_resp" | jq -r '
-    .data.repository.issues.nodes[] |
+    (.data.repository.issues.nodes | sort_by(.number))[] |
     select(.state == null or .state == "OPEN") |
     . as $issue |
     ( $issue.labels.nodes
@@ -174,7 +173,7 @@ if [ "$1" = "--list" ]; then
   done
 
   # Emit JSON array of slugs (in encounter order, which matches #N ascending
-  # because the query orders by NUMBER ASC).
+  # because the jq pipeline sorts nodes by .number before iterating).
   printf '['
   _first=1
   _k=0
