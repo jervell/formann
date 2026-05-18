@@ -2,6 +2,7 @@
 /.idea/
 *.iml
 /.claude/settings.local.json
+/.claude/scheduled_tasks.lock
 __pycache__/
 # === Formann self-install (managed by installer — do not edit) ===
 /.formann
