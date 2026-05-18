@@ -295,6 +295,75 @@ snapshot_one() {
   [ -z "$output" ]
 }
 
+# === refresh_runner_checkout_install_products =============================
+#
+# Re-applies the host's installer products to the runner-checkout. Reads
+# role-binding symlinks under `<host>/docs/formann/` and passes the impl
+# back as a `FORMANN_INSTALL_BINDING_<role>=<impl>` env-var bypass to the
+# installer. Tested by stubbing the installer script and inspecting what
+# the helper handed it.
+
+@test "refresh_runner_checkout_install_products — passes per-role binding choice to installer" {
+  host="$BATS_TEST_TMPDIR/host"
+  checkout="$BATS_TEST_TMPDIR/checkout"
+  mkdir -p "$host/docs/formann" "$host/installer" "$checkout"
+  mkdir -p "$host/.formann/bindings/issue-tracker/github-issues"
+  mkdir -p "$host/.formann/bindings/inbox/local-markdown"
+  ln -s "../../.formann/bindings/issue-tracker/github-issues" "$host/docs/formann/issue-tracker"
+  ln -s "../../.formann/bindings/inbox/local-markdown" "$host/docs/formann/inbox"
+
+  # Stub the installer: record argv and FORMANN_INSTALL_BINDING_* envs.
+  cat >"$host/installer/install.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "argv: $*" >>"$STUB_RECORD"
+env | grep '^FORMANN_INSTALL_BINDING_' | sort >>"$STUB_RECORD"
+STUB
+  chmod +x "$host/installer/install.sh"
+
+  export STUB_RECORD="$BATS_TEST_TMPDIR/record"
+  refresh_runner_checkout_install_products "$host" "$checkout"
+
+  record="$(cat "$STUB_RECORD")"
+  [[ "$record" == *"argv: $checkout"* ]]
+  [[ "$record" == *"FORMANN_INSTALL_BINDING_inbox=local-markdown"* ]]
+  [[ "$record" == *"FORMANN_INSTALL_BINDING_issue_tracker=github-issues"* ]]
+}
+
+@test "refresh_runner_checkout_install_products — no host symlinks still invokes installer cleanly" {
+  host="$BATS_TEST_TMPDIR/host"
+  checkout="$BATS_TEST_TMPDIR/checkout"
+  mkdir -p "$host/docs/formann" "$host/installer" "$checkout"
+  cat >"$host/installer/install.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "argv: $*" >>"$STUB_RECORD"
+env | grep -c '^FORMANN_INSTALL_BINDING_' >>"$STUB_RECORD" || true
+STUB
+  chmod +x "$host/installer/install.sh"
+
+  export STUB_RECORD="$BATS_TEST_TMPDIR/record"
+  run refresh_runner_checkout_install_products "$host" "$checkout"
+  [ "$status" -eq 0 ]
+  record="$(cat "$STUB_RECORD")"
+  [[ "$record" == *"argv: $checkout"* ]]
+  # Second line of the record is the FORMANN_* count; expect 0.
+  [[ "$record" == *$'\n'"0" ]]
+}
+
+@test "refresh_runner_checkout_install_products — surfaces a diagnostic when installer exits non-zero" {
+  host="$BATS_TEST_TMPDIR/host"
+  checkout="$BATS_TEST_TMPDIR/checkout"
+  mkdir -p "$host/docs/formann" "$host/installer" "$checkout"
+  cat >"$host/installer/install.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$host/installer/install.sh"
+
+  run refresh_runner_checkout_install_products "$host" "$checkout"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"runner: installer refresh against $checkout failed"* ]]
+}
+
 # === acquire_lock ==========================================================
 #
 # Atomic pidfile lock. `mkdir` semantics or noclobber guarantee only one

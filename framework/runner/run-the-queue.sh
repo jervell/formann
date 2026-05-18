@@ -948,6 +948,41 @@ check_feature_eligibility() {
   fi
 }
 
+# Re-apply the host's installer products to the runner-checkout. Walks
+# `<host>/docs/formann/*` for role-binding symlinks, derives a
+# `FORMANN_INSTALL_BINDING_<role>` env-var bypass per role, and invokes
+# `installer/install.sh <checkout>` non-interactively so the checkout
+# ends up with the same binding wiring the host has selected.
+#
+# Why: the host's installer products are gitignored when the installer
+# detects self-install (consumer path is the formann source path), so
+# `docs/formann/issue-tracker` and the framework-doc symlinks never enter
+# git history. A fresh runner-checkout clone therefore lacks them, and
+# the dispatch agent falls back to whichever binding it can find on disk
+# (typically local-markdown) — regardless of what the host has selected.
+# Running the installer against the checkout at the end of each per-pass
+# sync keeps the checkout's wiring matched to the host's.
+#
+# Idempotent: the installer's own contract requires it, and the per-pass
+# `git clean -fd` upstream of this call removes any prior untracked
+# products before we re-apply.
+refresh_runner_checkout_install_products() {
+  local host_repo="$1"
+  local checkout="$2"
+  local role_link role impl
+  local env_args=()
+  for role_link in "$host_repo"/docs/formann/*; do
+    [ -L "$role_link" ] || continue
+    role="$(basename "$role_link")"
+    impl="$(basename "$(readlink "$role_link")")"
+    env_args+=("FORMANN_INSTALL_BINDING_${role//-/_}=$impl")
+  done
+  if ! env ${env_args[@]+"${env_args[@]}"} "$host_repo/installer/install.sh" "$checkout" >&2; then
+    echo "runner: installer refresh against $checkout failed" >&2
+    return 1
+  fi
+}
+
 # 2. Runner-checkout exists or can be created; sync to the named branch's
 #    tip on host. Branch-parameterized: the runner-checkout is a single
 #    clone that gets branch-switched per drained feature inside the drain
@@ -1022,6 +1057,12 @@ ensure_runner_checkout_on_branch() {
   checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
   if [ -z "$host_tip" ] || [ "$checkout_head" != "$host_tip" ]; then
     echo "runner: ensure_runner_checkout_on_branch: post-sync HEAD mismatch: host $branch=$host_tip checkout=$checkout_head" >&2
+    return 1
+  fi
+  # Refresh installer products against the checkout so binding wiring on
+  # disk matches host. See `refresh_runner_checkout_install_products`
+  # above for the rationale.
+  if ! refresh_runner_checkout_install_products "$HOST_REPO" "$HOST_CHECKOUT"; then
     return 1
   fi
   return 0
