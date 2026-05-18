@@ -994,7 +994,10 @@ refresh_runner_checkout_install_products() {
     impl="$(basename "$(readlink "$role_link")")"
     env_args+=("FORMANN_INSTALL_BINDING_${role//-/_}=$impl")
   done
-  if ! env ${env_args[@]+"${env_args[@]}"} "$host_repo/installer/install.sh" "$checkout" >&2; then
+  # Drop the installer's stdout — it carries the interactive UX block
+  # ("Paste the following into your CLAUDE.md", etc.) which is irrelevant
+  # during a runner pass. Stderr (real warnings, errors) flows through.
+  if ! env ${env_args[@]+"${env_args[@]}"} "$host_repo/installer/install.sh" "$checkout" >/dev/null; then
     echo "runner: installer refresh against $checkout failed" >&2
     return 1
   fi
