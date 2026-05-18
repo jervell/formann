@@ -1029,7 +1029,9 @@ EOF
   [ "$rc" -eq 1 ]
   [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:pre" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
+  # Pre-snapshot failure → no snapshot to resolve the binding-native ref
+  # against, so `(unresolved)` is the recorded placeholder.
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|(unresolved)|FAIL|"* ]]
 }
 
 @test "dispatch_one — post-implement snapshot failure sets named stop reason and records iteration" {
