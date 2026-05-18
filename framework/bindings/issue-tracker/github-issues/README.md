@@ -21,8 +21,8 @@ The agent-facing rule (see [`BINDING.md`](BINDING.md#authorship)) is the inversi
 `tracker-snapshot` is the binding's machine-readable interface — a shell script that emits a JSON snapshot of a feature's issues (with computed eligibility for the AFK runner) or, with `--list`, the set of active feature slugs.
 
 ```
-tracker-snapshot <feature-slug>
-tracker-snapshot --list
+docs/formann/issue-tracker/tracker-snapshot <feature-slug>
+docs/formann/issue-tracker/tracker-snapshot --list
 ```
 
 The output is byte-compatible with the local-markdown binding's snapshot, so consumers (the runner, `/triage`) can read either binding without per-binding branches. The only difference is the `ref` value format: `#N` here, `<feature>/NN` under local-markdown.
@@ -38,7 +38,7 @@ This binding's write paths require network egress to `api.github.com` and a vali
 Before using this binding on a new Consumer repo, run `bootstrap-labels` once to create the static label namespace:
 
 ```sh
-bash framework/bindings/issue-tracker/github-issues/bootstrap-labels
+bash docs/formann/issue-tracker/bootstrap-labels
 ```
 
 This creates all `formann:*` labels the binding relies on:
