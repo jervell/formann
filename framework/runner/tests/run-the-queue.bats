@@ -263,6 +263,241 @@ snapshot_one() {
   ! is_transport_crash "$log_file"
 }
 
+# === with_transport_retry =====================================================
+#
+# Wraps a sandbox dispatch with bounded exponential backoff on transport-class
+# failures. Sets TRANSPORT_RETRY_ATTEMPTS to the actual attempt count. All
+# tests shim `sleep` to a no-op and use small backoff values
+# (RUNNER_TRANSPORT_RETRY_BACKOFFS="1 2 3") so the suite runs in seconds.
+# The schedule is verified by counting the number of `sleep 1` calls.
+
+_setup_retry_test() {
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  mkdir -p "$HOST_CHECKOUT"
+  git -C "$HOST_CHECKOUT" init --quiet
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m init
+  RUNNER_INTERRUPTED=0
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=3
+  RUNNER_TRANSPORT_RETRY_BACKOFFS="1 2 3"
+  RUNNER_DISABLE_TRANSPORT_RETRY=0
+  TRANSPORT_RETRY_ATTEMPTS=0
+  SLEEP_ARGS_FILE="$BATS_TEST_TMPDIR/sleep-args"
+  : >"$SLEEP_ARGS_FILE"
+  sleep() { echo "$@" >>"$SLEEP_ARGS_FILE"; }
+}
+
+@test "with_transport_retry — first-attempt success: no retry, no log archival, attempts=1" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() { : >"$1"; return 0; }
+
+  with_transport_retry "$log_file" fake_dispatch
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ ! -f "${log_file}.attempt-1" ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "with_transport_retry — transport crash then success: .attempt-1 archived, schedule honoured, attempts=2" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  local call_count=0
+  fake_dispatch() {
+    call_count=$(( call_count + 1 ))
+    if [ "$call_count" -eq 1 ]; then
+      printf 'API Error: 500 Internal server error.\n' >"$1"
+      return 1
+    fi
+    printf 'success output\n' >"$1"
+    return 0
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 2 ]
+  # attempt-1 archived, carries the transport-crash content
+  [ -f "${log_file}.attempt-1" ]
+  grep -q "500" "${log_file}.attempt-1"
+  # No second archived log — final attempt succeeded
+  [ ! -f "${log_file}.attempt-2" ]
+  # Backoff for attempt 1 is RUNNER_TRANSPORT_RETRY_BACKOFFS[0]=1 → 1 sleep call
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 1 ]
+  grep -qx "1" "$SLEEP_ARGS_FILE"
+}
+
+@test "with_transport_retry — three transport crashes: budget exhausted, two archived logs, final log at log_file, attempts=3" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf 'API Error: 500 Internal server error.\n' >"$1"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 3 ]
+  # Attempts 1 and 2 archived; final attempt's log stays at $log_file
+  [ -f "${log_file}.attempt-1" ]
+  [ -f "${log_file}.attempt-2" ]
+  [ ! -f "${log_file}.attempt-3" ]
+  [ -f "$log_file" ]
+  # Sleep calls: backoff[0]=1 (attempt 1) + backoff[1]=2 (attempt 2) = 3 total
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 3 ]
+}
+
+@test "with_transport_retry — non-transport failure: no retry, exit code passed through, no archival" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf 'Error: brief is insufficient.\n' >"$1"
+    return 42
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 42 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ ! -f "${log_file}.attempt-1" ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "with_transport_retry — RUNNER_INTERRUPTED during backoff: returns without consuming another attempt" {
+  _setup_retry_test
+  # The sleep shim sets RUNNER_INTERRUPTED=1, simulating Ctrl-C mid-backoff.
+  sleep() {
+    echo "$@" >>"$SLEEP_ARGS_FILE"
+    RUNNER_INTERRUPTED=1
+  }
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf 'API Error: 500 Internal server error.\n' >"$1"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  # Returned non-zero (the dispatch's exit code); interrupt not disguised as abort
+  [ "$rc" -ne 0 ]
+  # Only one attempt consumed — interrupt fired during the first backoff
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ "$RUNNER_INTERRUPTED" -eq 1 ]
+}
+
+@test "with_transport_retry — new-commits guard: HEAD advances between attempts, wrapper refuses retry" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  # The dispatch function advances HOST_CHECKOUT's HEAD, simulating partial work.
+  fake_dispatch() {
+    printf 'API Error: 500 Internal server error.\n' >"$1"
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "partial work"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  # Only one attempt — guard fired after noticing HEAD advanced
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  # No sleep — guard fires before the backoff loop
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "with_transport_retry — RUNNER_DISABLE_TRANSPORT_RETRY=1: single attempt regardless of crash" {
+  _setup_retry_test
+  RUNNER_DISABLE_TRANSPORT_RETRY=1
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf 'API Error: 500 Internal server error.\n' >"$1"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ ! -f "${log_file}.attempt-1" ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "dispatch_one — retry-then-success: second attempt succeeds, .attempt-1 archived, no abort flag" {
+  setup_dispatch_one_test
+  # Shim sleep to no-op and use small backoffs so the test runs in milliseconds.
+  sleep() { :; }
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=3
+  RUNNER_TRANSPORT_RETRY_BACKOFFS="0 0 0"
+
+  # Restore the real with_transport_retry wiring in run_dispatch_container.
+  # (setup_dispatch_one_test replaces it with a simple commit-and-return mock.)
+  SANDBOX_CALL_COUNT_FILE="$BATS_TEST_TMPDIR/sandbox-calls"
+  echo 0 >"$SANDBOX_CALL_COUNT_FILE"
+
+  run_sandbox_container() {
+    local lf="$1"
+    local n
+    n=$(( $(cat "$SANDBOX_CALL_COUNT_FILE") + 1 ))
+    echo "$n" >"$SANDBOX_CALL_COUNT_FILE"
+    if [ "$n" -eq 1 ]; then
+      # First implement attempt: transport crash
+      printf 'API Error: 500 Internal server error.\n' >"$lf"
+      return 1
+    fi
+    # Second implement attempt: success — commit so impl_has_runner_commits=1
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: f/01 (test)"
+    : >"$lf"
+    return 0
+  }
+
+  run_dispatch_container() {
+    local ref="$1" log_file="$2"
+    with_transport_retry "$log_file" run_sandbox_container \
+      claude -p "/implement $ref" --dangerously-skip-permissions
+  }
+  # keep setup_dispatch_one_test's run_gate_container (no-op returning 0)
+  propagate_to_host() { :; }
+
+  RUNNER_INTERRUPTED=0
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  local dispatch_rc=$?
+  set -e
+
+  # Implement succeeded (issue flipped to in-review); gate ran (blocked — snapshot
+  # didn't advance further, so classify_gate_outcome returns blocked / clean).
+  [ "$dispatch_rc" -eq 0 ]
+  [ "$RUNNER_LAST_OUTCOME" = "success" ]
+
+  # .attempt-1 was archived during the retry backoff
+  [ -f "$TEST_RUN_DIR/01.log.attempt-1" ]
+
+  # No abort flag written for a successful dispatch
+  [ ! -f "$HOST_ABORT_DIR/f/01" ]
+
+  # Verify the sandbox was called at least twice (crash attempt + success attempt)
+  [ "$(cat "$SANDBOX_CALL_COUNT_FILE")" -ge 2 ]
+}
+
 # === check_gate_prompt =====================================================
 #
 # Pre-flight invariant: the gate prompt file must exist on disk before

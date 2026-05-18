@@ -77,6 +77,40 @@ The trailing `stop reason:` line varies by mode.
 - `interrupted-during-preflight` — Ctrl-C arrived before the loop started.
 - `preflight-abort: <invariant>` — a pre-flight invariant tripped before the loop began.
 
+## Transport-class retry
+
+When a dispatch container exits with a transport-class failure (API 5xx or 429, network error, or an empty log with no model output), the runner retries the dispatch automatically before recording an abort flag.
+
+**Default schedule** (overridable via env vars):
+
+| Attempt | Wait before next attempt |
+|---------|--------------------------|
+| 1 → 2   | 30 s                     |
+| 2 → 3   | 90 s                     |
+| (max 3 attempts total) | —          |
+
+The wait is a 1-second poll loop so `Ctrl-C` / `SIGTERM` exits immediately rather than blocking until the sleep expires.
+
+**Defensive guard:** if the host repo `HEAD` advances between attempts (a prior attempt committed partial work), retries are suppressed and the original failure is propagated. The intent is to avoid double-applying work.
+
+**Per-attempt logs:** each failed attempt's log is preserved as `<log>.attempt-<N>` alongside the primary log file, so the maintainer can inspect what each attempt produced.
+
+**Escape hatch:**
+
+```sh
+RUNNER_DISABLE_TRANSPORT_RETRY=1 ./run-the-queue.sh ...
+```
+
+Set `RUNNER_DISABLE_TRANSPORT_RETRY=1` to skip the retry layer entirely (useful when debugging or when the upstream API quota issue is known to be persistent).
+
+**Knobs:**
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS` | `3` | Maximum total attempts (including the first) |
+| `RUNNER_TRANSPORT_RETRY_BACKOFFS` | `"30 90 240"` | Space-separated list of wait seconds for attempts 1→2, 2→3, 3→4, … |
+| `RUNNER_DISABLE_TRANSPORT_RETRY` | `0` | Set to `1` to bypass all retry logic |
+
 ## Resuming after a technical failure
 
 When a dispatch fails and the issue could otherwise be re-picked (implement failure with the issue still eligible, gate failure, or propagation halt), the runner writes a plain-text abort flag at `.runner-state/aborted/<feature>/<NN>`. Eligibility selection skips flagged refs on every subsequent run, preventing infinite re-dispatch across restarts.
