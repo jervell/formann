@@ -12,7 +12,7 @@ Apply to **every AI-produced surface in the tracker**: issue body, PRD, `## Agen
 
 **An unmarked artifact carries maintainer authority.** When the maintainer hand-edits an AI-produced body-shaped artifact, they remove the disclaimer — so absence of the marker (even on an artifact whose history shows AI authorship) means the maintainer has adopted the content.
 
-**Weakened semantics on GitHub:** Under this binding, all issue-body and comment writes come from the maintainer's personal access token (PAT). GitHub records every write as authored by the PAT's account — git-blame attribution is absent (there is no git history for GitHub issue content). The AI disclaimer is therefore the only authorship signal distinguishing AI-produced content from maintainer-written content. The `formann:ai-authored` label is not used; the disclaimer is the only marker.
+**Weakened semantics on GitHub:** Under this binding, all issue-body and comment writes come from the maintainer's personal access token (PAT). GitHub records every write as authored by the PAT's account — git-blame attribution is absent (there is no git history for GitHub issue content). The AI disclaimer is therefore the only authorship signal distinguishing AI-produced content from maintainer-written content.
 
 ## Tracker operations
 

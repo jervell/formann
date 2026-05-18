@@ -75,7 +75,7 @@ BINDING.md gains five verb sections, each with concrete `gh` / `body-edit` comma
 
 - **Record triage notes** — `body-edit <N> "Triage Notes" @notes.md`. On transition out of `needs-info`, the verb realization is `body-edit <N> "Triage Notes" /dev/null` — `body-edit` removes the section entirely.
 
-BINDING.md's "Authorship" section documents the weakened semantics on GitHub: all writes come from the maintainer's PAT, so git-blame attribution is absent — the AI disclaimer is the only authorship signal. The `formann:ai-authored` label idea from earlier drafts is not introduced (GitHub labels apply to issues only, not to comments).
+BINDING.md's "Authorship" section documents the weakened semantics on GitHub: all writes come from the maintainer's PAT, so git-blame attribution is absent — the AI disclaimer is the only authorship signal.
 
 BINDING.md notes that multi-call atomicity isn't guaranteed: e.g., comment posted but state-flip rate-limited on retry. The runner's classifier surfaces partial failures (no state flip → `blocked` / `gate-failed`) and the maintainer reconciles.
 
@@ -103,7 +103,6 @@ BINDING.md notes that multi-call atomicity isn't guaranteed: e.g., comment poste
 - Archive — slice 12.
 - Engineered atomicity across multi-call verbs — documented as residual.
 - Engineered concurrency control on body edits — documented as residual in slice 04.
-- A `formann:ai-authored` label — not pursued; the disclaimer is the only authorship signal.
 
 ## Comments
 
