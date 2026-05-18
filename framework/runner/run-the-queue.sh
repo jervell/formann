@@ -1434,7 +1434,7 @@ dispatch_one() {
   if ! pre_json="$(take_snapshot "$feature")"; then
     echo "runner: dispatch_one: tracker-snapshot failed (pre stage) for feature '$feature' issue '$nn'" >&2
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:pre"
-    record_dispatch "$feature" "$nn" "$feature/$nn" "FAIL" 0
+    record_dispatch "$feature" "$nn" "(unresolved)" "FAIL" 0
     return 1
   fi
 
@@ -1446,7 +1446,7 @@ dispatch_one() {
   if ! ref="$(binding_native_ref "$feature" "$nn" "$pre_json")"; then
     echo "runner: dispatch_one: ($feature, $nn) not found in pre-snapshot" >&2
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:pre"
-    record_dispatch "$feature" "$nn" "$feature/$nn" "FAIL" 0
+    record_dispatch "$feature" "$nn" "(unresolved)" "FAIL" 0
     return 1
   fi
 

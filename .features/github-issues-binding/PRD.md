@@ -70,7 +70,7 @@ ADR-0006 records why parent-issue-with-sub-issues and slug-as-label beat their r
 | Feature PRD | Parent issue's body. Retrieved via the **Read the feature** verb. |
 | Issue (slice) | Sub-issue of the feature issue, linked via the `addSubIssue` GraphQL mutation. |
 | Issue title | Native GitHub issue title field. `# Title` is **not** duplicated in the body. |
-| `status` | Open + label `formann:status:<state>` for non-terminal. Closed + `state_reason=completed` for `done`. Closed + `state_reason=not_planned` for `wontfix`. |
+| `status` | Open + label `formann:status:<state>` for non-terminal. Closed + `state_reason=COMPLETED` for `done`. Closed + `state_reason=NOT_PLANNED` for `wontfix`. |
 | `category` | Label `formann:category:bug` or `formann:category:enhancement`. |
 | `type` | Label `formann:type:afk` or `formann:type:hitl`. |
 | Binding-native ref | GitHub's `#N`. Carried in the snapshot's `ref` field. The runner's CLI uses the portable `<feature>/<N>` form and translates via the snapshot. |
@@ -110,13 +110,13 @@ ADR-0006 records why parent-issue-with-sub-issues and slug-as-label beat their r
 - **Read the issue** — `gh issue view <N> --json title,body,labels,state,stateReason,comments`.
 - **Read the feature** — `gh issue view <parent-N> --json title,body,labels`. The parent is identified by querying for `formann:feature` AND `formann:slug:<slug>`. Local-markdown realization: read `.features/<slug>/PRD.md`.
 - **List issues in a feature** — `tracker-snapshot <slug>` (canonical "list" output).
-- **Set the state to `<state>`** — label add/remove for non-terminal; `gh issue close --reason completed|not_planned` for terminal.
-- **Set issue metadata** — label add/remove for category and type; body section edit (via `body-edit`) for `## Blocked by`.
-- **Publish the agent brief** — `body-edit <N> "Agent Brief" @brief.md`.
-- **Record triage notes** — `body-edit <N> "Triage Notes" @notes.md`; on transition out of `needs-info`, `body-edit <N> "Triage Notes" /dev/null` (deletes the section).
-- **Comment with `<kind>`** — `gh issue comment <N> --body @content.md`. The comment's first line is `### <Kind> — <YYYY-MM-DD>`.
-- **Create a feature** — Pre-flight slug uniqueness check (`gh issue list --label formann:slug:<slug> --state all` returns 0); `gh label create formann:slug:<slug> --force` (on-demand label creation; idempotent); `gh issue create --title <title> --body @prd.md --label formann:feature,formann:slug:<slug>`; create and switch to the feature branch. The static label namespace is assumed pre-created via `bootstrap-labels`.
-- **Create an issue (slice)** — `gh issue create --title <title> --body @issue.md --label formann:status:needs-triage,formann:category:<cat>,formann:type:<type>`; `gh api graphql -f query='mutation { addSubIssue ... }'` to link to the parent.
+- **Set the state to `<state>`** — label add/remove for non-terminal; `gh issue close --reason "completed"` (for `done`) or `gh issue close --reason "not planned"` (for `wontfix`) for terminal.
+- **Set issue metadata** — label add/remove for category and type; body section edit (via `body-edit`) for `## Blocked by`. `body-edit` takes a path; callers materialize the new section content in a temp file and pass the path.
+- **Publish the agent brief** — write the brief content to a temp file, then `body-edit <N> "Agent Brief" "$tmpfile"`.
+- **Record triage notes** — write the notes content to a temp file, then `body-edit <N> "Triage Notes" "$tmpfile"`; on transition out of `needs-info`, `body-edit <N> "Triage Notes" /dev/null` (deletes the section).
+- **Comment with `<kind>`** — `gh issue comment <N> --body "$(cat <<'EOF' ... EOF)"` (heredoc carries the comment content inline). The comment's first line is `### <Kind> — <YYYY-MM-DD>`.
+- **Create a feature** — Pre-flight slug uniqueness check (`gh issue list --label formann:slug:<slug> --state all` returns 0); `gh label create formann:slug:<slug> --force` (on-demand label creation; idempotent); `gh issue create --title <title> --body "$(cat <<'EOF' ... EOF)" --label formann:feature,formann:slug:<slug>` with the PRD content in the heredoc; create and switch to the feature branch. The static label namespace is assumed pre-created via `bootstrap-labels`.
+- **Create an issue (slice)** — `gh issue create --title <title> --body "$(cat <<'EOF' ... EOF)" --label formann:status:needs-triage,formann:category:<cat>,formann:type:<type>` with the issue body content in the heredoc; `gh api graphql -f query='mutation { addSubIssue ... }'` to link to the parent.
 
 ### Refs
 

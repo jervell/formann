@@ -283,6 +283,35 @@ BODY
   [[ "$(cat "$WRITTEN_BODY_FILE")" != *"old content"* ]]
 }
 
+# ── Trailing-whitespace regression: heading match tolerates trailing spaces ──
+
+@test "trailing-whitespace heading: section is replaced, no duplicate section appended" {
+  # Regression: awk compared $0 == heading exactly, so a body whose existing
+  # heading had trailing whitespace ("## Section ") never matched. The script
+  # then appended a fresh "## Section" at end, leaving the stale heading and
+  # its old content stranded as a duplicate.
+  export BODY_FIXTURE
+  # Build a body with a single trailing space on the heading line.
+  BODY_FIXTURE="$(printf '## Section \nold content\n## Other\nother content\n')"
+
+  NEW_CONTENT="$BATS_TEST_TMPDIR/new-content"
+  printf '%s' 'new content' >"$NEW_CONTENT"
+
+  run "$BODY_EDIT" 42 "Section" "$NEW_CONTENT"
+  assert_success
+
+  written="$(cat "$WRITTEN_BODY_FILE")"
+  # Target section updated
+  [[ "$written" == *"new content"* ]]
+  [[ "$written" != *"old content"* ]]
+  # Other section preserved
+  [[ "$written" == *"## Other"* ]]
+  [[ "$written" == *"other content"* ]]
+  # Heading is present exactly once (no duplicate from append-at-end path)
+  heading_count="$(printf '%s\n' "$written" | grep -cE '^## Section[[:space:]]*$')"
+  [ "$heading_count" -eq 1 ]
+}
+
 # ── CRLF regression: heading match works on CRLF-encoded bodies ─────────────
 
 @test "CRLF-encoded body: heading still matches and section is replaced" {

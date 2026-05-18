@@ -35,7 +35,7 @@ Retrieve the parent feature's PRD body.
 
 ### List issues in a feature
 
-Return the set of issues in a feature with their metadata (ref, status, category, type, blocked-by).
+Return the set of issues in a feature with their metadata (ref, nn, status, category, type, blocked-by).
 
 **Local-markdown realization:** Run `tracker-snapshot <feature>` for a machine-readable JSON snapshot, or glob `.features/<feature>/issues/*.md` and read the frontmatter of each file.
 
