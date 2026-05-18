@@ -1703,7 +1703,9 @@ setup_eligibility_test() {
     return 0
   }
   run_gate_container() {
-    # Container crashed (OOM kill) — nonzero exit, non-transport log.
+    # Container crashed (OOM kill) — nonzero exit. We must write a non-whitespace
+    # line to the log ($2) so is_transport_crash doesn't misclassify the empty log
+    # as a transport crash and flip the verdict to review-aborted.
     echo "Killed" >"$2"
     return 137
   }
@@ -1987,6 +1989,39 @@ afk-runner|05|afk-runner/05|FAIL|3|'
 
   # Issue column shows binding-native ref (#42); log link uses plain nn (42.log).
   echo "$result" | grep -qF '| #42 | in-review | 37s | [42.log](42.log) |' \
+    || { echo "$result"; false; }
+}
+
+@test "format_summary_md — dispatch-aborted and review-aborted render as outcome labels" {
+  # dispatch-aborted has no review log; review-aborted does (gate stage ran).
+  input='afk-runner|01|afk-runner/01|dispatch-aborted|12|
+afk-runner|02|afk-runner/02|review-aborted|38|y'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted | 12s | [01.log](01.log) |' \
+    || { echo "$result"; false; }
+  echo "$result" | grep -qF '| afk-runner/02 | review-aborted | 38s | [02.log](02.log) [02-review.log](02-review.log) |' \
+    || { echo "$result"; false; }
+}
+
+@test "format_summary_md — attempt_count=1 omits the attempts suffix" {
+  # When attempt_count is present but equals 1, no suffix is appended.
+  input='afk-runner|01|afk-runner/01|dispatch-aborted|12||1'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted | 12s |' \
+    || { echo "$result"; false; }
+  ! echo "$result" | grep -q 'attempts' || { echo "$result"; false; }
+}
+
+@test "format_summary_md — attempt_count > 1 appends the attempts suffix" {
+  input='afk-runner|01|afk-runner/01|dispatch-aborted|12||2'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted (2 attempts) | 12s | [01.log](01.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -2552,6 +2587,69 @@ setup_abort_test() {
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
 }
 
+@test "dispatch_one — transport crash on implement sets dispatch-aborted and transport abort flag" {
+  # Behavioural guarantee for AC #8: is_transport_crash fires on the implement
+  # log, classify_outcome returns dispatch-aborted, and write_abort_flag records
+  # type: transport. The dispatch record carries dispatch-aborted, not FAIL.
+  setup_abort_test
+  # Both snapshots return ready-for-agent so classify_outcome sees a transport
+  # crash on the non-success path.
+  take_snapshot() {
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  }
+  run_dispatch_container() {
+    # Transport-signature log + nonzero exit — triggers is_transport_crash.
+    echo "API Error: 503 " >"$2"
+    return 1
+  }
+  propagate_to_host() { return 0; }
+
+  RUNNER_INTERRUPTED=0
+  RUNNER_LAST_OUTCOME=""
+  RUN_DISPATCHES=()
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  set -e
+
+  # Dispatch record carries dispatch-aborted.
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == *"|dispatch-aborted|"* ]]
+  # Abort flag written with type: transport and dispatch: implement.
+  [ -f "$HOST_ABORT_DIR/f/01" ]
+  grep -q '^type: transport$' "$HOST_ABORT_DIR/f/01"
+  grep -q '^dispatch: implement$' "$HOST_ABORT_DIR/f/01"
+}
+
+@test "dispatch_one — transport crash on gate sets review-aborted and transport abort flag" {
+  # Behavioural guarantee for AC #8 (gate path): is_transport_crash fires on
+  # the review log, classify_gate_outcome returns review-aborted, and
+  # write_abort_flag records type: transport. The dispatch record carries
+  # review-aborted, not gate-failed.
+  setup_abort_test
+  install_afk_snapshots in-review
+  propagate_to_host() { return 0; }
+  run_gate_container() {
+    # Transport-signature log + nonzero exit — triggers is_transport_crash.
+    echo "API Error: 503 " >"$2"
+    return 1
+  }
+
+  RUNNER_INTERRUPTED=0
+  RUNNER_LAST_OUTCOME=""
+  RUN_DISPATCHES=()
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  set -e
+
+  # Dispatch record carries review-aborted (not gate-failed).
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == *"|review-aborted|"* ]]
+  # Abort flag written with type: transport and dispatch: gate.
+  [ -f "$HOST_ABORT_DIR/f/01" ]
+  grep -q '^type: transport$' "$HOST_ABORT_DIR/f/01"
+  grep -q '^dispatch: gate$' "$HOST_ABORT_DIR/f/01"
+}
+
 @test "run_loop — aborted ref is skipped with rm recipe in stdout" {
   setup_loop_test
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
@@ -3033,6 +3131,40 @@ I|some-feature|42|#42|done|25|y'
     20260513-101010 10:10:10 10:10:35 ended completed)"
 
   echo "$result" | grep -qF '| #42 | done | 25s | [some-feature/42.log](some-feature/42.log) [some-feature/42-review.log](some-feature/42-review.log) |' \
+    || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — dispatch-aborted and review-aborted render as outcome labels" {
+  input='F|alpha|drained
+I|alpha|01|alpha/01|dispatch-aborted|12|
+I|alpha|02|alpha/02|review-aborted|38|y'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:30:00 ended completed)"
+
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted | 12s | [alpha/01.log](alpha/01.log) |' \
+    || { echo "$result"; false; }
+  echo "$result" | grep -qF '| alpha/02 | review-aborted | 38s | [alpha/02.log](alpha/02.log) [alpha/02-review.log](alpha/02-review.log) |' \
+    || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — attempt_count=1 omits the attempts suffix" {
+  input='F|alpha|drained
+I|alpha|01|alpha/01|dispatch-aborted|12||1'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:10:22 ended completed)"
+
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted | 12s |' \
+    || { echo "$result"; false; }
+  ! echo "$result" | grep -q 'attempts' || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — attempt_count > 1 appends the attempts suffix" {
+  input='F|alpha|drained
+I|alpha|01|alpha/01|dispatch-aborted|12||2'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:10:22 ended completed)"
+
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted (2 attempts) | 12s | [alpha/01.log](alpha/01.log) |' \
     || { echo "$result"; false; }
 }
 

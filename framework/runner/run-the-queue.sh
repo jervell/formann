@@ -167,22 +167,28 @@ classify_gate_outcome() {
 # recognised transport-failure pattern; exit 1 (false) otherwise.
 #
 # Transport-class signatures (one pattern per line — complete policy list):
-#   API Error: 5[0-9][0-9]  — Anthropic server-side error (500, 502, 503, …)
-#   API Error: 429           — rate-limit exhaustion from the Anthropic API
-#   fetch failed             — network-layer fetch failure (CLI / npm)
-#   ECONNRESET               — TCP connection reset by peer
-#   ETIMEDOUT                — TCP connection timeout
-#   getaddrinfo              — DNS resolution failure
-#   (empty/whitespace-only)  — subprocess crashed before producing any output
+#   API Error: 5[0-9][0-9]<sp>  — Anthropic server-side error (500, 502, 503, …);
+#                                  trailing space disambiguates from 5-digit codes
+#   API Error: 429<sp>           — rate-limit exhaustion; trailing space as above
+#   fetch failed                 — network-layer fetch failure (CLI / npm)
+#   ECONNRESET                   — TCP connection reset by peer
+#   ETIMEDOUT                    — TCP connection timeout
+#   getaddrinfo                  — DNS resolution failure
+#   (empty/whitespace-only)      — subprocess crashed before producing any output
 #
 # Pure — no globals, no I/O beyond the log file. Sourceable from bats.
+# NOTE: empty log + nonzero exit is treated as a transport crash. Test stubs
+# for non-transport failures must write at least one non-whitespace line to
+# the log file; otherwise this predicate will misclassify them.
 is_transport_crash() {
   local log_file="$1"
   # Empty or whitespace-only log — subprocess exited before producing output.
   if [ ! -s "$log_file" ] || [ -z "$(tr -d '[:space:]' <"$log_file")" ]; then
     return 0
   fi
-  # Signature-based detection — patterns match the doc-block above verbatim.
+  # Signature-based detection. The API Error patterns require a trailing space
+  # (matching the claude CLI's exact output format) to avoid false positives on
+  # 5-digit or 4-digit status codes (e.g. "API Error: 5009").
   grep -qE \
     'API Error: 5[0-9][0-9] |API Error: 429 |fetch failed|ECONNRESET|ETIMEDOUT|getaddrinfo' \
     "$log_file"
@@ -1565,6 +1571,11 @@ dispatch_one() {
     impl_transport_crash=true
   fi
 
+  # Snapshot failure takes precedence over the transport-crash signal: if the
+  # post-implement snapshot fails, we cannot determine the issue's state, so we
+  # record FAIL and stop. No abort flag is written — the stop-reason already
+  # signals a system-level problem to the operator, and re-running the same
+  # issue against a broken snapshot would be pointless.
   if ! post_implement_json="$(take_snapshot "$feature")"; then
     local snap_fail_at snap_duration
     snap_fail_at=$(date +%s)
@@ -1697,6 +1708,8 @@ dispatch_one() {
     gate_transport_crash=true
   fi
 
+  # As on the implement path: snapshot failure takes precedence over the
+  # transport-crash signal captured in gate_transport_crash. No abort flag.
   if ! post_gate_json="$(take_snapshot "$feature")"; then
     local snap_fail_at snap_gate_duration snap_iter_duration
     snap_fail_at=$(date +%s)
