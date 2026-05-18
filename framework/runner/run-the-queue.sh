@@ -266,7 +266,7 @@ binding_native_ref() {
   local feature="$1" nn="$2" snapshot_json="$3"
   local ref
   ref="$(jq -r --arg n "$nn" \
-    'first(.issues[] | select(.nn == $n) | .ref) // empty' <<<"$snapshot_json")"
+    'first(.issues[] | select((.nn | tonumber) == ($n | tonumber)) | .ref) // empty' <<<"$snapshot_json")"
   if [ -z "$ref" ]; then
     echo "runner: binding_native_ref: ($feature, $nn) not found in snapshot" >&2
     return 1

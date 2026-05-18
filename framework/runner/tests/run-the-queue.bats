@@ -3523,6 +3523,24 @@ _setup_mount_capture() {
   [ "$result" = "#42" ]
 }
 
+# Cross-padding tolerance: `binding_native_ref` is the second site (after the
+# `run_single` eligibility gate) that receives user-typed `nn` from `--issue
+# <feature>/<NN>`. local-markdown emits zero-padded nn (`"03"`); github-issues
+# emits unpadded nn (`"3"`). The lookup compares numerically so the user can
+# type either padding against either binding.
+
+@test "binding_native_ref — padded nn resolves unpadded snapshot entry (03 vs 3)" {
+  local snap='{"feature":"f","issues":[{"ref":"#3","nn":"3","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  result="$(binding_native_ref "f" "03" "$snap")"
+  [ "$result" = "#3" ]
+}
+
+@test "binding_native_ref — unpadded nn resolves padded snapshot entry (3 vs 03)" {
+  local snap='{"feature":"f","issues":[{"ref":"f/03","nn":"03","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  result="$(binding_native_ref "f" "3" "$snap")"
+  [ "$result" = "f/03" ]
+}
+
 # === dispatch_one — GH-shaped ref plumbing ====================================
 #
 # Verifies that dispatch_one resolves the binding-native ref via
