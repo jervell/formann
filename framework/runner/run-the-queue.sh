@@ -960,9 +960,9 @@ ensure_runner_checkout_on_branch() {
   # `reset --hard` scrubs tracked changes but leaves untracked files
   # alone. The dispatch container can drop CWD-relative artifacts (kernel
   # core dumps from a crashed in-container process, stray writes from a
-  # confused agent), and any leftover would taint the next iteration's
-  # post-gate dirty-check — silently misclassifying a clean gate run as
-  # `gate-failed` and stranding the gate's `tracker:` commit. `-fd` removes
+  # confused agent), and any leftover would surface in the implement
+  # stage's `git status --porcelain` diagnostic and misattribute prior
+  # dispatch leakage to *this* iteration's `/implement`. `-fd` removes
   # untracked files and directories without touching gitignored content
   # (caches, IDE state). The runner-checkout has no legitimate untracked
   # state at this point in the loop, so cleaning is unconditionally safe.
@@ -1638,9 +1638,12 @@ dispatch_one() {
     return 1
   fi
 
-  # Propagate the gate's `tracker:` commit to the host (clean or blocked
-  # both produced one). Halt classifies as gate-failed — host didn't
-  # advance, no point pretending the iteration was clean.
+  # Propagate the gate's `tracker:` commit to the host. The gate prompt
+  # contracts to commit on clean and blocked alike; the classifier itself
+  # only checks exit code and status delta, so this is a prompt-level
+  # invariant rather than one enforced here. Halt classifies as
+  # gate-failed — host didn't advance, no point pretending the iteration
+  # was clean.
   if ! propagate_to_host "$feature"; then
     # As in the implement stage: the review outcome line above already
     # showed the gate verdict (clean → done / blocked). Emit a follow-up

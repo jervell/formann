@@ -472,15 +472,15 @@ plant_outcomes()   { printf '%s\n' "$@" >"$TEST_OUTCOMES_FILE"; }
 #
 # Regression for an incident where a kernel core dump from a process that
 # crashed inside the dispatch container (Linux default `core_pattern=core`,
-# CWD-relative) landed as an untracked file in the runner-checkout. Every
-# subsequent dispatch's post-gate dirty-check fired on that stale file and
-# misclassified clean gate runs as `gate-failed`, blocking propagation of
-# the gate's `tracker: review … → done` commit to host. The sync was
-# `git fetch + reset --hard origin/<branch>`, which scrubs tracked changes
-# but leaves untracked files alone — the comment at run_loop:1175–1177
-# claiming "any stray uncommitted dirt … never leaks" was a lie for the
-# untracked case. Cleaning untracked files at sync time makes the comment
-# true and ensures the dirty-check is always honest about *this*
+# CWD-relative) landed as an untracked file in the runner-checkout. The
+# sync was `git fetch + reset --hard origin/<branch>`, which scrubs
+# tracked changes but leaves untracked files alone — the comment at
+# run_loop:1175–1177 claiming "any stray uncommitted dirt … never leaks"
+# was a lie for the untracked case. The implement stage's
+# `git status --porcelain` diagnostic would then surface the stale file
+# and misattribute prior dispatch leakage to *this* iteration's
+# `/implement`. Cleaning untracked files at sync time makes the comment
+# true and keeps the implement-stage diagnostic honest about *this*
 # iteration's leakage.
 
 # Build a HOST_REPO + HOST_CHECKOUT pair with one commit on the target
@@ -521,8 +521,9 @@ setup_ensure_checkout_test() {
   setup_ensure_checkout_test
 
   # `git clean -f` (without -d) skips untracked directories; the regression
-  # would still mask the next dirty-check if a crash dropped a directory
-  # rather than a single file. Pin -d behavior explicitly.
+  # would still leak through to the next iteration's implement-stage
+  # diagnostic if a crash dropped a directory rather than a single file.
+  # Pin -d behavior explicitly.
   mkdir -p "$HOST_CHECKOUT/stray-dir"
   : >"$HOST_CHECKOUT/stray-dir/leaf"
 
