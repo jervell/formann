@@ -71,15 +71,17 @@ RUNNER_KILL_GRACE_SECONDS=10
 #   $1 — pre-dispatch tracker-snapshot JSON
 #   $2 — post-dispatch tracker-snapshot JSON
 #   $3 — canonical issue ref (<feature>/<NN>)
+#   $4 — transport-crash boolean (default: false); when true, emits
+#         `dispatch-aborted` instead of `failure` on the non-success path.
 #
-# Output (stdout): exactly one of `success` or `failure`.
+# Output (stdout): exactly one of `success`, `failure`, or `dispatch-aborted`.
 #
 # Success requires the named ref's `status` to flip from `ready-for-agent`
 # (pre) to either `in-review` or `done` (post). Anything else — including
 # missing entries, unchanged status, or pre-status that wasn't
-# `ready-for-agent` — is failure.
+# `ready-for-agent` — is failure (or dispatch-aborted when $4=true).
 classify_outcome() {
-  local pre_json="$1" post_json="$2" ref="$3"
+  local pre_json="$1" post_json="$2" ref="$3" transport_crash="${4:-false}"
   local pre_status post_status
   # `// empty` makes a missing entry render as the empty string rather
   # than literal "null"; we coerce both into "missing".
@@ -94,7 +96,9 @@ classify_outcome() {
   fi
   case "$post_status" in
     in-review|done) echo "success" ;;
-    *)              echo "failure" ;;
+    *)
+      [ "$transport_crash" = "true" ] && echo "dispatch-aborted" || echo "failure"
+      ;;
   esac
 }
 
@@ -115,20 +119,21 @@ next_eligible_ref() {
 #   $2 — post-gate snapshot JSON (after the gate session committed)
 #   $3 — canonical issue ref
 #   $4 — gate dispatch's exit code
+#   $5 — transport-crash boolean (default: false); when true, emits
+#         `review-aborted` instead of `gate-failed` on nonzero-exit path.
 #
-# Output (stdout): exactly one of `clean`, `blocked`, or `gate-failed`.
+# Output (stdout): exactly one of `clean`, `blocked`, `gate-failed`, or
+# `review-aborted`.
 #
-#   clean       — exit 0 AND post.status == done.
-#                 Gate ran cleanly, found no Critical findings, flipped status.
-#   blocked     — exit 0 AND post.status == in-review (unchanged from pre).
-#                 Gate ran cleanly, found ≥1 Critical, appended findings only.
-#   gate-failed — anything else: nonzero exit, missing-from-snapshot, or
-#                 exit-0 with an off-mission post-status (ready-for-agent,
-#                 wontfix, …).
+#   clean          — exit 0 AND post.status == done.
+#   blocked        — exit 0 AND post.status == in-review (unchanged from pre).
+#   gate-failed    — nonzero exit (no transport crash), missing-from-snapshot,
+#                    or exit-0 with an off-mission post-status.
+#   review-aborted — nonzero exit AND transport-crash == true.
 #
 # Pure logic — no I/O beyond stdin/stdout. Sourceable from bats.
 classify_gate_outcome() {
-  local pre_json="$1" post_json="$2" ref="$3" exit_code="$4"
+  local pre_json="$1" post_json="$2" ref="$3" exit_code="$4" transport_crash="${5:-false}"
 
   # pre.status must be in-review or done — anything else means the gate
   # was dispatched against an issue in an unexpected state (argument-order
@@ -142,7 +147,7 @@ classify_gate_outcome() {
   esac
 
   if [ "$exit_code" != "0" ]; then
-    echo "gate-failed"
+    [ "$transport_crash" = "true" ] && echo "review-aborted" || echo "gate-failed"
     return 0
   fi
 
@@ -155,6 +160,32 @@ classify_gate_outcome() {
     in-review) echo "blocked" ;;
     *)         echo "gate-failed" ;;
   esac
+}
+
+# Detect whether a dispatch log carries a transport-class failure signature.
+# Returns exit 0 (true) when the log is empty/whitespace-only or contains a
+# recognised transport-failure pattern; exit 1 (false) otherwise.
+#
+# Transport-class signatures (one pattern per line — complete policy list):
+#   API Error: 5[0-9][0-9]  — Anthropic server-side error (500, 502, 503, …)
+#   API Error: 429           — rate-limit exhaustion from the Anthropic API
+#   fetch failed             — network-layer fetch failure (CLI / npm)
+#   ECONNRESET               — TCP connection reset by peer
+#   ETIMEDOUT                — TCP connection timeout
+#   getaddrinfo              — DNS resolution failure
+#   (empty/whitespace-only)  — subprocess crashed before producing any output
+#
+# Pure — no globals, no I/O beyond the log file. Sourceable from bats.
+is_transport_crash() {
+  local log_file="$1"
+  # Empty or whitespace-only log — subprocess exited before producing output.
+  if [ ! -s "$log_file" ] || [ -z "$(tr -d '[:space:]' <"$log_file")" ]; then
+    return 0
+  fi
+  # Signature-based detection — patterns match the doc-block above verbatim.
+  grep -qE \
+    'API Error: 5[0-9][0-9] |API Error: 429 |fetch failed|ECONNRESET|ETIMEDOUT|getaddrinfo' \
+    "$log_file"
 }
 
 # Per-feature gate evaluator. Pure function — no I/O beyond stdin/stdout.
@@ -296,16 +327,18 @@ now_clock() { date +"%H:%M:%S"; }
 # post-implement review-and-gate dispatch.
 #
 # Outcome label vocabulary by stage:
-#   implement: in-review | done | FAIL | halt → FAIL
-#   review:    clean → done | blocked | gate-failed | halt → gate-failed
+#   implement: in-review | done | dispatch-aborted | FAIL | halt → FAIL
+#   review:    clean → done | blocked | review-aborted | gate-failed | halt → gate-failed
 #
 # Combined per-iteration outcome (used in the end-of-run table and
-# SUMMARY.md row): `done | blocked | gate-failed | in-review | FAIL`.
-#   done        — AFK + clean review
-#   blocked     — AFK + Critical-finding review
-#   gate-failed — AFK + gate dispatch errored or off-mission
-#   in-review   — HITL (gate skipped)
-#   FAIL        — implement-stage failure (classifier, propagation, container)
+# SUMMARY.md row): `done | blocked | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL`.
+#   done             — AFK + clean review
+#   blocked          — AFK + Critical-finding review
+#   gate-failed      — AFK + gate dispatch errored or off-mission
+#   review-aborted   — AFK + gate subprocess transport-crashed (empty/5xx/429/network log)
+#   dispatch-aborted — implement subprocess transport-crashed
+#   in-review        — HITL (gate skipped)
+#   FAIL             — implement-stage failure (classifier, propagation, container)
 
 # Progress-line "starting" form: emitted at the start of a stage.
 format_progress_start() {
@@ -361,6 +394,8 @@ format_summary_md() {
     NF >= 5 {
       feature=$1; nn=$2; ref=$3; out=$4; dur=$5;
       review=(NF >= 6 ? $6 : "");
+      attempt_count=(NF >= 7 ? $7+0 : 1);
+      if (attempt_count > 1) { out = out " (" attempt_count " attempts)" }
       logs = sprintf("[%s.log](%s.log)", nn, nn);
       if (review == "y") {
         logs = logs " [" nn "-review.log](" nn "-review.log)";
@@ -431,6 +466,8 @@ format_multi_feature_summary_md() {
     NF >= 6 && $1 == "I" && in_table {
       feature=$2; nn=$3; ref=$4; out=$5; dur=$6;
       review=(NF >= 7 ? $7 : "");
+      attempt_count=(NF >= 8 ? $8+0 : 1);
+      if (attempt_count > 1) { out = out " (" attempt_count " attempts)" }
       logs = sprintf("[%s/%s.log](%s/%s.log)", feature, nn, feature, nn);
       if (review == "y") {
         logs = logs " [" feature "/" nn "-review.log](" feature "/" nn "-review.log)";
@@ -478,23 +515,28 @@ fail_invariant() {
 #
 # The maintainer removes the flag with `rm` to re-include the ref.
 # Flag format (plain text, no parser needed):
-#   type: technical
+#   type: technical|transport
 #   dispatch: implement|gate
 #   at: <ISO-8601 UTC>
 #   exit: <container exit code>
 #   log: <repo-relative path to dispatch log>
 #
+# `type` distinguishes transport-class failures (API 5xx/429, network errors,
+# empty log) from genuine technical failures (model error, bad brief, etc.).
+#
 # Args: $1=feature  $2=nn  $3=dispatch(implement|gate)  $4=exit_code  $5=log_file
+#       [$6=type (default: technical)]
 write_abort_flag() {
-  local feature="$1" nn="$2" dispatch="$3" exit_code="$4" log_file="$5"
+  local feature="$1" nn="$2" dispatch="$3" exit_code="$4" log_file="$5" \
+        flag_type="${6:-technical}"
   [[ "$RUNNER_INTERRUPTED" -eq 1 ]] && return 0
   local abort_feature_dir="$HOST_ABORT_DIR/$feature"
   mkdir -p "$abort_feature_dir"
   local at rel_log
   at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   rel_log="${log_file#$HOST_REPO/}"
-  printf 'type: technical\ndispatch: %s\nat: %s\nexit: %s\nlog: %s\n' \
-    "$dispatch" "$at" "$exit_code" "$rel_log" >"$abort_feature_dir/$nn"
+  printf 'type: %s\ndispatch: %s\nat: %s\nexit: %s\nlog: %s\n' \
+    "$flag_type" "$dispatch" "$at" "$exit_code" "$rel_log" >"$abort_feature_dir/$nn"
 }
 
 # === Per-run state =========================================================
@@ -582,14 +624,16 @@ stop_runner_log_capture() {
   RUNNER_LOG_FIFO=""
 }
 
-# Append a `feature|nn|ref|label|duration|review_present` record to
-# RUN_DISPATCHES. `label` is the iteration's combined outcome — one of
-# `done | blocked | gate-failed | in-review | FAIL`. `review_present` is
-# `y` when the iteration produced a `<NN>-review.log` (any AFK iteration
-# that reached the gate stage) and empty otherwise.
+# Append a `feature|nn|ref|label|duration|review_present|attempt_count` record
+# to RUN_DISPATCHES. `label` is the iteration's combined outcome — one of
+# `done | blocked | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL`.
+# `review_present` is `y` when the iteration produced a `<NN>-review.log`.
+# `attempt_count` (default 1) is the data hook for the retry slice; the
+# formatters render `(N attempts)` only when N > 1, so it is silent here.
 record_dispatch() {
-  local feature="$1" nn="$2" ref="$3" label="$4" duration="$5" review="${6:-}"
-  RUN_DISPATCHES+=("$feature|$nn|$ref|$label|$duration|$review")
+  local feature="$1" nn="$2" ref="$3" label="$4" duration="$5" review="${6:-}" \
+        attempt_count="${7:-1}"
+  RUN_DISPATCHES+=("$feature|$nn|$ref|$label|$duration|$review|$attempt_count")
 }
 
 # Emit RUN_DISPATCHES records on stdout (one per line) for the table /
@@ -1475,6 +1519,11 @@ dispatch_one() {
   local post_implement_head
   post_implement_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
 
+  local impl_transport_crash=false
+  if [ "$impl_rc" != "0" ] && is_transport_crash "$log_file"; then
+    impl_transport_crash=true
+  fi
+
   if ! post_implement_json="$(take_snapshot "$feature")"; then
     local snap_fail_at snap_duration
     snap_fail_at=$(date +%s)
@@ -1486,7 +1535,7 @@ dispatch_one() {
   fi
 
   local classifier_verdict
-  classifier_verdict="$(classify_outcome "$pre_json" "$post_implement_json" "$ref")"
+  classifier_verdict="$(classify_outcome "$pre_json" "$post_implement_json" "$ref" "$impl_transport_crash")"
 
   local impl_has_runner_commits=0
   if [ -n "$pre_implement_head" ] && [ -n "$post_implement_head" ] \
@@ -1507,8 +1556,9 @@ dispatch_one() {
   impl_duration=$(( impl_ended_at - started_at ))
 
   # Implement stage outcome label: in-review|done from the post-snapshot
-  # on classifier success, FAIL otherwise. /implement normally lands at
-  # in-review; HITL or maintainer-adjusted briefs may land at done.
+  # on classifier success, dispatch-aborted on transport crash, FAIL otherwise.
+  # /implement normally lands at in-review; HITL or maintainer-adjusted briefs
+  # may land at done.
   local impl_label="FAIL"
   if [ "$classifier_verdict" = "success" ]; then
     local post_status
@@ -1518,6 +1568,8 @@ dispatch_one() {
       in-review|done) impl_label="$post_status" ;;
       *)              impl_label="FAIL" ;;
     esac
+  elif [ "$classifier_verdict" = "dispatch-aborted" ]; then
+    impl_label="dispatch-aborted"
   fi
 
   format_progress_outcome "$(now_clock)" "$ref" "implement" "$impl_label" "$impl_duration"
@@ -1563,9 +1615,13 @@ dispatch_one() {
     post_eligible="$(jq -r --arg r "$ref" \
       '(.issues[] | select(.ref == $r) | .eligible) // "false"' <<<"$post_implement_json")"
     if [ "$post_eligible" = "true" ]; then
-      write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_file"
+      local impl_flag_type="technical"
+      [ "$classifier_verdict" = "dispatch-aborted" ] && impl_flag_type="transport"
+      write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_file" "$impl_flag_type"
     fi
-    record_dispatch "$feature" "$nn" "$ref" "FAIL" "$impl_duration"
+    local impl_abort_outcome="FAIL"
+    [ "$classifier_verdict" = "dispatch-aborted" ] && impl_abort_outcome="dispatch-aborted"
+    record_dispatch "$feature" "$nn" "$ref" "$impl_abort_outcome" "$impl_duration"
     RUNNER_LAST_OUTCOME="failure"
     return 1
   fi
@@ -1595,6 +1651,11 @@ dispatch_one() {
   local gate_rc=0
   run_gate_container "$ref" "$review_log_file" || gate_rc=$?
 
+  local gate_transport_crash=false
+  if [ "$gate_rc" != "0" ] && is_transport_crash "$review_log_file"; then
+    gate_transport_crash=true
+  fi
+
   if ! post_gate_json="$(take_snapshot "$feature")"; then
     local snap_fail_at snap_gate_duration snap_iter_duration
     snap_fail_at=$(date +%s)
@@ -1612,7 +1673,7 @@ dispatch_one() {
   iter_duration=$(( impl_duration + gate_duration ))
 
   local gate_verdict
-  gate_verdict="$(classify_gate_outcome "$post_implement_json" "$post_gate_json" "$ref" "$gate_rc")"
+  gate_verdict="$(classify_gate_outcome "$post_implement_json" "$post_gate_json" "$ref" "$gate_rc" "$gate_transport_crash")"
 
   local review_label combined_label
   case "$gate_verdict" in
@@ -1624,6 +1685,10 @@ dispatch_one() {
       review_label="blocked"
       combined_label="blocked"
       ;;
+    review-aborted)
+      review_label="review-aborted"
+      combined_label="review-aborted"
+      ;;
     *)
       review_label="gate-failed"
       combined_label="gate-failed"
@@ -1632,8 +1697,10 @@ dispatch_one() {
 
   format_progress_outcome "$(now_clock)" "$ref" "review" "$review_label" "$gate_duration"
 
-  if [ "$gate_verdict" = "gate-failed" ]; then
-    write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file"
+  if [ "$gate_verdict" = "gate-failed" ] || [ "$gate_verdict" = "review-aborted" ]; then
+    local gate_flag_type="technical"
+    [ "$gate_verdict" = "review-aborted" ] && gate_flag_type="transport"
+    write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file" "$gate_flag_type"
     record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_duration" "y"
     RUNNER_LAST_OUTCOME="failure"
     return 1

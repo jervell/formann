@@ -81,6 +81,23 @@ The trailing `stop reason:` line varies by mode.
 
 When a dispatch fails and the issue could otherwise be re-picked (implement failure with the issue still eligible, gate failure, or propagation halt), the runner writes a plain-text abort flag at `.runner-state/aborted/<feature>/<NN>`. Eligibility selection skips flagged refs on every subsequent run, preventing infinite re-dispatch across restarts.
 
+The flag's first line identifies the failure class:
+
+```
+type: technical   # model error, bad brief, or other non-transport cause
+type: transport   # transport-class crash: API 5xx/429, network error, or empty log
+```
+
+A `type: transport` flag means the subprocess never produced model output — the failure is infrastructure, not a problem with the brief or implementation. A `type: technical` flag means the subprocess ran and produced output indicating a genuine failure. Sample flag with the full layout:
+
+```
+type: transport
+dispatch: gate
+at: 2026-05-16T19:58:37Z
+exit: 1
+log: .runner-state/runs/20260516-195837/f/01-review.log
+```
+
 An interrupted dispatch (Ctrl-C or SIGTERM during an active implement or gate run) does not write an abort flag — the maintainer's intent is to stop, not to mark the issue as stuck. The next run re-dispatches the issue normally without any `rm` recipe required.
 
 Single-dispatch (`--issue <ref>`) shares the same eligibility gate as loop mode but reacts differently when the named ref fails it: instead of silently skipping (loop mode's response — the ref isn't in the eligible set, so it never gets picked), single-dispatch exits 2 with `single-dispatch (refused: <reason>)` and prints a stderr diagnostic naming the cause (HITL, wrong status, unmet blockers, missing from snapshot, or `snapshot-failed` if `tracker-snapshot` itself crashed). No container runs and no abort flag is written — the maintainer corrects the invocation (target an eligible AFK ref, or re-triage the named one) and re-runs.

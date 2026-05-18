@@ -171,6 +171,98 @@ snapshot_one() {
   [ "$result" = "gate-failed" ]
 }
 
+@test "classify_gate_outcome — transport-crash=true + nonzero exit is review-aborted" {
+  pre="$(snapshot_one f/01 in-review)"
+  post="$(snapshot_one f/01 in-review)"
+  result="$(classify_gate_outcome "$pre" "$post" f/01 1 true)"
+  [ "$result" = "review-aborted" ]
+}
+
+@test "classify_gate_outcome — transport-crash=true does not override clean/blocked/pre-status guard" {
+  # clean: exit 0 + post=done → still clean, transport-crash irrelevant.
+  pre="$(snapshot_one f/01 in-review)"
+  post="$(snapshot_one f/01 done)"
+  [ "$(classify_gate_outcome "$pre" "$post" f/01 0 true)" = "clean" ]
+  # blocked: exit 0 + post=in-review → still blocked.
+  post="$(snapshot_one f/01 in-review)"
+  [ "$(classify_gate_outcome "$pre" "$post" f/01 0 true)" = "blocked" ]
+  # pre-status guard: pre=ready-for-agent → gate-failed (not review-aborted).
+  pre="$(snapshot_one f/01 ready-for-agent)"
+  post="$(snapshot_one f/01 done)"
+  [ "$(classify_gate_outcome "$pre" "$post" f/01 1 true)" = "gate-failed" ]
+}
+
+@test "classify_outcome — transport-crash=true + failure is dispatch-aborted" {
+  pre="$(snapshot_one f/01 ready-for-agent)"
+  post="$(snapshot_one f/01 ready-for-agent)"
+  result="$(classify_outcome "$pre" "$post" f/01 true)"
+  [ "$result" = "dispatch-aborted" ]
+}
+
+@test "classify_outcome — transport-crash=true does not override success" {
+  pre="$(snapshot_one f/01 ready-for-agent)"
+  post="$(snapshot_one f/01 in-review)"
+  result="$(classify_outcome "$pre" "$post" f/01 true)"
+  [ "$result" = "success" ]
+}
+
+# === is_transport_crash =======================================================
+#
+# Pure predicate: returns exit 0 when a dispatch log carries a transport-class
+# failure signature (empty/whitespace log, API 5xx/429 error, network errors).
+
+@test "is_transport_crash — empty log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/empty.log"
+}
+
+@test "is_transport_crash — whitespace-only log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/whitespace-only.log"
+}
+
+@test "is_transport_crash — API 5xx log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/5xx.log"
+}
+
+@test "is_transport_crash — API 429 log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/429.log"
+}
+
+@test "is_transport_crash — fetch failed log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/fetch-failed.log"
+}
+
+@test "is_transport_crash — ECONNRESET log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/econnreset.log"
+}
+
+@test "is_transport_crash — ETIMEDOUT log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/etimedout.log"
+}
+
+@test "is_transport_crash — getaddrinfo log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/getaddrinfo.log"
+}
+
+@test "is_transport_crash — model-produced output without crash signature is not a crash" {
+  local log_file="$BATS_TEST_TMPDIR/model-exit.log"
+  printf 'claude: The brief is insufficient. Cannot implement without a clearer spec.\nexit status 0\n' >"$log_file"
+  ! is_transport_crash "$log_file"
+}
+
+@test "is_transport_crash — intentional prompt-error exit is not a crash" {
+  local log_file="$BATS_TEST_TMPDIR/prompt-error.log"
+  printf 'Error: prompt file not found: /path/to/review-and-gate.md\nexit status 1\n' >"$log_file"
+  ! is_transport_crash "$log_file"
+}
+
 # === check_gate_prompt =====================================================
 #
 # Pre-flight invariant: the gate prompt file must exist on disk before
@@ -1466,7 +1558,7 @@ setup_eligibility_test() {
   [ "$RUNNER_LAST_OUTCOME" = "success" ]
   # One record, combined label `done`, review-log marker present.
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
   # Two propagations: post-implement and post-gate.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
@@ -1527,7 +1619,7 @@ setup_eligibility_test() {
   # Blocked is operationally clean — counter resets, no failure.
   [ "$RUNNER_LAST_OUTCOME" = "success" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y|"* ]]
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
@@ -1542,7 +1634,8 @@ setup_eligibility_test() {
     return 0
   }
   run_gate_container() {
-    # Container crashed — nonzero exit.
+    # Container crashed (OOM kill) — nonzero exit, non-transport log.
+    echo "Killed" >"$2"
     return 137
   }
 
@@ -1556,7 +1649,7 @@ setup_eligibility_test() {
   [ "$rc" -ne 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
   # Only the post-implement propagation ran; the gate-failed branch
   # does not propagate.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
@@ -1581,7 +1674,7 @@ setup_eligibility_test() {
 
   [ "$rc" -ne 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
 }
 
 @test "dispatch_one — RUNNER_INTERRUPTED between implement and gate prevents gate dispatch" {
@@ -1672,7 +1765,7 @@ setup_eligibility_test() {
   [ "$rc" -eq 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "success" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y|"* ]]
   # Both the post-implement and post-gate propagations ran — the gate's
   # tracker commit reaches host.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
@@ -2221,6 +2314,13 @@ setup_abort_test() {
   local log_line
   log_line="$(grep '^log:' "$flag_file")"
   [[ "$log_line" != *"$HOST_REPO"* ]]
+}
+
+@test "write_abort_flag — type: transport written when 6th arg is transport" {
+  setup_abort_test
+  local flag_file="$HOST_ABORT_DIR/f/01"
+  write_abort_flag "f" "01" "gate" 1 "$HOST_REPO/.runner-state/runs/ts/01-review.log" "transport"
+  grep -q '^type: transport$' "$flag_file"
 }
 
 @test "dispatch_one — implement-stuck: classifier failure + eligible post-status writes abort flag" {
