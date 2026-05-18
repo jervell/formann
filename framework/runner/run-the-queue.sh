@@ -1110,18 +1110,14 @@ preflight() {
 
 # === Tracker snapshot ======================================================
 
-# Run tracker-snapshot against the runner-checkout's `.features/` *as it
-# exists at HEAD* (i.e. committed state, not the working tree). This is
-# the classifier's source of truth: fast-forward propagation only lands
-# committed history on the host, so an apparent status flip living only
-# in the working tree (e.g. `/implement` skipping the `tracker: …` commit)
-# would never reach the host. Reading from HEAD makes the classifier's
-# verdict match what actually propagates.
-#
-# The HEAD-archive step is delegated to the binding's tracker-snapshot via
-# SNAPSHOT_CHECKOUT_DIR: the local-markdown binding extracts .features/ from
-# that repo's committed HEAD before snapshotting. Each binding owns its
-# "current state of the world" definition; the wrapper here is binding-agnostic.
+# Take a snapshot of the feature's tracker state via the active binding's
+# tracker-snapshot script. SNAPSHOT_CHECKOUT_DIR points at the runner-
+# checkout; the binding decides what to do with it. local-markdown archives
+# `.features/` from that repo's HEAD (committed state, not the working tree)
+# — rationale lives in that script's comment block. github-issues ignores
+# SNAPSHOT_CHECKOUT_DIR and queries the GitHub API directly. Each binding
+# owns its "current state of the world" definition; the wrapper here is
+# binding-agnostic.
 #
 # Capture rc explicitly: command-substitution-into-local-assignment under
 # `set -e` does not propagate a non-zero from the inner command, so a
@@ -1204,7 +1200,12 @@ collect_binding_env() {
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     if [[ ! "$line" =~ ^[A-Z_][A-Z0-9_]*= ]]; then
-      echo "runner: sandbox-env emitted malformed line (expected KEY=value with uppercase key): ${line%%=*}" >&2
+      # Never echo $line or any substring of it — a no-`=` line would
+      # leak the entire value via `${line%%=*}`, which returns the whole
+      # string when the pattern doesn't match. The script's own stderr
+      # (already captured into runner.log) is where a forensic key/line
+      # diagnostic should come from, not from here.
+      echo "runner: sandbox-env emitted malformed line (expected KEY=value with uppercase key)" >&2
       return 1
     fi
     printf '%s\n' "$line"

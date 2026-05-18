@@ -966,7 +966,7 @@ EOF
 @test "collect_binding_env — malformed line with uppercase key (mixed case) does not leak value" {
   # Regression: the error message used to echo the full $line, which would
   # expose the post-= value (e.g. a token) in stderr/runner.log. The fix
-  # echoes only ${line%%=*} (the key portion).
+  # drops the line content from the message entirely.
   local script="$BATS_TEST_TMPDIR/sandbox-env"
   cat >"$script" <<'EOF'
 #!/usr/bin/env bash
@@ -979,6 +979,26 @@ EOF
   [[ "$output" == *"malformed line"* ]]
   # The secret payload must not appear anywhere in the error output.
   [[ "$output" != *"secret-payload"* ]]
+  [[ "$output" != *"ghp_"* ]]
+}
+
+@test "collect_binding_env — malformed line with no '=' does not leak the bare value" {
+  # Regression: ${line%%=*} returns the entire string when '=' is absent,
+  # so a sandbox-env script that emitted a bare token (no KEY= prefix)
+  # would leak the whole token to stderr/runner.log. The fix drops the
+  # line content from the message entirely.
+  local script="$BATS_TEST_TMPDIR/sandbox-env"
+  cat >"$script" <<'EOF'
+#!/usr/bin/env bash
+echo "ghp_bare_secret_no_equals"
+EOF
+  chmod +x "$script"
+
+  run collect_binding_env "$script"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"malformed line"* ]]
+  # The bare value must not appear anywhere in the error output.
+  [[ "$output" != *"bare_secret"* ]]
   [[ "$output" != *"ghp_"* ]]
 }
 
