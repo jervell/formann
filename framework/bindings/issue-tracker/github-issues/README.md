@@ -6,6 +6,9 @@ This binding represents the issue-tracker role of the lifecycle for projects who
 
 - **[`BINDING.md`](BINDING.md)** — the role doc. Source of truth for the agent-facing conventions: Tracker operations (the seven binding-agnostic verbs and their GitHub-issues realizations), issue conventions, authorship, sandbox compatibility. Adopting projects symlink `docs/formann/issue-tracker/` at this binding folder so skills resolve via the role surface.
 - **[`bootstrap-labels`](bootstrap-labels)** — idempotent install-time script. Creates the binding's static label namespace via `gh label create --force`. Run once per Consumer repo before first use; re-running is harmless.
+- **[`tracker-snapshot`](tracker-snapshot)** — the binding's machine-readable interface. Emits a JSON snapshot of a feature's issues with computed AFK eligibility (`tracker-snapshot <feature-slug>`) or the list of active feature slugs (`tracker-snapshot --list`). Output is byte-compatible with the local-markdown binding. Contract summarised below; full schema in [`BINDING.md`](BINDING.md#snapshot-contract).
+- **[`body-edit`](body-edit)** — section-level body rewrite for issues. Replaces (or removes) a single `## <section>` in an issue body, preserving surrounding sections verbatim. Used by `/triage` and `/implement` to publish the agent brief, record triage notes, and rewrite the blocked-by list. See [`BINDING.md`](BINDING.md#body-shaped-write-semantics) for the fetch-then-PATCH semantics and the residual race window.
+- **[`sandbox-env`](sandbox-env)** — runner hook. Emits `GH_TOKEN=<value>` on stdout by reading the macOS Keychain entry `formann-gh-token`. The runner's `collect_binding_env` invokes it before `docker run` so the container inherits the token without it appearing in shell history or process listings. See [`BINDING.md`](BINDING.md#sandbox-compatibility) for the broader sandbox contract.
 
 ## Authorship
 
@@ -15,7 +18,16 @@ The agent-facing rule (see [`BINDING.md`](BINDING.md#authorship)) is the inversi
 
 ## Snapshot contract
 
-*(stub — to be filled in by a later slice)*
+`tracker-snapshot` is the binding's machine-readable interface — a shell script that emits a JSON snapshot of a feature's issues (with computed eligibility for the AFK runner) or, with `--list`, the set of active feature slugs.
+
+```
+tracker-snapshot <feature-slug>
+tracker-snapshot --list
+```
+
+The output is byte-compatible with the local-markdown binding's snapshot, so consumers (the runner, `/triage`) can read either binding without per-binding branches. The only difference is the `ref` value format: `#N` here, `<feature>/NN` under local-markdown.
+
+See [`BINDING.md`](BINDING.md#snapshot-contract) for the full schema, ordering rules, blocker resolution, slug-uniqueness cardinality, exit codes, and the offline-testing shim.
 
 ## Sandbox compatibility
 
