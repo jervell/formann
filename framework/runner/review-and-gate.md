@@ -27,12 +27,7 @@ The issue ref is appended to this prompt below the `---` separator at the end. I
 
 5. **On a `clean` verdict only, flip the status.** Set the state to `done`. (On `blocked`, leave the state at `in-review` — only the comment was appended.)
 
-6. **One logical tracker operation, total.** Use the binding's tracker verbs to record the review outcome:
-
-   - **Set the state to `done`** (clean verdict only) — "set the state to `done`" per BINDING.md.
-   - **Comment with `Review (AFK gate)`** — "comment with `Review (AFK gate)`" per BINDING.md.
-
-   Do not split the operation across separate sessions or invocations.
+6. **One logical tracker operation, total.** Steps 4 and 5 are one act: both writes land in the same dispatch session, not split across sessions or invocations. (On `blocked`, step 5 is skipped — only the comment lands.)
 
 7. **Emit findings + verdict on stdout.** Your final response text is what lands in `<NN>-review.log`. Make it the review-issue agent's output verbatim — the exact string the Agent tool returned in step 2 — then on its own line:
 
