@@ -26,11 +26,10 @@
 # Stop reasons (drain mode):
 #   - `completed`             — every discovery slug considered.
 #   - `interrupted`           — Ctrl-C during the outer loop.
-#   - `propagation-halt`      — a per-feature drain halted on propagation.
 #   - `preflight-abort: discovery` — `tracker-snapshot --list` failed.
 #
 # Stop reasons (narrowed modes):
-#   - `queue-empty` / `interrupted` / `snapshot-failed` / `propagation-halt`.
+#   - `queue-empty` / `interrupted` / `snapshot-failed`.
 #   - `feature-restricted (refused: <reason>)` (--feature).
 #   - `single-dispatch (success|failure|refused: <reason>)` (--issue).
 #
@@ -38,9 +37,9 @@
 #   0  — drain completed / interrupted / halted; single dispatch succeeded;
 #         or loop drained / was interrupted (those treat the stop conditions
 #         as 0).
-#   1  — single dispatch failed (status didn't flip to in-review/done) or
-#         propagation halted; or loop mode aborted because tracker-snapshot
-#         crashed mid-loop (`snapshot-failed`).
+#   1  — single dispatch failed (status didn't flip to in-review/done); or
+#         loop mode aborted because tracker-snapshot crashed mid-loop
+#         (`snapshot-failed`).
 #   2  — pre-flight failed; the line printed before exit names which
 #         invariant tripped; or refusal (feature-restricted, single-dispatch
 #         refused).
@@ -358,8 +357,8 @@ now_clock() { date +"%H:%M:%S"; }
 #
 # Each iteration emits per-stage progress lines. AFK iterations produce
 # four lines (implement starting/outcome, review starting/outcome); HITL
-# iterations produce two (implement only — gate is skipped). When
-# propagation halts after a stage, a follow-up `halt → <recorded
+# iterations produce two (implement only — gate is skipped). When a
+# parking-ref publish fails after a stage, a follow-up `halt → <recorded
 # outcome>` line is emitted so the operator's terminal record matches
 # the SUMMARY.md row.
 #
@@ -611,8 +610,8 @@ fail_invariant() {
 # next iteration's eligibility filter would otherwise re-pick it (implement
 # failure with status still eligible) or where a unified "stuck" surface is
 # useful to the maintainer even when the snapshot already excludes it
-# (gate-failed, propagation halt). Overwrites on repeat so the file always
-# reflects the most recent failure.
+# (gate-failed). Overwrites on repeat so the file always reflects the most
+# recent failure.
 #
 # The maintainer removes the flag with `rm` to re-include the ref.
 # Flag format (plain text, no parser needed):
@@ -669,7 +668,6 @@ RUN_FEATURE_OUTCOMES=()
 RUN_LOG_LAYOUT="flat"
 RUNNER_TEE_PID=""
 RUNNER_LOG_FIFO=""
-RUNNER_HALT_OCCURRED=0
 RUNNER_LAST_PROPAGATION=""   # 'propagated' | 'parked' | '' (set by propagate_feature)
 DISCOVERY_JSON=""     # populated by check_discovery pre-flight invariant
 
@@ -1951,10 +1949,8 @@ dispatch_one() {
       local halt_duration
       halt_duration=$(( $(date +%s) - started_at ))
       format_progress_outcome "$(now_clock)" "$ref" "implement" "halt → FAIL" "$halt_duration"
-      write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_file"
       record_dispatch "$feature" "$nn" "$ref" "FAIL" "$halt_duration" "" "$impl_attempts"
       RUNNER_LAST_OUTCOME="failure"
-      RUNNER_HALT_OCCURRED=1
       return 1
     fi
   fi
@@ -2076,10 +2072,8 @@ dispatch_one() {
     gate_halt_duration=$(( $(date +%s) - gate_started_at ))
     iter_halt_duration=$(( impl_duration + gate_halt_duration ))
     format_progress_outcome "$(now_clock)" "$ref" "review" "halt → gate-failed" "$gate_halt_duration"
-    write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file"
     record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$iter_halt_duration" "y" "$gate_attempts"
     RUNNER_LAST_OUTCOME="failure"
-    RUNNER_HALT_OCCURRED=1
     return 1
   fi
 
@@ -2166,11 +2160,9 @@ run_single() {
 # Eligibility is recomputed every iteration by re-snapshotting the
 # runner-checkout's HEAD, so an issue unblocked mid-run by an earlier
 # success becomes selectable without restarting the runner. Stop
-# conditions: queue empty, Ctrl-C, propagation halt. Per-issue failures
-# (non-halt) log + continue (no runner-side comment posted on the issue —
-# the failed `/implement` posts its own). A propagation halt is terminal:
-# the un-propagated commits must survive in the runner-checkout for manual
-# recovery. RUN_DIR was created in main().
+# conditions: queue empty, Ctrl-C. Per-issue failures log + continue
+# (no runner-side comment posted on the issue — the failed `/implement`
+# posts its own). RUN_DIR was created in main().
 run_loop() {
   # Feature-level refusals (unknown-feature, branch-missing) were
   # already enforced by `check_feature_eligibility` in preflight.
@@ -2237,7 +2229,6 @@ run_loop() {
 
     RUNNER_LAST_OUTCOME=""
     RUNNER_LAST_PROPAGATION=""
-    RUNNER_HALT_OCCURRED=0
     local dispatch_rc=0
     dispatch_one "$TARGET_FEATURE" "$nn_sel" "$RUN_DIR" || dispatch_rc=$?
 
@@ -2245,16 +2236,6 @@ run_loop() {
     if [ "$RUNNER_INTERRUPTED" -eq 1 ]; then
       echo "[$(now_clock)] runner: interrupted during dispatch of $ref; exiting"
       RUN_STOP_REASON="interrupted"
-      return 0
-    fi
-
-    # A propagation error is terminal — the runner-checkout still holds
-    # commits that failed to reach the parking ref, and the next
-    # iteration's sync would wipe them. Stop so the operator can recover
-    # manually against the preserved runner-checkout.
-    if [ "$RUNNER_HALT_OCCURRED" -eq 1 ]; then
-      echo "[$(now_clock)] runner: propagation halt — stopping loop"
-      RUN_STOP_REASON="propagation-halt"
       return 0
     fi
 
@@ -2274,18 +2255,6 @@ run_loop() {
 #   - `interrupted`           — Ctrl-C during the outer loop (the in-flight
 #                                container, if any, received SIGTERM via the
 #                                signal handler; see `handle_signal`).
-#   - `propagation-halt`      — a per-feature drain halted on propagation.
-#                                Surfaces here so the maintainer's recovery
-#                                recipe still applies. Subsequent features
-#                                are NOT drained — a parked commit must be
-#                                reconciled before more work lands.
-#
-# Halt semantics: a per-feature halt sets RUNNER_HALT_OCCURRED=1 inside
-# `run_loop`. We honour that here by stopping the outer walk and letting
-# the maintainer reconcile manually. Per PRD §Per-feature gates the
-# parked commit's branch ref is safe across `ensure_runner_checkout_on_branch
-# <next-feature>` (different branch), but the recovery recipe is clearer
-# when the runner doesn't keep advancing other features in the background.
 run_drain() {
   RUN_LOG_LAYOUT="nested"
   local considered=""
@@ -2317,11 +2286,6 @@ run_drain() {
     if [ "$RUNNER_INTERRUPTED" -eq 1 ]; then
       echo "[$(now_clock)] runner: interrupted during $feature drain; exiting"
       RUN_STOP_REASON="interrupted"
-      return 0
-    fi
-    if [ "${RUNNER_HALT_OCCURRED:-0}" -eq 1 ]; then
-      echo "[$(now_clock)] runner: propagation halt in $feature — stopping drain"
-      RUN_STOP_REASON="propagation-halt"
       return 0
     fi
   done
@@ -2390,7 +2354,6 @@ drain_one_feature() {
   # Don't record the feature outcome upfront — if run_loop surfaces a
   # mid-feature snapshot crash, we record `feature-snapshot-failed` instead
   # of `drained` so the SUMMARY narrates the failure correctly.
-  RUNNER_HALT_OCCURRED=0
   local saved_stop_reason="$RUN_STOP_REASON"
   RUN_STOP_REASON=""
   set +e
@@ -2401,8 +2364,8 @@ drain_one_feature() {
   # The outer drain loop owns the run-level stop reason. Restore whatever
   # was set before we entered the per-feature loop so a mid-drain run_loop
   # stop (queue-empty, snapshot-failed) doesn't leak as the run's final
-  # reason. RUNNER_INTERRUPTED and RUNNER_HALT_OCCURRED are checked by the
-  # outer loop via their dedicated globals, so the stop-reason wipe is safe.
+  # reason. RUNNER_INTERRUPTED is checked by the outer loop via its
+  # dedicated global, so the stop-reason wipe is safe.
   RUN_STOP_REASON="$saved_stop_reason"
 
   case "$inner_reason" in

@@ -1108,193 +1108,6 @@ install_afk_snapshots() {
   assert_output --partial "review → halt → gate-failed"
 }
 
-# === run_loop — propagation halt terminates the run =======================
-#
-# Regression: a propagation halt in loop mode continued the loop. The next
-# iteration's ensure_runner_checkout hard-reset the runner-checkout to
-# host's branch tip, wiping the commits the halt message promised were
-# "parked in the runner-checkout" for the operator to recover manually.
-#
-# The fix sets RUNNER_HALT_OCCURRED=1 at both halt sites in dispatch_one;
-# run_loop checks the flag after each dispatch and exits with stop reason
-# "propagation-halt" before the second iteration's ensure_runner_checkout
-# can wipe the parked commit.
-#
-# These tests allow ensure_runner_checkout to run for real (unmocked) so
-# the second-iteration reset is observable: without the fix, HOST_CHECKOUT
-# is reset to HOST_REPO's tip and the parked commit is gone.
-
-setup_loop_halt_test() {
-  HOST_REPO="$BATS_TEST_TMPDIR/host"
-  TARGET_FEATURE="f"
-  HOST_CHECKOUT="$HOST_REPO/$RUNNER_CHECKOUT_PATH"
-
-  mkdir -p "$HOST_REPO"
-  git -C "$HOST_REPO" init --quiet --initial-branch="$TARGET_FEATURE"
-  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
-    commit --allow-empty --quiet -m init
-
-  # ensure_runner_checkout's tail step (refresh_runner_checkout_install_products)
-  # unconditionally invokes $HOST_REPO/installer/install.sh. Stub it to a no-op
-  # so the unmocked ensure_runner_checkout path this test deliberately exercises
-  # doesn't trip on a missing installer.
-  mkdir -p "$HOST_REPO/installer"
-  cat >"$HOST_REPO/installer/install.sh" <<'STUB'
-#!/usr/bin/env bash
-exit 0
-STUB
-  chmod +x "$HOST_REPO/installer/install.sh"
-
-  mkdir -p "$(dirname "$HOST_CHECKOUT")"
-  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
-  git -C "$HOST_CHECKOUT" checkout --quiet -B "$TARGET_FEATURE" "origin/$TARGET_FEATURE"
-
-  # Switch host HEAD off the feature branch so evaluate_feature_gate returns
-  # "drain" and run_loop proceeds to the loop body.
-  git -C "$HOST_REPO" checkout --quiet -b main
-
-  HOST_RUNS="$HOST_REPO/.runner-state/runs"
-  HOST_ABORT_DIR="$HOST_REPO/.runner-state/aborted"
-  RUN_DIR="$HOST_RUNS/test-run"
-  mkdir -p "$RUN_DIR"
-
-  DISCOVERY_JSON='["f"]'
-  RUNNER_INTERRUPTED=0
-  RUNNER_LAST_OUTCOME=""
-  RUNNER_HALT_OCCURRED=0
-  RUN_STOP_REASON=""
-  RUN_DISPATCHES=()
-
-  SNAP_CALL_FILE="$BATS_TEST_TMPDIR/snap-calls"
-  echo 0 >"$SNAP_CALL_FILE"
-}
-
-@test "run_loop — implement-stage propagation halt stops loop before second iteration" {
-  # Without the fix, the loop continued; the second iteration's
-  # ensure_runner_checkout reset HOST_CHECKOUT to HOST_REPO's tip (initial
-  # commit), wiping the parked implement commit. The fix exits with stop
-  # reason "propagation-halt" before that reset runs.
-  setup_loop_halt_test
-
-  # Three take_snapshot calls in iteration 1:
-  #   call 0 — run_loop selection: f/01 eligible
-  #   call 1 — dispatch_one pre_json: ready-for-agent
-  #   call 2 — dispatch_one post_implement_json: in-review (classifier=success)
-  # Calls 3+ only reachable in the buggy path (second iteration).
-  take_snapshot() {
-    local n
-    n="$(cat "$SNAP_CALL_FILE")"
-    echo $((n + 1)) >"$SNAP_CALL_FILE"
-    case "$n" in
-      0|1)
-        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
-        ;;
-      *)
-        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
-        ;;
-    esac
-  }
-
-  run_dispatch_container() {
-    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
-      commit --allow-empty --quiet -m "tracker: f/01 implement (test)"
-    return 0
-  }
-  run_gate_container() { return 0; }
-  propagate_feature() {
-    echo "runner: simulated propagation halt" >&2
-    return 1
-  }
-
-  local host_head_before
-  host_head_before="$(git -C "$HOST_REPO" rev-parse HEAD)"
-
-  set +e
-  run_loop
-  set -e
-
-  [ "$RUN_STOP_REASON" = "propagation-halt" ]
-  local checkout_head host_head
-  checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
-  host_head="$(git -C "$HOST_REPO" rev-parse HEAD)"
-  # Parked commit must survive in runner-checkout.
-  [ "$checkout_head" != "$host_head" ]
-  # Host repo tip must be unchanged (propagation halted before advancing it).
-  [ "$host_head" = "$host_head_before" ]
-}
-
-@test "run_loop — gate-stage propagation halt stops loop before second iteration" {
-  # Implement propagation succeeds (host advances to the implement commit),
-  # gate commits to runner-checkout, then gate propagation halts. The
-  # parked gate commit must survive — the loop must not call
-  # ensure_runner_checkout a second time.
-  setup_loop_halt_test
-
-  # Four take_snapshot calls in iteration 1:
-  #   call 0 — run_loop selection: f/01 eligible
-  #   call 1 — dispatch_one pre_json: ready-for-agent
-  #   call 2 — dispatch_one post_implement_json: in-review (classifier=success)
-  #   call 3 — dispatch_one post_gate_json: done (gate verdict=clean)
-  # Calls 4+ only reachable in the buggy path.
-  take_snapshot() {
-    local n
-    n="$(cat "$SNAP_CALL_FILE")"
-    echo $((n + 1)) >"$SNAP_CALL_FILE"
-    case "$n" in
-      0|1)
-        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
-        ;;
-      2)
-        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
-        ;;
-      *)
-        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"done","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
-        ;;
-    esac
-  }
-
-  run_dispatch_container() {
-    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
-      commit --allow-empty --quiet -m "tracker: f/01 implement (test)"
-    return 0
-  }
-
-  # Gate commits a tracker: entry — this is the parked commit that must survive.
-  run_gate_container() {
-    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
-      commit --allow-empty --quiet -m "tracker: f/01 review (test)"
-    return 0
-  }
-
-  # Implement propagation succeeds (fast-forward HOST_REPO to implement
-  # commit); gate propagation halts.
-  PROP_CALL_FILE="$BATS_TEST_TMPDIR/prop-calls"
-  echo 0 >"$PROP_CALL_FILE"
-  propagate_feature() {
-    local n
-    n="$(cat "$PROP_CALL_FILE")"
-    echo $((n + 1)) >"$PROP_CALL_FILE"
-    if [ "$n" -eq 0 ]; then
-      git -C "$HOST_REPO" fetch --quiet "$HOST_CHECKOUT" "$TARGET_FEATURE" >&2
-      git -C "$HOST_REPO" merge --quiet --ff-only FETCH_HEAD >&2
-      return 0
-    fi
-    echo "runner: simulated gate-stage propagation halt" >&2
-    return 1
-  }
-
-  set +e
-  run_loop
-  set -e
-
-  [ "$RUN_STOP_REASON" = "propagation-halt" ]
-  local checkout_head host_head
-  checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
-  host_head="$(git -C "$HOST_REPO" rev-parse HEAD)"
-  # Gate commit parked in runner-checkout must not have been wiped.
-  [ "$checkout_head" != "$host_head" ]
-}
-
 # === collect_binding_env — sandbox-env hook ================================
 #
 # Verifies the binding-agnostic hook that invokes a role-surface sandbox-env
@@ -2826,35 +2639,6 @@ setup_abort_test() {
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
 }
 
-@test "dispatch_one — implement propagation halt writes abort flag" {
-  setup_abort_test
-  # Status stays ready-for-agent but dispatch committed something → propagation halts.
-  echo "pre" >"$TEST_SNAPSHOT_PHASE"
-  take_snapshot() {
-    local phase
-    phase="$(cat "$TEST_SNAPSHOT_PHASE")"
-    if [ "$phase" = "pre" ]; then
-      echo "post" >"$TEST_SNAPSHOT_PHASE"
-    fi
-    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
-  }
-  run_dispatch_container() {
-    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
-      commit --allow-empty --quiet -m "tracker: f/01 bail"
-    return 0
-  }
-  propagate_feature() { return 1; }
-
-  RUNNER_LAST_OUTCOME=""
-  RUN_DISPATCHES=()
-  set +e
-  dispatch_one "f" "01" "$TEST_RUN_DIR"
-  set -e
-
-  [ -f "$HOST_ABORT_DIR/f/01" ]
-  grep -q '^dispatch: implement$' "$HOST_ABORT_DIR/f/01"
-}
-
 @test "dispatch_one — gate-failed writes abort flag with dispatch: gate" {
   setup_abort_test
   install_afk_snapshots in-review
@@ -2880,31 +2664,6 @@ setup_abort_test() {
   # test passes silently against the review-aborted path too.
   grep -q '^type: technical$' "$HOST_ABORT_DIR/f/01"
   [[ "${RUN_DISPATCHES[0]}" == *"|gate-failed|"* ]]
-}
-
-@test "dispatch_one — gate propagation halt writes abort flag with dispatch: gate" {
-  setup_abort_test
-  install_afk_snapshots done
-
-  local prop_count_file="$BATS_TEST_TMPDIR/prop-count"
-  echo 0 >"$prop_count_file"
-  propagate_feature() {
-    local n
-    n="$(cat "$prop_count_file")"
-    echo $((n + 1)) >"$prop_count_file"
-    # First call (post-implement) succeeds; second (post-gate) halts.
-    [ "$n" -eq 0 ]
-  }
-  run_gate_container() { return 0; }
-
-  RUNNER_LAST_OUTCOME=""
-  RUN_DISPATCHES=()
-  set +e
-  dispatch_one "f" "01" "$TEST_RUN_DIR"
-  set -e
-
-  [ -f "$HOST_ABORT_DIR/f/01" ]
-  grep -q '^dispatch: gate$' "$HOST_ABORT_DIR/f/01"
 }
 
 @test "dispatch_one — RUNNER_INTERRUPTED during implement-dispatch suppresses abort flag" {
@@ -3804,7 +3563,6 @@ setup_drain_test() {
   RUN_DIR="$BATS_TEST_TMPDIR/run"
   mkdir -p "$RUN_DIR"
   RUNNER_INTERRUPTED=0
-  RUNNER_HALT_OCCURRED=0
   RUN_FEATURE_OUTCOMES=()
   RUN_DISPATCHES=()
   RUN_STOP_REASON=""
@@ -4048,26 +3806,6 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
 
   [ "$RUN_STOP_REASON" = "interrupted" ]
   # Only the first feature was considered.
-  [ "$(drain_outcomes_count)" = "1" ]
-  [ "$(drain_outcome_nth 0)" = "alpha|drained" ]
-}
-
-@test "run_drain — propagation halt mid-drain stops the outer loop" {
-  setup_drain_test
-  DISCOVERY_JSON='["alpha","beta"]'
-  git -C "$HOST_REPO" branch alpha
-  git -C "$HOST_REPO" branch beta
-  run_loop() {
-    echo "$TARGET_FEATURE" >>"$DRAIN_DRAINED_FILE"
-    RUNNER_HALT_OCCURRED=1
-    RUN_STOP_REASON="propagation-halt"
-    return 0
-  }
-
-  run_drain
-
-  [ "$RUN_STOP_REASON" = "propagation-halt" ]
-  # First feature drained; second one not considered.
   [ "$(drain_outcomes_count)" = "1" ]
   [ "$(drain_outcome_nth 0)" = "alpha|drained" ]
 }

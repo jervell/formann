@@ -152,8 +152,7 @@ Wraps the per-issue loop and walks every feature in the discovery output.
 │         │ no                                                              │
 │         ▼                                                                 │
 │   run_loop                       (per-issue loop, scoped to this          │
-│         │                         feature; sets RUNNER_HALT_OCCURRED on   │
-│         │                         propagation halt; sets inner            │
+│         │                         feature; sets inner                     │
 │         │                         RUN_STOP_REASON = "snapshot-failed" on  │
 │         │                         a mid-feature crash, "fetch-failed" on  │
 │         │                         a per-iteration runner-checkout sync    │
@@ -167,9 +166,6 @@ Wraps the per-issue loop and walks every feature in the discovery output.
 │         ▼                                                                 │
 │   [RUNNER_INTERRUPTED?] ──yes──► RUN_STOP_REASON = "interrupted"; stop    │
 │         │ no                                                              │
-│         ▼                                                                 │
-│   [RUNNER_HALT_OCCURRED?] ──yes──► RUN_STOP_REASON = "propagation-halt";  │
-│         │ no                       stop                                   │
 │         └────────► next feature                                           │
 │                                                                           │
 └───────────────────────────────────────────────────────────────────────────┘
@@ -249,7 +245,6 @@ Abort flags persist across runs (files on disk). The eligibility skip log line i
    │         yes       no
    │          │        │
    │          ▼        │
-   │    write_abort_flag(implement)   (parking-ref publish failed — always write)
    │       record FAIL │
    │       ret 1       │
    │                   │
@@ -328,11 +323,9 @@ so the propagation branch is a no-op for it.
  ret 1        yes        no
                │          │
                ▼          ▼
-         write_abort_  record (done if v_gate=clean, else blocked)
-         flag(gate)    RUNNER_LAST_OUTCOME = success
-         record        return 0
-         gate-failed
-         ret 1
+            record     record (done if v_gate=clean, else blocked)
+            gate-failed RUNNER_LAST_OUTCOME = success
+            ret 1       return 0
 ```
 
 ### Per-iteration verdict reference
@@ -342,14 +335,14 @@ so the propagation branch is a no-op for it.
 | Implement classifier `failure`, no committed change                           | `FAIL`           | `failure`             | 1                 | yes (`implement`)   |
 | Implement classifier `failure` with committed change, propagate ok, post eligible | `FAIL`       | `failure`             | 1                 | yes (`implement`)   |
 | Implement classifier `failure` with committed change, propagate ok, post non-eligible | `FAIL`   | `failure`             | 1                 | no                  |
-| Implement classifier `failure` with committed change, propagate halts         | `FAIL`           | `failure`             | 1                 | yes (`implement`)   |
-| Implement classifier `success`, propagate halts                               | `FAIL`           | `failure`             | 1                 | yes (`implement`)   |
+| Implement classifier `failure` with committed change, propagate error        | `FAIL`           | `failure`             | 1                 | no                  |
+| Implement classifier `success`, propagate error                               | `FAIL`           | `failure`             | 1                 | no                  |
 | Gate classifier `gate-failed`                                                 | `gate-failed`    | `failure`             | 1                 | yes (`gate`)        |
-| Gate `clean`/`blocked`, propagate halts                                       | `gate-failed`    | `failure`             | 1                 | yes (`gate`)        |
+| Gate `clean`/`blocked`, propagate error                                       | `gate-failed`    | `failure`             | 1                 | no                  |
 | Gate `clean`, propagate ok                                                    | `done`           | `success`             | 0                 | no                  |
 | Gate `blocked`, propagate ok                                                  | `blocked`        | `success`             | 0                 | no                  |
 
-The "no committed change" row writes the implement abort flag unconditionally because, in code, the write is gated on `post_eligible == "true"` — and with no commits the post-snapshot reads HEAD (unchanged), so post-status equals pre-status (`ready-for-agent`) and `post_eligible` is necessarily `true`. The "post non-eligible" branch is reachable only when a commit *did* land (e.g., `/implement` bailed to `needs-info`), which is captured by the dedicated row above.
+The "no committed change" row writes the implement abort flag unconditionally because, in code, the write is gated on `post_eligible == "true"` — and with no commits the post-snapshot reads HEAD (unchanged), so post-status equals pre-status (`ready-for-agent`) and `post_eligible` is necessarily `true`. The "post non-eligible" branch is reachable only when a commit *did* land (e.g., `/implement` bailed to `needs-info`), which is captured by the dedicated row above. The "propagate error" rows cover step-1 failure (parking-ref publish failed); no abort flag is written because the issue's status has already changed (it would not be re-selected) or the error is unlikely to recur.
 
 ## Outputs
 
@@ -376,7 +369,6 @@ The "no committed change" row writes the implement abort flag unconditionally be
 
 - `completed` *(every discovery slug considered)*
 - `interrupted` *(outer-loop Ctrl-C)*
-- `propagation-halt` *(per-feature drain halted; outer loop stops)*
 - `preflight-abort: discovery` *(`tracker-snapshot --list` exited non-zero or unparseable)*
 
 **Narrowed modes (`--feature`, `--issue`):**
@@ -384,7 +376,6 @@ The "no committed change" row writes the implement abort flag unconditionally be
 - `queue-empty`
 - `interrupted` *(loop-phase Ctrl-C)*
 - `snapshot-failed` *(`tracker-snapshot` crashed mid-loop; exit 1)*
-- `propagation-halt`
 - `feature-restricted (refused: unknown-feature | branch-missing)` *(--feature mode)*
 - `single-dispatch (success)` / `single-dispatch (failure)` / `single-dispatch (refused: <reason>)` *(--issue mode; refusal reasons: `HITL`, `wrong-status`, `blockers-unmet`, `missing`, `unknown-feature`, `branch-missing`, `snapshot-failed`)*
 
@@ -398,7 +389,7 @@ The "no committed change" row writes the implement abort flag unconditionally be
 | Code | Meaning                                                                               |
 | ---- | ------------------------------------------------------------------------------------- |
 | 0    | Loop drained / interrupted; or single-dispatch success.                               |
-| 1    | Single-dispatch failure (classifier verdict, propagation halt, container error); or loop aborted by `snapshot-failed`. |
+| 1    | Single-dispatch failure (classifier verdict, container error, or parking-ref publish failure); or loop aborted by `snapshot-failed`. |
 | 2    | Pre-flight invariant failed; argparse rejected the invocation before any run dir was created; or single-dispatch refused the named ref (eligibility gate). |
 | 130  | Ctrl-C arrived during pre-flight (`handle_preflight_signal` calls `exit 130`).        |
 

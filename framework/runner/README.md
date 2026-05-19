@@ -9,9 +9,9 @@ dispatching `/implement` per issue inside a sandboxed Docker container.
 - **`--feature <slug>`** — **loop mode**. Narrows to one feature; refuses loudly on structural gate failures (`unknown-feature`, `branch-missing`).
 - **`--issue <feature>/<NN>`** — **single-dispatch mode**. Dispatches one ref; refuses loudly on eligibility gate failures.
 
-Drain mode stops on: every feature considered (`completed`); Ctrl-C (`interrupted`); a per-feature propagation halt (`propagation-halt`); or `tracker-snapshot --list` itself failing (`preflight-abort: discovery`).
+Drain mode stops on: every feature considered (`completed`); Ctrl-C (`interrupted`); or `tracker-snapshot --list` itself failing (`preflight-abort: discovery`).
 
-Narrowed modes stop on: queue empty; Ctrl-C (the in-flight container receives SIGTERM, then SIGKILL after `RUNNER_KILL_GRACE_SECONDS` if it lingers); a mid-loop `tracker-snapshot` crash (`snapshot-failed`, exit 1); or a propagation halt. The full stop-reason vocabulary — including the pre-flight-phase stops — is enumerated below the per-issue table.
+Narrowed modes stop on: queue empty; Ctrl-C (the in-flight container receives SIGTERM, then SIGKILL after `RUNNER_KILL_GRACE_SECONDS` if it lingers); or a mid-loop `tracker-snapshot` crash (`snapshot-failed`, exit 1). The full stop-reason vocabulary — including the pre-flight-phase stops — is enumerated below the per-issue table.
 
 ## Per-run output
 
@@ -37,10 +37,10 @@ iteration produces four (implement starting/outcome, review starting/outcome):
 [09:13:31] afk-runner/06 review → clean → done (4s)
 ```
 
-When host propagation halts after a stage, the original outcome line is
-preserved (the dispatch step itself succeeded; the halt is downstream)
-and a follow-up `halt → <recorded outcome>` line is emitted so the
-visible record matches the SUMMARY.md row:
+When a parking-ref publish fails after a stage, the original outcome
+line is preserved (the dispatch step itself succeeded; the failure is
+downstream) and a follow-up `halt → <recorded outcome>` line is emitted
+so the visible record matches the SUMMARY.md row:
 
 ```
 [09:13:27] afk-runner/06 implement → in-review (42s)
@@ -55,7 +55,7 @@ combined-outcome column. The combined-outcome vocabulary is:
 | `done` | Gate found no Critical findings; status flipped to `done`. |
 | `blocked` | Gate found ≥1 🔴 Critical; status stayed at `in-review` with findings appended as a comment. |
 | `gate-failed` | Gate dispatch errored or landed on an off-mission status. Runner writes an abort flag and continues. |
-| `FAIL` | Implement-stage failure (classifier verdict, propagation halt, container error). Any `tracker:` work the dispatch did commit (notably the comment `/implement` posts on a bail) is still propagated to the host so it shows up on your branch when you return. |
+| `FAIL` | Implement-stage failure (classifier verdict, container error, or parking-ref publish failure). Any `tracker:` work the dispatch did commit (notably the comment `/implement` posts on a bail) is still propagated to the host so it shows up on your branch when you return. |
 
 The trailing `stop reason:` line varies by mode.
 
@@ -63,12 +63,11 @@ The trailing `stop reason:` line varies by mode.
 
 - `completed` — every feature in discovery output considered (the multi-feature analogue of single-feature mode's `queue-empty` at the run level).
 - `interrupted` — Ctrl-C during the outer loop.
-- `propagation-halt` — a per-feature drain halted; the outer loop stops so the parked commit is recoverable.
 - `preflight-abort: discovery` — `tracker-snapshot --list` exited non-zero or returned unparseable JSON.
 
 **Narrowed modes (`--feature`, `--issue`):**
 
-- `queue-empty` / `interrupted` / `snapshot-failed` / `propagation-halt` — the per-issue loop's stop reasons (see "The dispatch loop" in `afk-runner.md`).
+- `queue-empty` / `interrupted` / `snapshot-failed` — the per-issue loop's stop reasons (see "The dispatch loop" in `afk-runner.md`).
 - `feature-restricted (refused: <reason>)` (`--feature`) — `<reason>` is `unknown-feature` (slug not in discovery output) or `branch-missing` (no host ref for `<slug>`).
 - `single-dispatch (success|failure)` (`--issue`); or `single-dispatch (refused: <reason>)` — `<reason>` is one of: HITL type, wrong status, unmet blockers, `unknown-feature`, `branch-missing`, `snapshot-failed`.
 
@@ -114,7 +113,7 @@ Set `RUNNER_DISABLE_TRANSPORT_RETRY=1` to skip the retry layer entirely (useful 
 
 ## Resuming after a technical failure
 
-When a dispatch fails and the issue could otherwise be re-picked (implement failure with the issue still eligible, gate failure, or propagation halt), the runner writes a plain-text abort flag at `.runner-state/aborted/<feature>/<NN>`. Eligibility selection skips flagged refs on every subsequent run, preventing infinite re-dispatch across restarts.
+When a dispatch fails and the issue could otherwise be re-picked (implement failure with the issue still eligible, or gate failure), the runner writes a plain-text abort flag at `.runner-state/aborted/<feature>/<NN>`. Eligibility selection skips flagged refs on every subsequent run, preventing infinite re-dispatch across restarts.
 
 The flag's first line identifies the failure class:
 

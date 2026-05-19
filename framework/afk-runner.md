@@ -28,11 +28,10 @@ The runner dispatches **eligible AFK refs only** — both loop and single-dispat
 
 **On failure, the runner doesn't rewrite state — neither outcome takes the issue back to `ready-for-agent` automatically.** What happens to the issue depends on which stage failed:
 
-- **Implement-stage FAIL** (classifier verdict or container error, no propagation halt) — two sub-cases:
+- **Implement-stage FAIL** (classifier verdict or container error) — two sub-cases:
   - **Logical bail** — `/implement` posted an explanation and flipped status to `needs-info`. The status change makes the issue ineligible on its own; no abort flag is needed. To resume, the maintainer revises the brief and runs `/triage <ref> ready-for-agent`. Under local-markdown, the bail comment lands as a `tracker:` commit; under GitHub Issues, it is an API call that produces no commit. Either way, the abort-flag logic is unaffected — it is a runner-internal file (`.runner-state/aborted/<feature>/<NN>`), independent of the binding.
   - **Technical failure** (container died before any tracker write) — status is still `ready-for-agent`, so the runner writes an abort flag to prevent re-dispatch.
 - **Gate-failed** — `/implement` succeeded; the issue sits at `in-review` and is no longer eligible. The runner writes an abort flag for unified "what is the runner stuck on" visibility.
-- **Propagation halt** — implement landed at least one commit but step 1 of propagation (publishing the parking ref `refs/remotes/runner/<branch>` on host) failed. The dispatched commit is stranded in the runner-checkout; the runner writes an abort flag and the maintainer reconciles manually. Step 2's best-effort fast-forward refusing (HEAD-on-target or non-fast-forward) is **not** a halt — that's a `parked-only` outcome, recorded as success, with the commit reachable on host via the parking ref.
 
 The failed `/implement` already posted its own comment; the runner adds nothing. The abort-flag mechanism — file location, format, and recovery recipe — is detailed under [Abort flags](#abort-flags) below.
 
@@ -182,7 +181,7 @@ In drain mode (bare invocation), the runner sits an additional loop above the pe
    - **`skip:queue-empty`** — the feature snapshot has no eligible non-aborted AFK refs. Every snapshot's `eligible: true` ref carries an abort flag, or there are no eligible refs in the first place. The feature shows up in SUMMARY as "considered, nothing to do".
    - **`drain`** — proceeds to the per-issue dispatch loop (next section).
 4. **mvn-cache (lazy)** — the per-feature Docker volume is created the moment a feature gates `drain`, not at run start. Features the runner skips don't materialise a cache volume.
-5. **Per-issue dispatch** — the per-issue loop body runs against this feature, scoped to its branch in the runner-checkout. A snapshot crash mid-feature surfaces as the feature outcome `feature-snapshot-failed` and the outer loop continues; a propagation halt stops the outer loop (the parked commit is the maintainer's recovery surface; chaining more features would muddy the recovery story).
+5. **Per-issue dispatch** — the per-issue loop body runs against this feature, scoped to its branch in the runner-checkout. A snapshot crash mid-feature surfaces as the feature outcome `feature-snapshot-failed` and the outer loop continues.
 6. **Record feature outcome** — `drained`, `skipped: <reason>`, or `feature-snapshot-failed` is recorded for SUMMARY.md.
 7. **Next iteration** — back to step 1.
 
@@ -190,7 +189,6 @@ Run-level stop reasons in drain mode:
 
 - **`completed`** — every discovery slug considered. The bare-invocation analogue of single-feature mode's `queue-empty`.
 - **`interrupted`** — Ctrl-C during the outer loop. The in-flight container received SIGTERM via the per-dispatch signal trap; the outer loop bails before the next feature.
-- **`propagation-halt`** — a per-feature drain halted on propagation. Subsequent features are not drained — the parked commit must be reconciled before further work lands.
 - **`discovery-failed`** — `tracker-snapshot --list` exited non-zero or returned unparseable JSON. Pre-flight invariant; the loop never starts.
 
 Narrowed modes (`--feature`, `--issue`) use the stop-reason vocabulary enumerated in the "Narrowed modes" section below — they do not produce drain-mode reasons.
@@ -274,7 +272,7 @@ Pre status of `done` is admitted alongside `in-review` because `/implement` can 
 | `done`        | AFK iteration; gate found no Critical findings and flipped status to `done`.                |
 | `blocked`     | AFK iteration; gate found ≥1 Critical; findings appended as a comment, status stays `in-review`. |
 | `gate-failed` | AFK iteration; gate dispatch errored or off-mission. Runner writes an abort flag and continues.  |
-| `FAIL`        | Implement-stage failure (classifier verdict, propagation halt, container error). Runner writes an abort flag where applicable and continues. |
+| `FAIL`        | Implement-stage failure (classifier verdict, container error, or parking-ref publish failure). Runner writes an abort flag where applicable and continues. |
 
 ## Pre-flight invariants
 
@@ -306,7 +304,6 @@ The runner stops on one of these run-level reasons. Pre-flight-phase stops and l
 
 - **`completed`** — every feature in discovery output considered (replaces single-feature's `queue-empty` at the run level). Normal drain. Exit 0.
 - **`interrupted`** — Ctrl-C during the outer loop. The in-flight container, if any, receives SIGTERM; next feature is not started. Exit 0.
-- **`propagation-halt`** — a per-feature drain halted on propagation. The outer loop stops so the parked commit is recoverable without further branches getting muddled. Exit 0.
 - **`discovery-failed`** — `tracker-snapshot --list` exited non-zero or returned unparseable JSON. Surfaces as `preflight-abort: discovery` in the existing pre-flight stop family. Exit 2.
 
 ### Narrowed modes (`--feature`, `--issue`)
@@ -314,7 +311,6 @@ The runner stops on one of these run-level reasons. Pre-flight-phase stops and l
 - **`queue-empty`** — no eligible, non-aborted ref remains at the top of an iteration. Normal completion (loop mode). Exit 0.
 - **`interrupted`** — Ctrl-C during the dispatch loop. Exit 0.
 - **`snapshot-failed`** — `tracker-snapshot` exited non-zero mid-loop (corrupt runner-checkout, jq missing, binding-implementation crash). Exit 1.
-- **`propagation-halt`** — a fast-forward refused; the parked commit lives in the runner-checkout. Exit 0.
 
 Single-dispatch mode (`--issue <ref>`) reports `single-dispatch (success|failure)`, or `single-dispatch (refused: <reason>)` when the named ref fails the eligibility gate (HITL type, wrong status, unmet blockers, missing from the feature snapshot, `unknown-feature`, `branch-missing`, or `snapshot-failed` if `tracker-snapshot` itself exited non-zero).
 
@@ -347,7 +343,7 @@ Live stdout uses per-stage progress lines. A typical iteration produces four —
 [09:13:31] afk-runner/06 review → clean → done (4s)
 ```
 
-When propagation halts after a stage, the original outcome line is preserved (so `runner.log` retains the forensic story — the dispatch step itself succeeded; the halt was downstream) and a follow-up `halt → <recorded outcome>` line is emitted so the visible terminal record matches the SUMMARY.md row:
+When a parking-ref publish fails after a stage, the original outcome line is preserved (so `runner.log` retains the forensic story — the dispatch step itself succeeded; the failure was downstream) and a follow-up `halt → <recorded outcome>` line is emitted so the visible terminal record matches the SUMMARY.md row:
 
 ```
 [09:13:27] afk-runner/06 implement → in-review (42s)
@@ -392,11 +388,11 @@ When the snapshot has no non-aborted eligible refs, the runner stops with `queue
 
 **Recovery**: `rm .runner-state/aborted/<feature>/<NN>`. The ref reappears in the next eligibility selection. The maintainer typically reviews the abort flag (`cat <path>`) to find the dispatch log (`log:` field), reads what failed, revises the brief or fixes the environment, then removes the flag.
 
-Host propagation is the moment of trust. The runner first publishes the runner-checkout's branch tip to a per-feature parking ref on host (`git fetch <runner-checkout> +<branch>:refs/remotes/runner/<branch>`), then attempts a best-effort fast-forward of host's branch ref (`git fetch <runner-checkout> <branch>:<branch>`, no `--update-head-ok`). Both are pure ref-level operations — no HEAD, index, or working-tree side effects on host, so the maintainer's uncommitted work on any other branch is unaffected. If the step-2 fast-forward refuses — host is on the target branch (HEAD-on-target) or the update isn't a fast-forward — the work is parked on `refs/remotes/runner/<branch>` and the dispatch is recorded as success; the maintainer reconciles by running `git pull runner <branch>`. A genuine propagation **halt** is reserved for step-1 failure: the parking ref could not be advanced, the dispatched commit lives only in the runner-checkout, and the loop stops. The runner never force-pushes, never pushes to a remote, never rewrites history.
+Host propagation is the moment of trust. The runner first publishes the runner-checkout's branch tip to a per-feature parking ref on host (`git fetch <runner-checkout> +<branch>:refs/remotes/runner/<branch>`), then attempts a best-effort fast-forward of host's branch ref (`git fetch <runner-checkout> <branch>:<branch>`, no `--update-head-ok`). Both are pure ref-level operations — no HEAD, index, or working-tree side effects on host, so the maintainer's uncommitted work on any other branch is unaffected. If the step-2 fast-forward refuses — host is on the target branch (HEAD-on-target) or the update isn't a fast-forward — the work is parked on `refs/remotes/runner/<branch>` and the dispatch is recorded as success; the maintainer reconciles by running `git pull runner <branch>`. Step-1 failure (the parking ref could not be advanced) records the dispatch as FAIL; the runner does not write an abort flag for this case. The runner never force-pushes, never pushes to a remote, never rewrites history.
 
 **Propagation runs whenever the runner-checkout has committed work, regardless of the classifier's verdict.** Under local-markdown, this makes the host repo a faithful record of every dispatch's tracker output: successful status flips (committed as `tracker: …` commits) and bail comments (also committed) all forward to the host before the next reset. Under GitHub Issues, tracker mutations land as API calls — no commits enter the runner-checkout — so propagation for those dispatches is a no-op, which is correct. A genuine technical failure (container died before any tracker write) leaves the runner-checkout at host's tip regardless of binding; propagation is a no-op for it too. The abort-flag mechanism (`.runner-state/aborted/<feature>/<NN>`) is a runner-internal file independent of binding; it operates the same in both worlds. The classifier's verdict determines whether the iteration is recorded as a success or a failure (driving abort-flag logic); only the propagation decision is independent of the verdict.
 
-**Loop-mode caveat — sequential parked commits supersede each other.** A parked-only outcome is recorded as success and the loop proceeds. The next iteration's pre-dispatch `ensure_runner_checkout` resets the runner-checkout's branch ref to `origin/<branch>`, so the next dispatch's commits are siblings of the prior parked commit rather than descendants. Step 1 of propagation force-updates the parking ref (`+<branch>:refs/remotes/runner/<branch>`), so the parking ref on host now points at the latest dispatch's tip and the prior parked commit survives only in the runner-checkout's reflog (until git GC). The maintainer pulls between dispatches to consume each parked tip, or accepts that intermediate dispatches' work is collapsed into "whatever the most-recent dispatch produced." (ADR 0007 Decision A would make successive dispatches build on the parking-ref tip — content-monotonic — but that's slated for issue #11.) The step-1 error case (true propagation halt) is harsher: the parking ref didn't advance, the dispatched commit lives only in the runner-checkout, and the next iteration's reset orphans it from the branch — recover via `git -C .runner-state/checkout reflog show <branch>` until GC, or Ctrl-C the runner before the next iteration starts.
+**Loop-mode caveat — sequential parked commits supersede each other.** A parked-only outcome is recorded as success and the loop proceeds. The next iteration's pre-dispatch `ensure_runner_checkout` resets the runner-checkout's branch ref to `origin/<branch>`, so the next dispatch's commits are siblings of the prior parked commit rather than descendants. Step 1 of propagation force-updates the parking ref (`+<branch>:refs/remotes/runner/<branch>`), so the parking ref on host now points at the latest dispatch's tip and the prior parked commit survives only in the runner-checkout's reflog (until git GC). The maintainer pulls between dispatches to consume each parked tip, or accepts that intermediate dispatches' work is collapsed into "whatever the most-recent dispatch produced." (ADR 0007 Decision A would make successive dispatches build on the parking-ref tip — content-monotonic — but that's slated for issue #11.)
 
 ## The trust boundary
 
