@@ -106,7 +106,7 @@ Rows in evaluation order. `no-other-runner` runs first (lock acquisition gates e
 | 6 | `sandbox-network`          | `afk-runner-sandbox` bridge + iptables RFC1918-deny rules in place.                                | global      |
 | 7 | `oauth-token`              | Keychain returns a non-empty token; held in `TOKEN` for the rest of the run.                       | global      |
 
-The runner is independent of host's HEAD and working tree: no invariant inspects either. Feature validation (unknown slug, branch checked out) in narrowed modes runs through `check_feature_eligibility`, a CLI-input gate that sits between invariants 1 and 2. It is **not** an invariant: on refusal it returns 2 with a `feature-restricted` / `single-dispatch (refused: <reason>)` stop reason — not `fail_invariant`, not `preflight-abort:`. Drain mode skips this gate entirely; per-feature eligibility is decided inside the outer loop by `evaluate_feature_gate`.
+The runner is independent of host's HEAD and working tree: no invariant inspects either. Feature validation (unknown slug, branch missing) in narrowed modes runs through `check_feature_eligibility`, a CLI-input gate that sits between invariants 1 and 2. It is **not** an invariant: on refusal it returns 2 with a `feature-restricted` / `single-dispatch (refused: <reason>)` stop reason — not `fail_invariant`, not `preflight-abort:`. Drain mode skips this gate entirely; per-feature eligibility is decided inside the outer loop by `evaluate_feature_gate`.
 
 Global invariant failure → `fail_invariant` → `exit 2`. The EXIT trap (`finalize_run`) then writes a SUMMARY.md whose body names the failing invariant. Per-feature lazy failures (drain mode) record a `skip:<reason>` row in SUMMARY.md and the run continues.
 
@@ -125,12 +125,10 @@ Wraps the per-issue loop and walks every feature in the discovery output.
 │   [feature empty?] ──yes──► RUN_STOP_REASON = "completed"; stop           │
 │         │ no                                                              │
 │         ▼                                                                 │
-│   host_branch = git symbolic-ref --short HEAD (on host)                   │
 │   branch_exists = git show-ref refs/heads/$feature (yes/no)               │
-│   verdict = evaluate_feature_gate(slug, host_branch,                      │
-│                                   branch_exists, ok, nonempty, ok)        │
+│   verdict = evaluate_feature_gate(slug, branch_exists, ok, nonempty, ok)  │
 │         │                                                                 │
-│   [verdict ∈ {skip:branch-checked-out, skip:branch-missing}?]             │
+│   [verdict = skip:branch-missing?]                                        │
 │         │ yes ──► record_feature_outcome; next feature                    │
 │         │ no                                                              │
 │         ▼                                                                 │
@@ -244,14 +242,14 @@ Abort flags persist across runs (files on disk). The eligibility skip log line i
   no             yes
    │              │
    │              ▼
-   │         propagate_to_host    (runner fetches from the runner-checkout
-   │              │                into the host repo and ff-merges; no push)
-   │          [ff ok?]
+   │         propagate_feature   (publish to parking ref; best-effort host ff)
+   │              │
+   │          [error?]
    │          ┌───┴────┐
-   │         no       yes
+   │         yes       no
    │          │        │
    │          ▼        │
-   │    write_abort_flag(implement)   (propagation halt — always write)
+   │    write_abort_flag(implement)   (parking-ref publish failed — always write)
    │       record FAIL │
    │       ret 1       │
    │                   │
@@ -323,19 +321,18 @@ so the propagation branch is a no-op for it.
    │         └─────┬─────┘
    │               │
    ▼               ▼
- write_abort_  propagate_to_host  (runner fetches from the runner-checkout
- flag(gate)        │                into the host repo and ff-merges the gate
- record            │                commit forward; no push)
- gate-failed   [ff ok?]
- ret 1        ┌────┴─────┐
-             no         yes
-              │          │
-              ▼          ▼
-        write_abort_  record (done if v_gate=clean, else blocked)
-        flag(gate)    RUNNER_LAST_OUTCOME = success
-        record        return 0
-        gate-failed
-        ret 1
+ write_abort_  propagate_feature  (publish to parking ref; best-effort host ff)
+ flag(gate)        │
+ record        [error?]
+ gate-failed  ┌────┴─────┐
+ ret 1        yes        no
+               │          │
+               ▼          ▼
+         write_abort_  record (done if v_gate=clean, else blocked)
+         flag(gate)    RUNNER_LAST_OUTCOME = success
+         record        return 0
+         gate-failed
+         ret 1
 ```
 
 ### Per-iteration verdict reference
@@ -388,8 +385,8 @@ The "no committed change" row writes the implement abort flag unconditionally be
 - `interrupted` *(loop-phase Ctrl-C)*
 - `snapshot-failed` *(`tracker-snapshot` crashed mid-loop; exit 1)*
 - `propagation-halt`
-- `feature-restricted (refused: unknown-feature | branch-checked-out)` *(--feature mode)*
-- `single-dispatch (success)` / `single-dispatch (failure)` / `single-dispatch (refused: <reason>)` *(--issue mode; refusal reasons: `HITL`, `wrong-status`, `blockers-unmet`, `missing`, `unknown-feature`, `branch-checked-out`, `snapshot-failed`)*
+- `feature-restricted (refused: unknown-feature | branch-missing)` *(--feature mode)*
+- `single-dispatch (success)` / `single-dispatch (failure)` / `single-dispatch (refused: <reason>)` *(--issue mode; refusal reasons: `HITL`, `wrong-status`, `blockers-unmet`, `missing`, `unknown-feature`, `branch-missing`, `snapshot-failed`)*
 
 **All modes — pre-flight-phase:**
 

@@ -49,9 +49,8 @@ fi
 git add .features/synthetic-drain
 git commit -m "synthetic-drain: install demo fixture"
 
-# 5. Park host on master so the runner can drain synthetic-drain
-#    (any feature whose branch is currently checked out is skipped
-#    with `branch-checked-out`, including under `--feature`).
+# 5. Park host on master (conventional; the runner is branch-state-agnostic
+#    and no longer skips features whose branch is checked out).
 git checkout master
 
 # 6. Re-stage the fixture as an untracked dir in master's working tree

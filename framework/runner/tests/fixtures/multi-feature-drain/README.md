@@ -169,11 +169,14 @@ bash framework/runner/run-the-queue.sh
 
 ### Scenario 2 — Bare invocation, host on `multi-drain-alpha`
 
-The checked-out feature is skipped; the other still drains.
+The runner is branch-state-agnostic — having HEAD on `multi-drain-alpha` no
+longer skips it. Both features drain. Propagation for alpha produces a
+`parked → runner/multi-drain-alpha` line (git refuses the host fast-forward
+when HEAD is on the branch; the parking ref still advances).
 
 ```sh
 git checkout multi-drain-alpha
-# Reset alpha to its pre-scenario-1 tip so we can verify it isn't touched.
+# Reset alpha to its pre-scenario-1 tip so we can verify parking-ref advance.
 git reset --hard "$(cat /tmp/smoke-alpha-before)"
 git rev-parse multi-drain-alpha > /tmp/smoke-alpha-before-2
 
@@ -185,8 +188,8 @@ bash framework/runner/run-the-queue.sh
 - Exit 0.
 - Stop reason: `completed`.
 - `SUMMARY.md` two sections:
-  - `## multi-drain-alpha — skipped: branch-checked-out` (one-line section,
-    no per-issue table).
+  - `## multi-drain-alpha — drained` with one per-issue row.
+    - Per-dispatch log line contains `parked → runner/multi-drain-alpha`.
   - `## multi-drain-beta — drained` with one per-issue row.
     - Note: if Scenario 1 already drained beta, its only issue is now
       `done` on the branch — discovery still lists beta, but the per-feature
@@ -194,16 +197,20 @@ bash framework/runner/run-the-queue.sh
       — skipped: queue-empty` instead. If you want to see beta drain again,
       reset its branch before this scenario:
       `git update-ref refs/heads/multi-drain-beta "$(cat /tmp/smoke-beta-before)"`.
-- Host's HEAD still on `multi-drain-alpha`; working tree unchanged from
-  before the run; `git rev-parse multi-drain-alpha` equals
-  `/tmp/smoke-alpha-before-2` (branch ref untouched by the runner).
+- Host's HEAD still on `multi-drain-alpha`; working tree unchanged.
+- `git rev-parse multi-drain-alpha` equals `/tmp/smoke-alpha-before-2`
+  (host branch ref NOT advanced — the host fast-forward was refused because
+  HEAD is on it).
+- `git rev-parse refs/remotes/runner/multi-drain-alpha` differs from
+  `/tmp/smoke-alpha-before-2` — the parking ref advanced to the new commit.
 
 ### Scenario 3 — `--feature multi-drain-alpha` while host is on `multi-drain-alpha`
 
-Loud refusal, exit 2.
+The runner no longer refuses on-branch features. Alpha drains normally with
+parked propagation (same outcome as Scenario 2 but targeted via `--feature`).
 
 ```sh
-# Pre-condition: host still on multi-drain-alpha.
+# Pre-condition: host still on multi-drain-alpha (or re-checkout if needed).
 git rev-parse --abbrev-ref HEAD   # → multi-drain-alpha
 
 bash framework/runner/run-the-queue.sh --feature multi-drain-alpha
@@ -211,11 +218,13 @@ bash framework/runner/run-the-queue.sh --feature multi-drain-alpha
 
 **Expected outcome:**
 
-- Exit 2.
-- stderr contains: `runner: feature-restricted refused: feature
-  'multi-drain-alpha' branch-checked-out`.
-- `SUMMARY.md` stop reason: `feature-restricted (refused: branch-checked-out)`.
-- Host's HEAD, working tree, and both feature branch refs unchanged.
+- Exit 0.
+- Stop reason: `queue-empty` (the single eligible issue was just dispatched).
+- Per-dispatch log line contains `parked → runner/multi-drain-alpha`.
+- `git rev-parse multi-drain-alpha` unchanged from before the run (host branch
+  not advanced while HEAD is on it; parking ref at
+  `refs/remotes/runner/multi-drain-alpha` holds the new tip).
+- Host's HEAD still on `multi-drain-alpha`; working tree unchanged.
 
 ### Scenario 4 — `--feature <unknown>`
 

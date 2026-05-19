@@ -5,8 +5,8 @@ dispatching `/implement` per issue inside a sandboxed Docker container.
 
 `run-the-queue.sh` has three invocation forms:
 
-- **Bare invocation** (`run-the-queue.sh`, no args) — **drain mode**. Walks every active feature returned by `tracker-snapshot --list` (the discovery output, persisted to `<run-dir>/discovery.json`) and drains the ones it's allowed to touch. Features skipped for per-feature reasons (`branch-checked-out`, `branch-missing`, `fetch-failed`, `feature-snapshot-failed`, `queue-empty`) produce a SUMMARY row and the run continues. This is the scheduled-job shape: park host on master, fire the runner, every authorized AFK queue advances.
-- **`--feature <slug>`** — **loop mode**. Narrows to one feature; refuses loudly on structural gate failures (`unknown-feature`, `branch-checked-out`).
+- **Bare invocation** (`run-the-queue.sh`, no args) — **drain mode**. Walks every active feature returned by `tracker-snapshot --list` (the discovery output, persisted to `<run-dir>/discovery.json`) and drains the ones it's allowed to touch. Features skipped for per-feature reasons (`branch-missing`, `fetch-failed`, `feature-snapshot-failed`, `queue-empty`) produce a SUMMARY row and the run continues. This is the scheduled-job shape: fire the runner regardless of which branch you have checked out; every authorized AFK queue advances.
+- **`--feature <slug>`** — **loop mode**. Narrows to one feature; refuses loudly on structural gate failures (`unknown-feature`, `branch-missing`).
 - **`--issue <feature>/<NN>`** — **single-dispatch mode**. Dispatches one ref; refuses loudly on eligibility gate failures.
 
 Drain mode stops on: every feature considered (`completed`); Ctrl-C (`interrupted`); a per-feature propagation halt (`propagation-halt`); or `tracker-snapshot --list` itself failing (`preflight-abort: discovery`).
@@ -69,8 +69,8 @@ The trailing `stop reason:` line varies by mode.
 **Narrowed modes (`--feature`, `--issue`):**
 
 - `queue-empty` / `interrupted` / `snapshot-failed` / `propagation-halt` — the per-issue loop's stop reasons (see "The dispatch loop" in `afk-runner.md`).
-- `feature-restricted (refused: <reason>)` (`--feature`) — `<reason>` is `unknown-feature` (slug not in discovery output) or `branch-checked-out` (host's HEAD is on `<slug>`).
-- `single-dispatch (success|failure)` (`--issue`); or `single-dispatch (refused: <reason>)` — `<reason>` is one of: HITL type, wrong status, unmet blockers, `unknown-feature`, `branch-checked-out`, `snapshot-failed`.
+- `feature-restricted (refused: <reason>)` (`--feature`) — `<reason>` is `unknown-feature` (slug not in discovery output) or `branch-missing` (no host ref for `<slug>`).
+- `single-dispatch (success|failure)` (`--issue`); or `single-dispatch (refused: <reason>)` — `<reason>` is one of: HITL type, wrong status, unmet blockers, `unknown-feature`, `branch-missing`, `snapshot-failed`.
 
 **All modes — pre-flight-phase:**
 
@@ -193,7 +193,7 @@ and writes an abort flag.
 | `demo-fixture/` | Tiny Maven project (single class + JUnit Jupiter test) used by `demo-dispatch.sh` to make first-vs-second timing meaningful. |
 | `lib.sh` | Shared constants (image, network, bridge, subnet, iptables chain, OAuth keychain coords, mvn-cache prefix, container `~/.m2` path). Source of truth for the names below. |
 | `NOTES.md` | Provenance of vendored files (currently `retrieve-secret.sh`). Re-vendor instructions live there. |
-| `tests/` | `bats` suite covering `tracker-snapshot` (including `--list`), the runner's pure-logic functions (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_gate_outcome`, `evaluate_feature_gate`, `propagate_to_host`, `format_multi_feature_summary_md`), the outer drain loop (`run_drain`, `drain_one_feature`), and `run_loop` mechanics (drain / interrupt / abort-flag skipping / feature-gate refusals) with mocked dispatch. Real-Docker exercising is the job of slice 08's smoke test. |
+| `tests/` | `bats` suite covering `tracker-snapshot` (including `--list`), the runner's pure-logic functions (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_gate_outcome`, `evaluate_feature_gate`, `propagate_feature`, `format_multi_feature_summary_md`), the outer drain loop (`run_drain`, `drain_one_feature`), and `run_loop` mechanics (drain / interrupt / abort-flag skipping / feature-gate refusals) with mocked dispatch. Real-Docker exercising is the job of slice 08's smoke test. |
 | `tests/fixtures/synthetic-drain/` | Two-issue micro-feature template the maintainer installs into `.features/synthetic-drain/` for the loop's live demo. Reused by slice 08. See its README for the runbook. |
 
 ## Stable Docker asset names

@@ -475,7 +475,7 @@ _setup_retry_test() {
       claude -p "/implement $ref" --dangerously-skip-permissions
   }
   # keep setup_dispatch_one_test's run_gate_container (no-op returning 0)
-  propagate_to_host() { :; }
+  propagate_feature() { :; }
 
   RUNNER_INTERRUPTED=0
   set +e
@@ -724,7 +724,7 @@ setup_loop_test() {
   }
 
   ensure_runner_checkout() { :; }
-  propagate_to_host() { :; }
+  propagate_feature() { :; }
 
   dispatch_one() {
     local feature="$1" nn="$2"
@@ -939,15 +939,15 @@ STUB
   [ -z "$(git -C "$HOST_CHECKOUT" status --porcelain)" ]
 }
 
-# === dispatch_one + run_loop — propagation halt is a failure ==============
+# === dispatch_one + run_loop — propagation error is a failure =============
 #
 # Regression for a bug where dispatch_one set RUNNER_LAST_OUTCOME to the
 # classifier's verdict ("success" when the runner-checkout's status
-# flipped) before propagation ran. If propagate_to_host then refused
-# (host moved off-branch, dirty, or diverged), dispatch_one returned
-# 1 — but RUNNER_LAST_OUTCOME stayed "success". An earlier loop body
-# read RUNNER_LAST_OUTCOME instead of the return code, so the loop
-# treated propagation halts as success; on the next iteration's
+# flipped) before propagation ran. If propagate_feature then errored
+# (parking-ref publish failed), dispatch_one returned 1 — but
+# RUNNER_LAST_OUTCOME stayed "success". An earlier loop body read
+# RUNNER_LAST_OUTCOME instead of the return code, so the loop treated
+# propagation errors as success; on the next iteration's
 # `ensure_runner_checkout` it `git reset --hard origin/<branch>`d
 # the dispatched commit out of the runner-checkout, the fresh
 # snapshot saw the issue back at ready-for-agent, and the loop
@@ -959,7 +959,7 @@ STUB
 #   - take_snapshot: returns a pre-snapshot at ready-for-agent and a
 #     post-snapshot at in-review (so classify_outcome → success);
 #   - run_dispatch_container: pretends `/implement` ran (no-op);
-#   - propagate_to_host: simulates a halt (returns 1);
+#   - propagate_feature: simulates a halt (returns 1);
 #   - $HOST_CHECKOUT: a real, clean git dir so dispatch_one's
 #     `git -C status --porcelain` diagnostic doesn't fail.
 setup_dispatch_one_test() {
@@ -1042,13 +1042,13 @@ install_afk_snapshots() {
   }
 }
 
-@test "dispatch_one — propagation halt sets RUNNER_LAST_OUTCOME=failure even when classifier says success" {
+@test "dispatch_one — propagation error sets RUNNER_LAST_OUTCOME=failure even when classifier says success" {
   setup_dispatch_one_test
 
   # Classifier verdict will be "success" (snapshots flip
-  # ready-for-agent → in-review), but propagation halts.
-  propagate_to_host() {
-    echo "runner: simulated propagation halt" >&2
+  # ready-for-agent → in-review), but propagation errors (parking-ref fail).
+  propagate_feature() {
+    echo "runner: simulated propagation error" >&2
     return 1
   }
 
@@ -1062,16 +1062,16 @@ install_afk_snapshots() {
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
 }
 
-@test "dispatch_one — implement-stage propagation halt emits a halt → FAIL follow-up line" {
+@test "dispatch_one — implement-stage propagation error emits a halt → FAIL follow-up line" {
   # Regression: the implement-stage outcome line was emitted before the
-  # propagation decision, so on halt the operator's terminal showed
+  # propagation decision, so on error the operator's terminal showed
   # `implement → in-review` while SUMMARY.md recorded `FAIL`. The fix
   # keeps the original outcome line (so the forensic story `implement
-  # landed; propagation refused` survives in runner.log) and emits a
+  # landed; propagation error` survives in runner.log) and emits a
   # follow-up `halt → FAIL` line so the visible record matches the
   # SUMMARY.md row.
   setup_dispatch_one_test
-  propagate_to_host() { return 1; }
+  propagate_feature() { return 1; }
 
   run dispatch_one "f" "01" "$TEST_RUN_DIR"
 
@@ -1082,9 +1082,9 @@ install_afk_snapshots() {
   assert_output --partial "implement → halt → FAIL"
 }
 
-@test "dispatch_one — gate-stage propagation halt emits a halt → gate-failed follow-up line" {
+@test "dispatch_one — gate-stage propagation error emits a halt → gate-failed follow-up line" {
   # Same regression at the gate stage. Gate-clean post-implement, then
-  # the post-gate propagation halts. Original `review → clean → done`
+  # the post-gate propagation errors. Original `review → clean → done`
   # line stays for forensics; follow-up `review → halt → gate-failed`
   # line matches the SUMMARY.md row.
   setup_dispatch_one_test
@@ -1092,7 +1092,7 @@ install_afk_snapshots() {
 
   local prop_count_file="$BATS_TEST_TMPDIR/prop-count"
   echo 0 >"$prop_count_file"
-  propagate_to_host() {
+  propagate_feature() {
     local n
     n="$(cat "$prop_count_file")"
     echo $((n + 1)) >"$prop_count_file"
@@ -1201,7 +1201,7 @@ STUB
     return 0
   }
   run_gate_container() { return 0; }
-  propagate_to_host() {
+  propagate_feature() {
     echo "runner: simulated propagation halt" >&2
     return 1
   }
@@ -1270,7 +1270,7 @@ STUB
   # commit); gate propagation halts.
   PROP_CALL_FILE="$BATS_TEST_TMPDIR/prop-calls"
   echo 0 >"$PROP_CALL_FILE"
-  propagate_to_host() {
+  propagate_feature() {
     local n
     n="$(cat "$PROP_CALL_FILE")"
     echo $((n + 1)) >"$PROP_CALL_FILE"
@@ -1536,7 +1536,7 @@ EOF
   # since this test is verifying the post-gate snapshot guard, not the label.
   classify_outcome() { echo "success"; }
 
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
   run_gate_container() { return 0; }
 
   set +e
@@ -1704,7 +1704,7 @@ setup_run_single_test() {
 # === check_feature_eligibility — CLI-input gate inside preflight ===========
 #
 # `--feature <slug>` / `--issue <feature>/<NN>` get their refusals here
-# (unknown-feature, branch-checked-out). The gate runs before
+# (unknown-feature, branch-missing). The gate runs before
 # `ensure_runner_checkout` so an unknown slug surfaces the AC-mandated
 # `feature-restricted (refused: unknown-feature)` / `single-dispatch
 # (refused: unknown-feature)` instead of an opaque `git fetch origin
@@ -1713,8 +1713,6 @@ setup_run_single_test() {
 # RUN_PREFLIGHT_INVARIANT).
 
 setup_eligibility_test() {
-  # Minimal host repo for `git symbolic-ref --short HEAD`. Tests override
-  # the initial branch as needed.
   HOST_REPO="$BATS_TEST_TMPDIR/elig-host"
   mkdir -p "$HOST_REPO"
   git -C "$HOST_REPO" init --quiet --initial-branch=main
@@ -1749,38 +1747,24 @@ setup_eligibility_test() {
   grep -q "^runner: single-dispatch refused: feature 'missing' not in discovery output$" "$ELIG_STDERR"
 }
 
-@test "check_feature_eligibility — loop mode: host on feature → feature-restricted (refused: branch-checked-out)" {
+@test "check_feature_eligibility — feature in discovery, host on same branch, branch exists → passes silently" {
   setup_eligibility_test
+  # Host is on the feature branch. After removing branch-checked-out from the
+  # gate, this must pass — the runner is branch-state-agnostic on the host side.
   git -C "$HOST_REPO" checkout --quiet -B "my-feature"
   RUN_MODE="loop"
   TARGET_FEATURE="my-feature"
   DISCOVERY_JSON='["my-feature"]'
 
-  check_feature_eligibility 2>"$ELIG_STDERR" || rc=$?
-  [ "${rc:-0}" -eq 2 ]
-  [ "$RUN_STOP_REASON" = "feature-restricted (refused: branch-checked-out)" ]
-  grep -q "^runner: feature-restricted refused: feature 'my-feature' branch-checked-out$" "$ELIG_STDERR"
+  check_feature_eligibility 2>"$ELIG_STDERR"
+  [ -z "$RUN_STOP_REASON" ]
+  [ ! -s "$ELIG_STDERR" ]
 }
 
-@test "check_feature_eligibility — single mode: host on feature → single-dispatch (refused: branch-checked-out)" {
+@test "check_feature_eligibility — feature in discovery and branch exists → passes silently" {
   setup_eligibility_test
-  git -C "$HOST_REPO" checkout --quiet -B "my-feature"
-  RUN_MODE="single"
-  TARGET_FEATURE="my-feature"
-  DISCOVERY_JSON='["my-feature"]'
-
-  check_feature_eligibility 2>"$ELIG_STDERR" || rc=$?
-  [ "${rc:-0}" -eq 2 ]
-  [ "$RUN_STOP_REASON" = "single-dispatch (refused: branch-checked-out)" ]
-  grep -q "^runner: single-dispatch refused: feature 'my-feature' branch-checked-out$" "$ELIG_STDERR"
-}
-
-@test "check_feature_eligibility — feature in discovery and host on unrelated branch → passes silently" {
-  setup_eligibility_test
-  # Create the feature branch so it actually exists on host. Without this,
-  # the branch-missing gate would (correctly) refuse — pinning the contract
-  # that this happy-path test exercises only the discovery + branch-checked-out
-  # axes.
+  # Create the feature branch so it actually exists on host (branch-missing
+  # gate would otherwise refuse).
   git -C "$HOST_REPO" branch my-feature
   RUN_MODE="loop"
   TARGET_FEATURE="my-feature"
@@ -1862,7 +1846,7 @@ setup_eligibility_test() {
 
   TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
   : >"$TEST_PROPAGATE_CALLS"
-  propagate_to_host() {
+  propagate_feature() {
     echo "called" >>"$TEST_PROPAGATE_CALLS"
     return 0
   }
@@ -1888,19 +1872,18 @@ setup_eligibility_test() {
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
-@test "dispatch_one — both propagate_to_host call sites pass the feature branch as \$1" {
-  # Pin the contract: both `dispatch_one` call sites of `propagate_to_host`
+@test "dispatch_one — both propagate_feature call sites pass the feature branch as \$1" {
+  # Pin the contract: both `dispatch_one` call sites of `propagate_feature`
   # pass TARGET_FEATURE as $1. A missing argument leaves branch="" in the
-  # callee, the branch-checked-out guard never fires, and
-  # `git fetch <checkout> ":"` silently no-ops — orphaning the gate's
-  # `tracker:` commit in the runner-checkout while the runner reports
-  # success.
+  # callee, and `git fetch <checkout> ":refs/remotes/runner/"` would fail,
+  # orphaning the gate's `tracker:` commit in the runner-checkout while the
+  # runner reports success.
   setup_dispatch_one_test
   install_afk_snapshots done
 
   TEST_PROPAGATE_ARGS="$BATS_TEST_TMPDIR/prop-args"
   : >"$TEST_PROPAGATE_ARGS"
-  propagate_to_host() {
+  propagate_feature() {
     # Record the literal argument received — empty string is recorded as
     # an empty line, which `grep -c` and `wc -l` both see distinctly from
     # a non-empty record.
@@ -1924,7 +1907,7 @@ setup_eligibility_test() {
 
   TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
   : >"$TEST_PROPAGATE_CALLS"
-  propagate_to_host() {
+  propagate_feature() {
     echo "called" >>"$TEST_PROPAGATE_CALLS"
     return 0
   }
@@ -1954,7 +1937,7 @@ setup_eligibility_test() {
 
   TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
   : >"$TEST_PROPAGATE_CALLS"
-  propagate_to_host() {
+  propagate_feature() {
     echo "called" >>"$TEST_PROPAGATE_CALLS"
     return 0
   }
@@ -1986,7 +1969,7 @@ setup_eligibility_test() {
   setup_dispatch_one_test
   install_afk_snapshots wontfix
 
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
   run_gate_container() {
     # Exit 0 but post-gate status is wontfix — classify as gate-failed.
     return 0
@@ -2012,7 +1995,7 @@ setup_eligibility_test() {
   setup_dispatch_one_test
   install_afk_snapshots done
 
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
 
   TEST_GATE_CALLED="$BATS_TEST_TMPDIR/gate-called"
   : >"$TEST_GATE_CALLED"
@@ -2058,7 +2041,7 @@ setup_eligibility_test() {
 
   TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
   : >"$TEST_PROPAGATE_CALLS"
-  propagate_to_host() {
+  propagate_feature() {
     echo "called" >>"$TEST_PROPAGATE_CALLS"
     return 0
   }
@@ -2324,7 +2307,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|y'
 
   TEST_PROPAGATE_CALLED="$BATS_TEST_TMPDIR/prop-called"
   : >"$TEST_PROPAGATE_CALLED"
-  propagate_to_host() {
+  propagate_feature() {
     echo "called" >>"$TEST_PROPAGATE_CALLED"
     return 0
   }
@@ -2338,7 +2321,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|y'
   [ "$rc" -ne 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   # No committed change → nothing to propagate, runner does not call
-  # propagate_to_host at all.
+  # propagate_feature at all.
   [ ! -s "$TEST_PROPAGATE_CALLED" ]
 }
 
@@ -2376,7 +2359,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|y'
 
   TEST_PROPAGATE_CALLED="$BATS_TEST_TMPDIR/prop-called"
   : >"$TEST_PROPAGATE_CALLED"
-  propagate_to_host() {
+  propagate_feature() {
     echo "called" >>"$TEST_PROPAGATE_CALLED"
     return 0
   }
@@ -2418,7 +2401,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|y'
 
   TEST_PROPAGATE_CALLED="$BATS_TEST_TMPDIR/prop-called"
   : >"$TEST_PROPAGATE_CALLED"
-  propagate_to_host() {
+  propagate_feature() {
     echo "called" >>"$TEST_PROPAGATE_CALLED"
     return 1
   }
@@ -2696,7 +2679,7 @@ setup_abort_test() {
     printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
   }
   run_dispatch_container() { return 0; }
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
 
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
@@ -2727,7 +2710,7 @@ setup_abort_test() {
       commit --allow-empty --quiet -m "tracker: f/01 bail"
     return 0
   }
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
 
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
@@ -2755,7 +2738,7 @@ setup_abort_test() {
       commit --allow-empty --quiet -m "tracker: f/01 bail"
     return 0
   }
-  propagate_to_host() { return 1; }
+  propagate_feature() { return 1; }
 
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
@@ -2771,7 +2754,7 @@ setup_abort_test() {
   setup_abort_test
   install_afk_snapshots in-review
 
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
   run_gate_container() {
     # Non-transport gate failure (e.g. OOM kill). The log must carry a
     # non-whitespace line so is_transport_crash doesn't misclassify the empty
@@ -2800,7 +2783,7 @@ setup_abort_test() {
 
   local prop_count_file="$BATS_TEST_TMPDIR/prop-count"
   echo 0 >"$prop_count_file"
-  propagate_to_host() {
+  propagate_feature() {
     local n
     n="$(cat "$prop_count_file")"
     echo $((n + 1)) >"$prop_count_file"
@@ -2841,7 +2824,7 @@ setup_abort_test() {
     RUNNER_INTERRUPTED=1
     return 143
   }
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
 
   RUNNER_INTERRUPTED=0
   RUNNER_LAST_OUTCOME=""
@@ -2868,7 +2851,7 @@ setup_abort_test() {
     echo "API Error: 503 " >"$2"
     return 1
   }
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
 
   RUNNER_INTERRUPTED=0
   RUNNER_LAST_OUTCOME=""
@@ -2893,7 +2876,7 @@ setup_abort_test() {
   # review-aborted, not gate-failed.
   setup_abort_test
   install_afk_snapshots in-review
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
   run_gate_container() {
     # Transport-signature log + nonzero exit — triggers is_transport_crash.
     echo "API Error: 503 " >"$2"
@@ -3041,15 +3024,20 @@ setup_abort_test() {
   grep -q -- '- Stop reason: interrupted$' "$RUN_DIR/SUMMARY.md"
 }
 
-# === propagate_to_host <branch> — fetch-into-ref propagation ================
+# === propagate_feature <branch> — parking-ref publish + best-effort ff ======
 #
-# The new propagate_to_host <branch> uses `git fetch <runner-checkout>
-# <branch>:<branch>` instead of `fetch + merge --ff-only FETCH_HEAD`. This
-# advances the branch ref without touching host's HEAD, working tree, or
-# index. Refusal modes: host is currently on the target branch (which would
-# make the ref update affect HEAD), and non-fast-forward.
+# propagate_feature always writes to refs/remotes/runner/<branch> (step 1),
+# then attempts refs/heads/<branch> fast-forward without --update-head-ok
+# (step 2). Step 2 refusal (HEAD-on-target or non-ff) is parked-only —
+# not an error. Only step 1 failure is an error (return 1).
 #
-# All three cases use ephemeral git repos created in BATS_TEST_TMPDIR.
+# M2 classifier cases verified against a real host + runner-checkout pair:
+#   propagated-to-host — both steps succeed
+#   parked-only (HEAD-on-target) — step 1 ok, step 2 refused by git
+#   parked-only (non-ff) — step 1 ok, step 2 refused by git
+#   error — step 1 fails
+#
+# All cases use ephemeral git repos created in BATS_TEST_TMPDIR.
 
 setup_propagate_test() {
   HOST_REPO="$BATS_TEST_TMPDIR/prop-host"
@@ -3063,183 +3051,174 @@ setup_propagate_test() {
 
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
   git -C "$HOST_CHECKOUT" checkout --quiet -B f origin/f
+
+  # Register the runner remote so the parking-ref fetch target exists.
+  git -C "$HOST_REPO" remote add runner "$HOST_CHECKOUT"
 }
 
-@test "propagate_to_host — succeeds on a non-HEAD branch, advances branch ref without touching HEAD" {
+@test "propagate_feature — propagated-to-host: clean ff advances both host branch and parking ref" {
   setup_propagate_test
 
-  # Add a commit to runner-checkout (simulates dispatch output).
+  # Runner-checkout advances past host's f tip.
   git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m "tracker: f/01 → in-review"
 
-  # Switch host HEAD to master so f is not checked out.
+  # Host HEAD is on a different branch so fast-forward succeeds.
   git -C "$HOST_REPO" checkout --quiet -b master
 
-  local host_f_before checkout_f host_master_before
+  local host_f_before checkout_tip
   host_f_before="$(git -C "$HOST_REPO" rev-parse f)"
-  checkout_f="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
-  host_master_before="$(git -C "$HOST_REPO" rev-parse HEAD)"
+  checkout_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
 
-  propagate_to_host "f"
+  propagate_feature "f"
 
-  local host_f_after host_master_after
+  local host_f_after parking_after
   host_f_after="$(git -C "$HOST_REPO" rev-parse f)"
-  host_master_after="$(git -C "$HOST_REPO" rev-parse HEAD)"
+  parking_after="$(git -C "$HOST_REPO" rev-parse refs/remotes/runner/f)"
 
-  # host's f branch advanced to match runner-checkout.
-  [ "$host_f_after" = "$checkout_f" ]
-  [ "$host_f_after" != "$host_f_before" ]
-  # host HEAD (master) is unchanged — no working-tree effects.
-  [ "$host_master_after" = "$host_master_before" ]
+  # Both host branch and parking ref advance to the runner-checkout tip.
+  [ "$host_f_after" = "$checkout_tip" ]
+  [ "$parking_after" = "$checkout_tip" ]
+  [ "$RUNNER_LAST_PROPAGATION" = "propagated" ]
+  # host HEAD (master) must not have moved.
   [ "$(git -C "$HOST_REPO" symbolic-ref --short HEAD)" = "master" ]
 }
 
-@test "propagate_to_host — refuses when host is currently on the target branch" {
+@test "propagate_feature — parked-only (HEAD-on-target): parking ref advances, host branch unchanged" {
   setup_propagate_test
 
-  # Runner-checkout has a new commit; host HEAD is on f (the target branch).
+  # Runner-checkout advances; host HEAD stays on f.
   git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m "tracker: f/01 → in-review"
-  # Host HEAD is already on f (init default).
+  # Host HEAD is already on f (init default) — git fetch f:f will refuse.
 
-  local host_f_before
+  local host_f_before checkout_tip
   host_f_before="$(git -C "$HOST_REPO" rev-parse f)"
+  checkout_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
 
-  run propagate_to_host "f"
+  propagate_feature "f"
 
-  [ "$status" -ne 0 ]
-  # The refusal must name the specific halt mode so the operator's
-  # recovery-recipe-paste loop knows which case fired. A trivial substring
-  # like "f" would pass against any output and hide regressions in the
-  # diagnostic.
-  assert_output --partial "propagation refused"
-  assert_output --partial "host is currently on branch 'f'"
-  # Host's f ref must not have advanced — the whole point of the refusal
-  # is to leave host state untouched so the operator reconciles by hand.
-  local host_f_after
+  local host_f_after parking_after
   host_f_after="$(git -C "$HOST_REPO" rev-parse f)"
+  parking_after="$(git -C "$HOST_REPO" rev-parse refs/remotes/runner/f)"
+
+  # Parking ref advanced; host branch ref is unchanged (HEAD-on-target).
+  [ "$parking_after" = "$checkout_tip" ]
   [ "$host_f_after" = "$host_f_before" ]
+  [ "$RUNNER_LAST_PROPAGATION" = "parked" ]
 }
 
-@test "propagate_to_host — refuses on a non-fast-forward update" {
+@test "propagate_feature — parked-only (non-ff): parking ref advances, host branch unchanged" {
   setup_propagate_test
 
   # Diverge: runner-checkout gets commit B, host's f gets commit C.
-  # Both children of the shared init commit A.
   git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m "checkout diverge"
   git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m "host diverge"
 
-  # Switch host HEAD to master so the branch-checked-out guard doesn't fire.
+  # Host HEAD on a different branch so HEAD-on-target doesn't apply.
   git -C "$HOST_REPO" checkout --quiet -b master
 
-  local host_f_before
+  local host_f_before checkout_tip
   host_f_before="$(git -C "$HOST_REPO" rev-parse f)"
+  checkout_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
 
-  run propagate_to_host "f"
+  propagate_feature "f"
 
-  [ "$status" -ne 0 ]
-  # Refusal must name the fetch-failed mode (not the branch-checked-out
-  # mode) so the operator knows the halt was caused by divergence.
-  assert_output --partial "propagation refused"
-  assert_output --partial "git fetch f:f failed"
-  # Host's f ref must remain at its divergent tip — the runner never
-  # rewrites host history on a non-ff refusal.
-  local host_f_after
+  local host_f_after parking_after
   host_f_after="$(git -C "$HOST_REPO" rev-parse f)"
+  parking_after="$(git -C "$HOST_REPO" rev-parse refs/remotes/runner/f)"
+
+  # Parking ref advanced to runner-checkout tip; host branch stays at its
+  # divergent tip (non-ff refusal).
+  [ "$parking_after" = "$checkout_tip" ]
   [ "$host_f_after" = "$host_f_before" ]
+  [ "$RUNNER_LAST_PROPAGATION" = "parked" ]
 }
 
-# === evaluate_feature_gate — branch-checked-out gate =======================
+@test "propagate_feature — error: parking-ref publish fails, returns 1, RUNNER_LAST_PROPAGATION cleared" {
+  setup_propagate_test
+
+  # Runner-checkout advances.
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "tracker: f/01 → in-review"
+
+  # Break HOST_CHECKOUT so step-1 fetch (publish to parking ref) fails.
+  # propagate_feature uses $HOST_CHECKOUT directly, not a named remote.
+  HOST_CHECKOUT="/nonexistent/path"
+
+  # Call directly (not via bats `run`) so that the RUNNER_LAST_PROPAGATION
+  # assignment inside propagate_feature survives back to the parent shell.
+  RUNNER_LAST_PROPAGATION="stale"
+  local err_file="$BATS_TEST_TMPDIR/propagate-err.txt"
+  local propagate_rc=0
+  propagate_feature "f" >"$err_file" 2>&1 || propagate_rc=$?
+
+  [ "$propagate_rc" -ne 0 ]
+  grep -q "propagation error" "$err_file"
+  grep -q "refs/remotes/runner/f" "$err_file"
+  [ "$RUNNER_LAST_PROPAGATION" = "" ]
+}
+
+# === evaluate_feature_gate — skip-reason matrix ============================
 #
-# Pure function: takes (slug, host_branch) and returns `drain` or
-# `skip:branch-checked-out`. At this stage only the `branch-checked-out`
-# reason is implemented; the rest come in /02.
-
-@test "evaluate_feature_gate — returns drain when host branch differs from slug" {
-  result="$(evaluate_feature_gate "my-feature" "master")"
-  [ "$result" = "drain" ]
-}
-
-@test "evaluate_feature_gate — returns drain when host is on an unrelated branch" {
-  result="$(evaluate_feature_gate "my-feature" "some-other-branch")"
-  [ "$result" = "drain" ]
-}
-
-@test "evaluate_feature_gate — returns skip:branch-checked-out when host is on the slug" {
-  result="$(evaluate_feature_gate "my-feature" "my-feature")"
-  [ "$result" = "skip:branch-checked-out" ]
-}
-
-@test "evaluate_feature_gate — returns drain when host branch is empty (detached HEAD)" {
-  result="$(evaluate_feature_gate "my-feature" "")"
-  [ "$result" = "drain" ]
-}
-
-# === evaluate_feature_gate — full skip-reason matrix =======================
+# The gate evaluator's full signal set: branch-missing, fetch-failed,
+# feature-snapshot-failed, queue-empty. The drain loop short-circuits at
+# the first failing gate, but the pure function takes the full bundle so
+# bats can exercise priority order exhaustively.
 #
-# The gate evaluator's full signal set: branch-checked-out, branch-missing,
-# fetch-failed, feature-snapshot-failed, queue-empty. The drain loop
-# short-circuits at the first failing gate, but the pure function takes
-# the full bundle so bats can exercise priority order exhaustively.
-#
-# Signature: evaluate_feature_gate <slug> <host_branch> \
+# Signature: evaluate_feature_gate <slug> \
 #                                  [branch_exists=yes] \
 #                                  [snapshot_status=ok] \
 #                                  [queue_status=nonempty] \
 #                                  [fetch_status=ok]
 #
-# Verdict priority (top wins): branch-checked-out > branch-missing >
-#                              fetch-failed > feature-snapshot-failed >
-#                              queue-empty > drain.
+# Verdict priority (top wins): branch-missing > fetch-failed >
+#                              feature-snapshot-failed > queue-empty > drain.
+
+@test "evaluate_feature_gate — returns drain by default" {
+  result="$(evaluate_feature_gate "my-feature")"
+  [ "$result" = "drain" ]
+}
 
 @test "evaluate_feature_gate — skip:branch-missing when host has no branch ref" {
-  result="$(evaluate_feature_gate "my-feature" "master" no)"
+  result="$(evaluate_feature_gate "my-feature" no)"
   [ "$result" = "skip:branch-missing" ]
 }
 
 @test "evaluate_feature_gate — skip:fetch-failed when fetch_status=failed" {
-  result="$(evaluate_feature_gate "my-feature" "master" yes ok nonempty failed)"
+  result="$(evaluate_feature_gate "my-feature" yes ok nonempty failed)"
   [ "$result" = "skip:fetch-failed" ]
 }
 
 @test "evaluate_feature_gate — skip:feature-snapshot-failed when snapshot_status=failed" {
-  result="$(evaluate_feature_gate "my-feature" "master" yes failed nonempty ok)"
+  result="$(evaluate_feature_gate "my-feature" yes failed nonempty ok)"
   [ "$result" = "skip:feature-snapshot-failed" ]
 }
 
 @test "evaluate_feature_gate — skip:queue-empty when queue_status=empty" {
-  result="$(evaluate_feature_gate "my-feature" "master" yes ok empty ok)"
+  result="$(evaluate_feature_gate "my-feature" yes ok empty ok)"
   [ "$result" = "skip:queue-empty" ]
 }
 
-@test "evaluate_feature_gate — branch-checked-out wins over branch-missing" {
-  # If the host happens to be on a branch with the same name as the slug
-  # but git reports no ref for it (impossible in practice — host's HEAD
-  # is a ref), the gate still says branch-checked-out: the user is
-  # demonstrably parked there.
-  result="$(evaluate_feature_gate "my-feature" "my-feature" no)"
-  [ "$result" = "skip:branch-checked-out" ]
-}
-
 @test "evaluate_feature_gate — branch-missing wins over fetch/snapshot/queue" {
-  result="$(evaluate_feature_gate "my-feature" "master" no failed empty failed)"
+  result="$(evaluate_feature_gate "my-feature" no failed empty failed)"
   [ "$result" = "skip:branch-missing" ]
 }
 
 @test "evaluate_feature_gate — fetch-failed wins over feature-snapshot-failed and queue-empty" {
-  result="$(evaluate_feature_gate "my-feature" "master" yes failed empty failed)"
+  result="$(evaluate_feature_gate "my-feature" yes failed empty failed)"
   [ "$result" = "skip:fetch-failed" ]
 }
 
 @test "evaluate_feature_gate — feature-snapshot-failed wins over queue-empty" {
-  result="$(evaluate_feature_gate "my-feature" "master" yes failed empty ok)"
+  result="$(evaluate_feature_gate "my-feature" yes failed empty ok)"
   [ "$result" = "skip:feature-snapshot-failed" ]
 }
 
 @test "evaluate_feature_gate — all signals ok returns drain" {
-  result="$(evaluate_feature_gate "my-feature" "master" yes ok nonempty ok)"
+  result="$(evaluate_feature_gate "my-feature" yes ok nonempty ok)"
   [ "$result" = "drain" ]
 }
 
@@ -3354,11 +3333,11 @@ I|gamma|01|gamma/01|in-review|13|'
 }
 
 @test "format_multi_feature_summary_md — skipped feature emits no issue table" {
-  input='F|beta|skipped:branch-checked-out'
+  input='F|beta|skipped:branch-missing'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:11:00 ended completed)"
 
-  echo "$result" | grep -q '^## beta — skipped: branch-checked-out$' || { echo "$result"; false; }
+  echo "$result" | grep -q '^## beta — skipped: branch-missing$' || { echo "$result"; false; }
   # The skipped section must not produce a per-issue table for that feature.
   ! echo "$result" | grep -q '^| issue ' || { echo "$result"; false; }
 }
@@ -3460,9 +3439,7 @@ setup_drain_test() {
   : >"$DRAIN_MVN_CALLED_FILE"
   : >"$DRAIN_MID_SNAP_CRASH_FILE"
 
-  # Plant a host repo on a "parked" branch (master). Tests that want to
-  # exercise branch-checked-out check out the target feature inside the
-  # repo themselves.
+  # Plant a host repo on a "parked" branch (master).
   HOST_REPO="$BATS_TEST_TMPDIR/drain-host"
   mkdir -p "$HOST_REPO"
   git -C "$HOST_REPO" init --quiet --initial-branch=master
@@ -3544,19 +3521,17 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   [ "$(drained_features_count)" = "1" ]
 }
 
-@test "drain_one_feature — records skip:branch-checked-out when host is on the feature branch" {
+@test "drain_one_feature — drains when host is on the feature branch (branch-state-agnostic)" {
   setup_drain_test
   git -C "$HOST_REPO" checkout --quiet -B "alpha"
+  # Bypass jq-dependent queue probe — the test's concern is gate logic only.
+  feature_has_dispatchable_ref() { return 0; }
 
   drain_one_feature "alpha"
 
-  [ "$(drain_outcome_nth 0)" = "alpha|skip:branch-checked-out" ]
-  # No per-issue work happens for a skipped feature.
-  [ "$(drained_features_count)" = "0" ]
-  # mvn-cache must NOT be created for a skipped feature (PRD §Per-feature
-  # gates: "Created lazily — features the runner doesn't drain don't get
-  # cache volumes.")
-  [ ! -s "$DRAIN_MVN_CALLED_FILE" ]
+  # branch-checked-out no longer skips; the feature is drained normally.
+  [ "$(drain_outcome_nth 0)" = "alpha|drained" ]
+  [ "$(drained_features_count)" = "1" ]
 }
 
 @test "drain_one_feature — records skip:branch-missing when host has no branch ref" {
@@ -4191,7 +4166,7 @@ _setup_mount_capture() {
     printf '%s' "$1" >"$TEST_GATE_REF"
     return 0
   }
-  propagate_to_host() { return 0; }
+  propagate_feature() { return 0; }
 
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
@@ -4262,4 +4237,22 @@ setup_runner_remote_test() {
   # The conflicting URL still in place (helper didn't overwrite it).
   url="$(git -C "$HOST_REPO" remote get-url runner)"
   [ "$url" = "/some/other/path" ]
+}
+
+# === Regression guard — runner never calls git push =========================
+#
+# The runner propagates via `git fetch` (host fetches from runner-checkout),
+# never via `git push`. A future change accidentally adding a `git push`
+# would silently break the sandbox model (no host credentials in container)
+# and widen the mutation surface. Pin the current count so the suite catches
+# any regression.
+
+@test "regression guard — no git push in runner source scripts" {
+  # Pin that the runner scripts never call 'git push'. The runner propagates
+  # via `git fetch` (host fetches from runner-checkout); a `git push` would
+  # widen the mutation surface and break the sandbox model.
+  local count
+  count="$(grep -RIn "git push" "$BATS_TEST_DIRNAME/../" \
+    --include="*.sh" 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$count" -eq 0 ]
 }
