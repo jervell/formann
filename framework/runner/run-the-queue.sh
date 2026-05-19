@@ -564,11 +564,15 @@ format_multi_feature_summary_md() {
 #   …one line per feature with at least one parked dispatch…
 format_parked_ledger() {
   awk -F'|' '
-    NF >= 8 && $8 ~ /^parked/ { parked[$1]++ }
+    NF >= 8 && $8 ~ /^parked/ {
+      if (!(($1) in parked)) { order[++n] = $1 }
+      parked[$1]++
+    }
     END {
-      if (length(parked) == 0) exit 0;
+      if (n == 0) exit 0;
       printf "\n## Unpulled parked work\n\n";
-      for (f in parked) {
+      for (i = 1; i <= n; i++) {
+        f = order[i];
         count = parked[f];
         suffix = (count == 1) ? "dispatch" : "dispatches";
         printf "- **%s** (%d %s): `git pull runner %s`\n", f, count, suffix, f;
@@ -1134,7 +1138,7 @@ ensure_runner_checkout_on_branch() {
   # Use --verify so that a missing ref yields empty stdout (plain rev-parse
   # prints the literal ref string to stdout on failure, poisoning the check).
   local host_tip parking_tip parking_rel sync_verdict
-  host_tip="$(git -C "$HOST_REPO" rev-parse --verify "$branch" 2>/dev/null || true)"
+  host_tip="$(git -C "$HOST_REPO" rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
   parking_tip="$(git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/$branch" 2>/dev/null || true)"
 
   if [ -z "$parking_tip" ]; then
@@ -1713,16 +1717,18 @@ ensure_runner_remote() {
     return 0
   fi
   fail_invariant "runner-remote" \
-    "runner remote exists with URL '$current_url' (expected: '$HOST_CHECKOUT')." \
-    "Fix with: git remote remove runner" \
-    "(or: git remote set-url runner $HOST_CHECKOUT)"
+    "runner remote exists with URL '$current_url' (expected: '$HOST_CHECKOUT').
+Fix with: git remote remove runner
+(or: git remote set-url runner $HOST_CHECKOUT)"
 }
 
 # === Host fast-forward propagation =========================================
 
 # Publish the feature branch to the per-feature parking ref
 # (`refs/remotes/runner/<branch>` on host), then attempt a best-effort
-# host fast-forward (`refs/heads/<branch>`).  Never runs git symbolic-ref.
+# host fast-forward (`refs/heads/<branch>`).  Does not run `symbolic-ref`
+# before the fast-forward attempt; post-refusal classification reads it to
+# distinguish HEAD-on-target from non-ff refusal.
 #
 # Step 1 (fail-fatal): write to parking ref.  On failure: print diagnostic
 #   to stderr, clear RUNNER_LAST_PROPAGATION, return 1 (error).
@@ -1785,8 +1791,8 @@ MSG
     # post-conditions rather than parsing git's locale-dependent stderr.
     local host_head host_tip checkout_tip expected_refusal=0
     host_head="$(git -C "$HOST_REPO" symbolic-ref --quiet HEAD 2>/dev/null || true)"
-    host_tip="$(git -C "$HOST_REPO" rev-parse --verify "$branch" 2>/dev/null || true)"
-    checkout_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "$branch" 2>/dev/null || true)"
+    host_tip="$(git -C "$HOST_REPO" rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
+    checkout_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
     if [ "$host_head" = "refs/heads/${branch}" ]; then
       expected_refusal=1
     elif [ -n "$host_tip" ] && [ -n "$checkout_tip" ] \

@@ -936,6 +936,58 @@ STUB
   [ -z "$(git -C "$HOST_CHECKOUT" status --porcelain)" ]
 }
 
+@test "ensure_runner_checkout — same-name tag does not shadow branch in sync-base selection" {
+  # Regression: rev-parse --verify "<branch>" resolves tags before branches
+  # (gitrevisions(7) precedence). A tag named the same as the feature branch
+  # returns the tag's SHA instead of the branch tip, making parking_rel wrong
+  # and picking the wrong sync base. Using refs/heads/<branch> pins the lookup
+  # to the branch namespace.
+  #
+  # Scenario: host branch `f` is at C (latest), tag `f` is at A (initial),
+  # parking ref is at B (behind C but ahead of A). Correct sync verdict is
+  # "behind" (parking behind branch) → sync to host-branch (C). Wrong verdict
+  # with old code: "ahead" (parking C ahead of tag A) → sync to parking-ref (B).
+  HOST_REPO="$BATS_TEST_TMPDIR/tag-shadow-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/tag-shadow-checkout"
+  TARGET_FEATURE="f"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=f
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "A: init"
+  sha_A="$(git -C "$HOST_REPO" rev-parse HEAD)"
+
+  # Tag `f` at the initial commit.
+  git -C "$HOST_REPO" tag f
+
+  # Advance branch `f` to B, then C.
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "B: first advance"
+  sha_B="$(git -C "$HOST_REPO" rev-parse HEAD)"
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "C: second advance"
+  sha_C="$(git -C "$HOST_REPO" rev-parse HEAD)"
+
+  # Parking ref at B (one behind branch tip C).
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/f" "$sha_B"
+
+  # Stub installer.
+  mkdir -p "$HOST_REPO/installer"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$HOST_REPO/installer/install.sh"
+  chmod +x "$HOST_REPO/installer/install.sh"
+
+  # Clone (no checkout yet; ensure_runner_checkout_on_branch handles sync).
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+  git -C "$HOST_CHECKOUT" checkout --quiet -B f origin/f
+
+  ensure_runner_checkout
+
+  # Sync verdict must be "host-branch" (parking B is behind branch C),
+  # so the runner-checkout lands at C — the branch tip, not the parking SHA.
+  checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+  [ "$checkout_head" = "$sha_C" ]
+}
+
 # === dispatch_one + run_loop — propagation error halts the loop ============
 #
 # Regression for a bug where a parking-ref publish failure inside
@@ -2299,6 +2351,27 @@ afk-runner|02|afk-runner/02|in-review|20||1|parked → runner/afk-runner'
 other-feat|01|other-feat/01|FAIL|5||1|'
   result="$(printf '%s\n' "$input" | format_parked_ledger)"
   [ -z "$result" ]
+}
+
+@test "format_parked_ledger — features emitted in encounter (first-sighting) order" {
+  # Regression: `for (f in parked)` iterates awk associative arrays in
+  # implementation-defined (often hash-bucket) order. Features must appear in
+  # the same order as the per-feature drained sections above the ledger, which
+  # is encounter order (the order features first appear in the input stream).
+  input='beta-feat|01|beta-feat/01|done|10|y|1|parked → runner/beta-feat
+alpha-feat|01|alpha-feat/01|done|20|y|1|parked → runner/alpha-feat
+gamma-feat|01|gamma-feat/01|done|30|y|1|parked → runner/gamma-feat
+beta-feat|02|beta-feat/02|done|11|y|1|parked → runner/beta-feat'
+  result="$(printf '%s\n' "$input" | format_parked_ledger)"
+
+  # Extract the sequence of feature names from the ledger lines.
+  seq="$(echo "$result" | grep -o '\*\*[^*]*\*\*' | tr -d '*')"
+  expected="$(printf 'beta-feat\nalpha-feat\ngamma-feat')"
+  [ "$seq" = "$expected" ] || {
+    echo "expected order: beta-feat, alpha-feat, gamma-feat"
+    echo "got: $seq"
+    false
+  }
 }
 
 @test "format_preflight_summary_md — names the failing invariant" {
@@ -4448,6 +4521,29 @@ setup_runner_remote_test() {
   # The conflicting URL still in place (helper didn't overwrite it).
   url="$(git -C "$HOST_REPO" remote get-url runner)"
   [ "$url" = "/some/other/path" ]
+}
+
+@test "ensure_runner_remote — mismatch stderr is multi-line: recovery commands on own lines" {
+  # Regression: ensure_runner_remote passed three separate positional args to
+  # fail_invariant, which joined them with single spaces into one long line.
+  # The fix embeds newlines in the message string so recovery commands each
+  # appear on their own line.
+  setup_runner_remote_test
+  git -C "$HOST_REPO" remote add runner "/some/other/path"
+
+  stderr_out="$(ensure_runner_remote 2>&1)" || true
+
+  # The recovery command must appear on its own line (not joined with spaces).
+  echo "$stderr_out" | grep -q "^Fix with:" || {
+    echo "expected 'Fix with:' on its own line; got:"
+    echo "$stderr_out"
+    false
+  }
+  echo "$stderr_out" | grep -q "^(or:" || {
+    echo "expected '(or:' on its own line; got:"
+    echo "$stderr_out"
+    false
+  }
 }
 
 # === Regression guard — runner never calls git push =========================
