@@ -263,7 +263,7 @@ The function evaluates a sequence of guards and returns on the first match. Read
 
 Pre status of `done` is admitted alongside `in-review` because `/implement` can legitimately land at either (a maintainer-adjusted brief may direct the dispatch straight to `done`); guards 2–5 do not differentiate which of the two pre states reached them.
 
-`clean` and `blocked` both set `RUNNER_LAST_OUTCOME=success` — operational health is fine, the verdict is independent. `gate-failed` sets `RUNNER_LAST_OUTCOME=failure` and writes an abort flag.
+`clean` and `blocked` both return 0 from `dispatch_one` — operational health is fine, the verdict is independent. `gate-failed` returns 1 and writes an abort flag.
 
 ### Combined per-iteration outcome
 
@@ -373,7 +373,7 @@ The `dispatch` field is `implement` for implement-stage failures and `gate` for 
 1. **Implement classifier `failure` + post-status still eligible** — the genuine "stuck" case. The snapshot's `eligible: true` would re-pick it on the next iteration or next run. A logical bail where `/implement` flipped status to `needs-info` is already ineligible and does not trigger a flag — the status change itself prevents re-dispatch.
 2. **Gate-failed** — the issue is at `in-review` (non-eligible), so the snapshot filter already excludes it. The flag is still written as a unified "what is the runner stuck on" surface.
 
-A parking-ref publish error (rare — a genuine runner bug rather than an expected outcome) records the iteration as FAIL but does not write an abort flag: the issue's status is unchanged, so the next run's snapshot re-picks it through the normal eligibility path.
+A parking-ref publish error (rare — a genuine runner bug rather than an expected outcome) records the iteration as FAIL and sets `RUN_STOP_REASON="propagation-error"`, halting the loop. The runner-checkout retains the un-published commits so the operator can recover via `git -C $HOST_REPO fetch $HOST_CHECKOUT +<branch>:refs/remotes/runner/<branch>`. No abort flag is written; once the parking ref is repaired, the next run re-picks the issue through the normal eligibility path. In drain mode, `propagation-error` from any feature's loop halts the entire drain (no subsequent feature is considered).
 
 **Exception — operator-initiated interrupts:** When the operator presses Ctrl-C or sends SIGTERM during an active dispatch, `RUNNER_INTERRUPTED` is set and no abort flag is written. The signal-handling path already records the iteration as failed and stops the loop with stop reason `interrupted` — that is the visible record the maintainer needs. No flag is written; the next run re-dispatches the issue normally.
 

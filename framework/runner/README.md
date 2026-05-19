@@ -63,11 +63,12 @@ The trailing `stop reason:` line varies by mode.
 
 - `completed` — every feature in discovery output considered (the multi-feature analogue of single-feature mode's `queue-empty` at the run level).
 - `interrupted` — Ctrl-C during the outer loop.
+- `propagation-error` — parking-ref publish failed inside a feature loop; the entire drain halts (exit 1).
 - `preflight-abort: discovery` — `tracker-snapshot --list` exited non-zero or returned unparseable JSON.
 
 **Narrowed modes (`--feature`, `--issue`):**
 
-- `queue-empty` / `interrupted` / `snapshot-failed` — the per-issue loop's stop reasons (see "The dispatch loop" in `afk-runner.md`).
+- `queue-empty` / `interrupted` / `snapshot-failed` / `propagation-error` — the per-issue loop's stop reasons (see "The dispatch loop" in `afk-runner.md`).
 - `feature-restricted (refused: <reason>)` (`--feature`) — `<reason>` is `unknown-feature` (slug not in discovery output) or `branch-missing` (no host ref for `<slug>`).
 - `single-dispatch (success|failure)` (`--issue`); or `single-dispatch (refused: <reason>)` — `<reason>` is one of: HITL type, wrong status, unmet blockers, `unknown-feature`, `branch-missing`, `snapshot-failed`.
 
@@ -174,9 +175,9 @@ this README — instructs the dispatched claude session to:
 The runner classifies the gate's outcome from the snapshot delta and
 the dispatch exit code (`classify_gate_outcome` in
 `run-the-queue.sh`) — it does not parse the verdict line. `clean` and
-`blocked` both set `RUNNER_LAST_OUTCOME=success` (operational health is
-fine; the verdict is independent); `gate-failed` sets it to `failure`
-and writes an abort flag.
+`blocked` both return 0 from `dispatch_one` (operational health is
+fine; the verdict is independent); `gate-failed` returns 1 and writes
+an abort flag.
 
 ## Sandbox primitives
 

@@ -486,7 +486,6 @@ _setup_retry_test() {
   # Implement succeeded (issue flipped to in-review); gate ran (blocked — snapshot
   # didn't advance further, so classify_gate_outcome returns blocked / clean).
   [ "$dispatch_rc" -eq 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "success" ]
 
   # .attempt-1 was archived during the retry backoff
   [ -f "$TEST_RUN_DIR/01.log.attempt-1" ]
@@ -735,19 +734,19 @@ setup_loop_test() {
     printf '%s\n' "$rest" >"$TEST_QUEUE_FILE"
     # Strip the trailing blank if rest is empty.
     [ -s "$TEST_QUEUE_FILE" ] || : >"$TEST_QUEUE_FILE"
-    # Take the first planned outcome (default: success).
+    # Take the first planned outcome (default: success). Return 0 for
+    # success, 1 for anything else.
     local outcome
     outcome="$(head -n 1 "$TEST_OUTCOMES_FILE" 2>/dev/null || true)"
     if [ -n "$outcome" ]; then
-      RUNNER_LAST_OUTCOME="$outcome"
       local rest_o
       rest_o="$(tail -n +2 "$TEST_OUTCOMES_FILE" 2>/dev/null || true)"
       printf '%s\n' "$rest_o" >"$TEST_OUTCOMES_FILE"
       [ -s "$TEST_OUTCOMES_FILE" ] || : >"$TEST_OUTCOMES_FILE"
     else
-      RUNNER_LAST_OUTCOME="success"
+      outcome="success"
     fi
-    [ "$RUNNER_LAST_OUTCOME" = "success" ]
+    [ "$outcome" = "success" ]
   }
 
   TARGET_FEATURE="f"
@@ -755,7 +754,6 @@ setup_loop_test() {
   HOST_RUNS="$BATS_TEST_TMPDIR/runs"
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
   RUNNER_INTERRUPTED=0
-  RUNNER_LAST_OUTCOME=""
   # Provide a minimal HOST_REPO with HEAD on a branch other than the feature
   # so evaluate_feature_gate returns "drain".
   HOST_REPO="$BATS_TEST_TMPDIR/host-repo"
@@ -809,7 +807,6 @@ plant_outcomes()   { printf '%s\n' "$@" >"$TEST_OUTCOMES_FILE"; }
     rest="$(tail -n +2 "$TEST_QUEUE_FILE" 2>/dev/null || true)"
     printf '%s\n' "$rest" >"$TEST_QUEUE_FILE"
     [ -s "$TEST_QUEUE_FILE" ] || : >"$TEST_QUEUE_FILE"
-    RUNNER_LAST_OUTCOME="success"
     if [ "$(dispatched_count)" = "1" ]; then
       RUNNER_INTERRUPTED=1
     fi
@@ -939,20 +936,15 @@ STUB
   [ -z "$(git -C "$HOST_CHECKOUT" status --porcelain)" ]
 }
 
-# === dispatch_one + run_loop — propagation error is a failure =============
+# === dispatch_one + run_loop — propagation error halts the loop ============
 #
-# Regression for a bug where dispatch_one set RUNNER_LAST_OUTCOME to the
-# classifier's verdict ("success" when the runner-checkout's status
-# flipped) before propagation ran. If propagate_feature then errored
-# (parking-ref publish failed), dispatch_one returned 1 — but
-# RUNNER_LAST_OUTCOME stayed "success". An earlier loop body read
-# RUNNER_LAST_OUTCOME instead of the return code, so the loop treated
-# propagation errors as success; on the next iteration's
-# `ensure_runner_checkout` it `git reset --hard origin/<branch>`d
-# the dispatched commit out of the runner-checkout, the fresh
-# snapshot saw the issue back at ready-for-agent, and the loop
-# re-dispatched the same issue. The fix made return-code the source
-# of truth; this test pins that contract.
+# Regression for a bug where a parking-ref publish failure inside
+# dispatch_one returned 1 but left RUN_STOP_REASON unset, so run_loop
+# continued to the next iteration. The next iteration's
+# `ensure_runner_checkout` `git reset --hard origin/<branch>`d the
+# un-published commit out of the runner-checkout, losing the work.
+# The fix sets RUN_STOP_REASON="propagation-error" so run_loop breaks
+# immediately and the runner-checkout's tip is preserved for recovery.
 
 # Build the minimum scaffolding to drive real `dispatch_one` end-to-end
 # without docker, claude, or the live tracker. We need:
@@ -1011,7 +1003,6 @@ setup_dispatch_one_test() {
   HOST_RUNS="$TEST_RUN_DIR"
   HOST_REPO="$BATS_TEST_TMPDIR"
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
-  RUNNER_LAST_OUTCOME=""
 }
 
 # Helper: install a 3-phase snapshot mock for AFK gate tests. Phases:
@@ -1042,7 +1033,7 @@ install_afk_snapshots() {
   }
 }
 
-@test "dispatch_one — propagation error sets RUNNER_LAST_OUTCOME=failure even when classifier says success" {
+@test "dispatch_one — propagation error sets RUN_STOP_REASON=propagation-error even when classifier says success" {
   setup_dispatch_one_test
 
   # Classifier verdict will be "success" (snapshots flip
@@ -1052,14 +1043,14 @@ install_afk_snapshots() {
     return 1
   }
 
-  RUNNER_LAST_OUTCOME=""
+  RUN_STOP_REASON=""
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
   [ "$rc" -ne 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "failure" ]
+  [ "$RUN_STOP_REASON" = "propagation-error" ]
 }
 
 @test "dispatch_one — implement-stage propagation error emits a halt → FAIL follow-up line" {
@@ -1106,6 +1097,145 @@ install_afk_snapshots() {
   [ "$status" -ne 0 ]
   assert_output --partial "review → clean → done"
   assert_output --partial "review → halt → gate-failed"
+}
+
+@test "dispatch_one — propagation error sets RUN_STOP_REASON=propagation-error and preserves runner-checkout HEAD" {
+  # AC: On propagate_feature returning error from the implement stage,
+  # dispatch_one sets RUN_STOP_REASON="propagation-error", records FAIL,
+  # and returns 1; the runner-checkout's branch tip equals the
+  # post-/implement SHA at run exit.
+  setup_dispatch_one_test
+
+  local pre_sha post_sha
+  pre_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  # run_dispatch_container commits one tracker: commit (as setup_dispatch_one_test
+  # arranges), advancing the runner-checkout's HEAD past pre_sha.
+  propagate_feature() { return 1; }
+
+  RUN_STOP_REASON=""
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  local rc=$?
+  set -e
+
+  post_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  [ "$rc" -ne 0 ]
+  [ "$RUN_STOP_REASON" = "propagation-error" ]
+  # The runner-checkout advanced beyond pre_sha (the tracker: commit landed).
+  [ "$post_sha" != "$pre_sha" ]
+}
+
+@test "dispatch_one — gate-stage propagation error sets RUN_STOP_REASON=propagation-error" {
+  # AC: Same on the gate stage: propagate_feature error from gate-stage
+  # propagation sets RUN_STOP_REASON="propagation-error", records gate-failed,
+  # returns 1.
+  setup_dispatch_one_test
+  install_afk_snapshots done
+
+  local prop_count_file="$BATS_TEST_TMPDIR/prop-count2"
+  echo 0 >"$prop_count_file"
+  propagate_feature() {
+    local n
+    n="$(cat "$prop_count_file")"
+    echo $((n + 1)) >"$prop_count_file"
+    # Post-implement propagation succeeds; post-gate halts.
+    [ "$n" -eq 0 ]
+  }
+  run_gate_container() { return 0; }
+
+  RUN_STOP_REASON=""
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$RUN_STOP_REASON" = "propagation-error" ]
+}
+
+@test "run_loop — propagation error halts the loop and preserves runner-checkout HEAD" {
+  # AC: run_loop breaks on RUN_STOP_REASON="propagation-error" after
+  # dispatch_one returns; the loop does not enter another iteration's
+  # ensure_runner_checkout (which would wipe the un-published commits).
+  setup_loop_test
+  plant_queue 01 02
+
+  local post_impl_sha_file="$BATS_TEST_TMPDIR/post-impl-sha"
+
+  # Override dispatch_one to simulate a propagation error on the first issue.
+  # Records the HEAD the runner-checkout was at when dispatch_one exited, to
+  # verify the loop didn't reset it on the next iteration.
+  dispatch_one() {
+    local feature="$1" nn="$2"
+    echo "$feature/$nn" >>"$TEST_DISPATCHED_FILE"
+    # Pop the queue so the snapshot mock would see 02 as next eligible.
+    local rest
+    rest="$(tail -n +2 "$TEST_QUEUE_FILE" 2>/dev/null || true)"
+    printf '%s\n' "$rest" >"$TEST_QUEUE_FILE"
+    [ -s "$TEST_QUEUE_FILE" ] || : >"$TEST_QUEUE_FILE"
+    # Simulate propagation error: set the stop reason and return 1.
+    RUN_STOP_REASON="propagation-error"
+    git -C "$HOST_CHECKOUT" rev-parse HEAD >"$post_impl_sha_file"
+    return 1
+  }
+  # Intercept ensure_runner_checkout — if called, it would reset HEAD.
+  local checkout_call_file="$BATS_TEST_TMPDIR/checkout-called"
+  : >"$checkout_call_file"
+  ensure_runner_checkout() {
+    echo "called" >>"$checkout_call_file"
+  }
+
+  RUN_STOP_REASON=""
+  set +e
+  run_loop
+  local rc=$?
+  set -e
+
+  # Loop must have exited with the propagation-error stop.
+  [ "$rc" -ne 0 ]
+  [ "$RUN_STOP_REASON" = "propagation-error" ]
+  # Only the first issue was dispatched; f/02 was not reached.
+  [ "$(dispatched_count)" = "1" ]
+  [ "$(dispatched_nth 1)" = "f/01" ]
+  # ensure_runner_checkout was not called again after the propagation error,
+  # so the runner-checkout's HEAD is the value recorded by dispatch_one.
+  # The first call (before f/01 was dispatched) fired exactly once; the
+  # second iteration that would have reset to origin never ran.
+  [ "$(cat "$checkout_call_file" | wc -l | tr -d ' ')" = "1" ]
+}
+
+@test "run_drain — propagation-error from first feature halts drain; second feature not considered" {
+  # AC: In drain mode, propagation-error raised inside any feature's
+  # run_loop halts the outer run_drain: no subsequent feature is
+  # considered, and SUMMARY's stop-reason line is propagation-error.
+  setup_drain_test
+  DISCOVERY_JSON='["alpha","beta"]'
+  git -C "$HOST_REPO" branch alpha
+  git -C "$HOST_REPO" branch beta
+
+  # Override run_loop to simulate a propagation error for alpha.
+  run_loop() {
+    echo "$TARGET_FEATURE" >>"$DRAIN_DRAINED_FILE"
+    if [ "$TARGET_FEATURE" = "alpha" ]; then
+      RUN_STOP_REASON="propagation-error"
+      return 1
+    fi
+    RUN_STOP_REASON="queue-empty"
+    return 0
+  }
+
+  RUN_STOP_REASON=""
+  local rc=0
+  run_drain || rc=$?
+
+  [ "$rc" -ne 0 ]
+  [ "$RUN_STOP_REASON" = "propagation-error" ]
+  # alpha was processed; beta was not considered.
+  [ "$(drained_features_count)" = "1" ]
+  # No feature outcome row for alpha (the iteration's FAIL row tells the story).
+  [ "$(drain_outcomes_count)" = "0" ]
 }
 
 # === collect_binding_env — sandbox-env hook ================================
@@ -1669,7 +1799,6 @@ setup_eligibility_test() {
     return 0
   }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -1677,7 +1806,6 @@ setup_eligibility_test() {
   set -e
 
   [ "$rc" -eq 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "success" ]
   # One record, combined label `done`, review-log marker present.
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
@@ -1729,7 +1857,6 @@ setup_eligibility_test() {
     return 0
   }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -1738,13 +1865,12 @@ setup_eligibility_test() {
 
   [ "$rc" -eq 0 ]
   # Blocked is operationally clean — counter resets, no failure.
-  [ "$RUNNER_LAST_OUTCOME" = "success" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y|"* ]]
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
-@test "dispatch_one — AFK gate-failed (nonzero exit) sets RUNNER_LAST_OUTCOME=failure" {
+@test "dispatch_one — AFK gate-failed (nonzero exit) returns 1" {
   setup_dispatch_one_test
   install_afk_snapshots in-review
 
@@ -1762,7 +1888,6 @@ setup_eligibility_test() {
     return 137
   }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -1770,7 +1895,6 @@ setup_eligibility_test() {
   set -e
 
   [ "$rc" -ne 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
   # Only the post-implement propagation ran; the gate-failed branch
@@ -1788,7 +1912,6 @@ setup_eligibility_test() {
     return 0
   }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -1796,7 +1919,6 @@ setup_eligibility_test() {
   set -e
 
   [ "$rc" -ne 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
 }
 
@@ -1824,7 +1946,6 @@ setup_eligibility_test() {
   }
 
   RUNNER_INTERRUPTED=0
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -1832,7 +1953,6 @@ setup_eligibility_test() {
   set -e
 
   [ "$rc" -eq 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "success" ]
   # Gate must NOT have been dispatched.
   [ ! -s "$TEST_GATE_CALLED" ]
   # Implement label recorded (in-review since implement succeeded).
@@ -1876,7 +1996,6 @@ setup_eligibility_test() {
     return 0
   }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -1886,7 +2005,6 @@ setup_eligibility_test() {
   # Classifier verdict (`blocked`) propagates unchanged despite the dirty
   # working tree.
   [ "$rc" -eq 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "success" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y|"* ]]
   # Both the post-implement and post-gate propagations ran — the gate's
@@ -2231,14 +2349,12 @@ other-feat|01|other-feat/01|FAIL|5||1|'
     return 0
   }
 
-  RUNNER_LAST_OUTCOME=""
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
   [ "$rc" -ne 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   # No committed change → nothing to propagate, runner does not call
   # propagate_feature at all.
   [ ! -s "$TEST_PROPAGATE_CALLED" ]
@@ -2282,7 +2398,6 @@ other-feat|01|other-feat/01|FAIL|5||1|'
     return 0
   }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -2292,7 +2407,6 @@ other-feat|01|other-feat/01|FAIL|5||1|'
   # Iteration is a failure (classifier verdict is independent of
   # propagation), but the bail comment must reach the host.
   [ "$rc" -ne 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   [ "$(wc -l <"$TEST_PROPAGATE_CALLED" | tr -d ' ')" = "1" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
@@ -2324,15 +2438,15 @@ other-feat|01|other-feat/01|FAIL|5||1|'
     return 1
   }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
+  RUN_STOP_REASON=""
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
   local rc=$?
   set -e
 
   [ "$rc" -ne 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "failure" ]
+  [ "$RUN_STOP_REASON" = "propagation-error" ]
   # Propagation was attempted (and halted) — the runner doesn't silently
   # swallow the halt just because the classifier already said failure.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLED" | tr -d ' ')" = "1" ]
@@ -2351,8 +2465,8 @@ other-feat|01|other-feat/01|FAIL|5||1|'
 
 setup_loop_output_test() {
   setup_loop_test
-  # The loop's mock dispatch_one only sets RUNNER_LAST_OUTCOME. Layer on
-  # record_dispatch so the records make it into RUN_DISPATCHES.
+  # Layer record_dispatch on top of the loop's mock so dispatch records
+  # make it into RUN_DISPATCHES.
   dispatch_one() {
     local feature="$1" nn="$2"
     local ref="$feature/$nn"
@@ -2364,18 +2478,17 @@ setup_loop_output_test() {
     local outcome
     outcome="$(head -n 1 "$TEST_OUTCOMES_FILE" 2>/dev/null || true)"
     if [ -n "$outcome" ]; then
-      RUNNER_LAST_OUTCOME="$outcome"
       local rest_o
       rest_o="$(tail -n +2 "$TEST_OUTCOMES_FILE" 2>/dev/null || true)"
       printf '%s\n' "$rest_o" >"$TEST_OUTCOMES_FILE"
       [ -s "$TEST_OUTCOMES_FILE" ] || : >"$TEST_OUTCOMES_FILE"
     else
-      RUNNER_LAST_OUTCOME="success"
+      outcome="success"
     fi
     local label
-    if [ "$RUNNER_LAST_OUTCOME" = "success" ]; then label="in-review"; else label="FAIL"; fi
+    if [ "$outcome" = "success" ]; then label="in-review"; else label="FAIL"; fi
     record_dispatch "$feature" "$nn" "$ref" "$label" 1
-    [ "$RUNNER_LAST_OUTCOME" = "success" ]
+    [ "$outcome" = "success" ]
   }
 
   RUN_TS="20260506-091245"
@@ -2599,7 +2712,6 @@ setup_abort_test() {
   run_dispatch_container() { return 0; }
   propagate_feature() { return 0; }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -2630,7 +2742,6 @@ setup_abort_test() {
   }
   propagate_feature() { return 0; }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -2652,7 +2763,6 @@ setup_abort_test() {
     return 137
   }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -2691,7 +2801,6 @@ setup_abort_test() {
   propagate_feature() { return 0; }
 
   RUNNER_INTERRUPTED=0
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -2718,7 +2827,6 @@ setup_abort_test() {
   propagate_feature() { return 0; }
 
   RUNNER_INTERRUPTED=0
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -2748,7 +2856,6 @@ setup_abort_test() {
   }
 
   RUNNER_INTERRUPTED=0
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -2789,7 +2896,6 @@ setup_abort_test() {
     remaining="$(grep -v "^${nn}$" "$TEST_QUEUE_FILE" 2>/dev/null || true)"
     printf '%s\n' "$remaining" >"$TEST_QUEUE_FILE"
     [ -s "$TEST_QUEUE_FILE" ] || : >"$TEST_QUEUE_FILE"
-    RUNNER_LAST_OUTCOME="success"
     return 0
   }
 
@@ -2846,7 +2952,6 @@ setup_abort_test() {
     rest="$(tail -n +2 "$TEST_QUEUE_FILE" 2>/dev/null || true)"
     printf '%s\n' "$rest" >"$TEST_QUEUE_FILE"
     [ -s "$TEST_QUEUE_FILE" ] || : >"$TEST_QUEUE_FILE"
-    RUNNER_LAST_OUTCOME="success"
     return 0
   }
 
@@ -3705,7 +3810,6 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
       return 1
     fi
     echo "$feature/$nn" >>"$BETA_DRAINED_FILE"
-    RUNNER_LAST_OUTCOME="success"
     return 0
   }
 
@@ -4216,7 +4320,6 @@ _setup_mount_capture() {
   }
   propagate_feature() { return 0; }
 
-  RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
   set +e
   dispatch_one "f" "42" "$TEST_RUN_DIR"
@@ -4224,7 +4327,6 @@ _setup_mount_capture() {
   set -e
 
   [ "$rc" -eq 0 ]
-  [ "$RUNNER_LAST_OUTCOME" = "success" ]
   # The binding-native ref "#42" was forwarded to both dispatch stages.
   [ "$(cat "$TEST_DISPATCH_REF")" = "#42" ]
   [ "$(cat "$TEST_GATE_REF")" = "#42" ]

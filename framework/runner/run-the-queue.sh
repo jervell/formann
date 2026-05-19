@@ -26,20 +26,22 @@
 # Stop reasons (drain mode):
 #   - `completed`             — every discovery slug considered.
 #   - `interrupted`           — Ctrl-C during the outer loop.
+#   - `propagation-error`     — parking-ref publish failed inside a feature loop.
 #   - `preflight-abort: discovery` — `tracker-snapshot --list` failed.
 #
 # Stop reasons (narrowed modes):
-#   - `queue-empty` / `interrupted` / `snapshot-failed`.
+#   - `queue-empty` / `interrupted` / `snapshot-failed` / `propagation-error`.
 #   - `feature-restricted (refused: <reason>)` (--feature).
 #   - `single-dispatch (success|failure|refused: <reason>)` (--issue).
 #
 # Exit codes:
-#   0  — drain completed / interrupted / halted; single dispatch succeeded;
+#   0  — drain completed / interrupted; single dispatch succeeded;
 #         or loop drained / was interrupted (those treat the stop conditions
 #         as 0).
 #   1  — single dispatch failed (status didn't flip to in-review/done); or
 #         loop mode aborted because tracker-snapshot crashed mid-loop
-#         (`snapshot-failed`).
+#         (`snapshot-failed`) or a propagation error halted the loop
+#         (`propagation-error`).
 #   2  — pre-flight failed; the line printed before exit names which
 #         invariant tripped; or refusal (feature-restricted, single-dispatch
 #         refused).
@@ -1820,12 +1822,11 @@ MSG
 # dispatch snapshot. Mutates only files under the run dir; classifier
 # verdict is derived from snapshots taken in the runner-checkout.
 #
-# Sets $RUNNER_LAST_OUTCOME (`success` for classifier success with any
-# propagation outcome including parked-only; `failure` for classifier
-# failure or parking-ref error). Also sets $RUNNER_LAST_PROPAGATION to
-# `propagated → host` or `parked → runner/<branch>` on the success path
-# (empty on failure or when no propagation occurred). Return code mirrors
-# RUNNER_LAST_OUTCOME.
+# Sets $RUNNER_LAST_PROPAGATION to `propagated → host` or
+# `parked → runner/<branch>` on the success path (empty on failure or
+# when no propagation occurred). Return code: 0 = success, 1 = failure.
+# On a parking-ref publish error, also sets
+# RUN_STOP_REASON="propagation-error" so run_loop breaks the loop.
 #
 # Args: $1=feature  $2=nn  $3=run_dir
 dispatch_one() {
@@ -1961,8 +1962,9 @@ dispatch_one() {
   # future logical-bail status flips. A genuine technical failure
   # (container died before commit) leaves the runner-checkout at host's
   # tip, so this branch is a no-op for it. A parking-ref publish failure
-  # (error outcome) is treated as a halt: the runner-checkout still holds
-  # un-published commits and the next sync would wipe them.
+  # (error outcome) halts the loop via RUN_STOP_REASON="propagation-error":
+  # the runner-checkout still holds the un-published commits, and the next
+  # sync would wipe them if the loop continued.
   if [ "$impl_has_runner_commits" -eq 1 ]; then
     if ! propagate_feature "$feature"; then
       # The original outcome line above already showed the implement-step
@@ -1974,7 +1976,7 @@ dispatch_one() {
       halt_duration=$(( $(date +%s) - started_at ))
       format_progress_outcome "$(now_clock)" "$ref" "implement" "halt → FAIL" "$halt_duration"
       record_dispatch "$feature" "$nn" "$ref" "FAIL" "$halt_duration" "" "$impl_attempts"
-      RUNNER_LAST_OUTCOME="failure"
+      RUN_STOP_REASON="propagation-error"
       return 1
     fi
   fi
@@ -1995,7 +1997,6 @@ dispatch_one() {
     local impl_abort_outcome="FAIL"
     [ "$classifier_verdict" = "dispatch-aborted" ] && impl_abort_outcome="dispatch-aborted"
     record_dispatch "$feature" "$nn" "$ref" "$impl_abort_outcome" "$impl_duration" "" "$impl_attempts"
-    RUNNER_LAST_OUTCOME="failure"
     return 1
   fi
 
@@ -2010,7 +2011,6 @@ dispatch_one() {
   # the loop's top-of-iteration check handles the stop.
   if [ "$RUNNER_INTERRUPTED" -eq 1 ]; then
     record_dispatch "$feature" "$nn" "$ref" "$impl_label" "$impl_duration" "" "$impl_attempts"
-    RUNNER_LAST_OUTCOME="success"
     return 0
   fi
 
@@ -2078,7 +2078,6 @@ dispatch_one() {
     [ "$gate_verdict" = "review-aborted" ] && gate_flag_type="transport"
     write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file" "$gate_flag_type"
     record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_duration" "y" "$gate_attempts"
-    RUNNER_LAST_OUTCOME="failure"
     return 1
   fi
 
@@ -2086,7 +2085,7 @@ dispatch_one() {
   # contracts to commit on clean and blocked alike; the classifier itself
   # only checks exit code and status delta, so this is a prompt-level
   # invariant rather than one enforced here. A parking-ref publish failure
-  # (error) classifies as gate-failed — the work didn't reach host.
+  # (error) halts the loop — same as the implement-stage path above.
   if ! propagate_feature "$feature"; then
     # As in the implement stage: the review outcome line above already
     # showed the gate verdict (clean → done / blocked). Emit a follow-up
@@ -2097,12 +2096,11 @@ dispatch_one() {
     iter_halt_duration=$(( impl_duration + gate_halt_duration ))
     format_progress_outcome "$(now_clock)" "$ref" "review" "halt → gate-failed" "$gate_halt_duration"
     record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$iter_halt_duration" "y" "$gate_attempts"
-    RUNNER_LAST_OUTCOME="failure"
+    RUN_STOP_REASON="propagation-error"
     return 1
   fi
 
   record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_duration" "y" "$gate_attempts"
-  RUNNER_LAST_OUTCOME="success"
   return 0
 }
 
@@ -2251,7 +2249,6 @@ run_loop() {
       return 1
     fi
 
-    RUNNER_LAST_OUTCOME=""
     RUNNER_LAST_PROPAGATION=""
     local dispatch_rc=0
     dispatch_one "$TARGET_FEATURE" "$nn_sel" "$RUN_DIR" || dispatch_rc=$?
@@ -2261,6 +2258,13 @@ run_loop() {
       echo "[$(now_clock)] runner: interrupted during dispatch of $ref; exiting"
       RUN_STOP_REASON="interrupted"
       return 0
+    fi
+
+    # Propagation error: the runner-checkout holds un-published commits
+    # that the next sync would wipe. Break now so recovery is possible.
+    if [ "$RUN_STOP_REASON" = "propagation-error" ]; then
+      echo "[$(now_clock)] runner: propagation error — halting loop"
+      return 1
     fi
 
     # Make `set -e` happy — dispatch_rc is consumed, not propagated.
@@ -2305,6 +2309,12 @@ run_drain() {
       considered="$feature"
     else
       considered="$considered"$'\n'"$feature"
+    fi
+
+    # Propagation error from any feature's loop halts the entire drain.
+    if [ "$RUN_STOP_REASON" = "propagation-error" ]; then
+      echo "[$(now_clock)] runner: propagation error halting drain"
+      return 1
     fi
 
     if [ "$RUNNER_INTERRUPTED" -eq 1 ]; then
@@ -2393,6 +2403,13 @@ drain_one_feature() {
   RUN_STOP_REASON="$saved_stop_reason"
 
   case "$inner_reason" in
+    propagation-error)
+      # Parking-ref publish failed inside this feature's loop. Leak the
+      # stop reason through to run_drain — do not record a feature row
+      # (the iteration's FAIL row already tells the story) and override
+      # the restored saved value so the outer drain sees it.
+      RUN_STOP_REASON="propagation-error"
+      ;;
     snapshot-failed)
       # Mid-feature snapshot crash. Brief AC: "A feature whose
       # `tracker-snapshot <slug>` crashes mid-run produces a SUMMARY row
