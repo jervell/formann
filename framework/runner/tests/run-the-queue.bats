@@ -3208,6 +3208,110 @@ setup_propagate_test() {
   [ "$RUNNER_LAST_PROPAGATION" = "" ]
 }
 
+# === select_sync_base — pre-dispatch sync-base selector ====================
+#
+# Pure function: takes a pre-computed parking-ref relation and returns
+# which tip the runner-checkout should sync to.
+#
+# Relation vocabulary: absent | equal | ahead | behind | diverged
+# Rules:
+#   absent   → host-branch   (no prior runner output)
+#   equal    → host-branch   (runner output already at host tip)
+#   ahead    → parking-ref   (runner output is ahead; chain from it)
+#   behind   → host-branch   (host has moved past runner output)
+#   diverged → parking-ref   (runner chain authoritative; maintainer reconciles)
+
+@test "select_sync_base — absent: no parking ref → host-branch" {
+  result="$(select_sync_base absent)"
+  [ "$result" = "host-branch" ]
+}
+
+@test "select_sync_base — equal: parking ref equals host's branch → host-branch" {
+  result="$(select_sync_base equal)"
+  [ "$result" = "host-branch" ]
+}
+
+@test "select_sync_base — ahead: parking ref strictly ahead of host's branch → parking-ref" {
+  result="$(select_sync_base ahead)"
+  [ "$result" = "parking-ref" ]
+}
+
+@test "select_sync_base — behind: host's branch strictly ahead of parking ref → host-branch" {
+  result="$(select_sync_base behind)"
+  [ "$result" = "host-branch" ]
+}
+
+@test "select_sync_base — diverged: neither ancestor → parking-ref" {
+  result="$(select_sync_base diverged)"
+  [ "$result" = "parking-ref" ]
+}
+
+# === ensure_runner_checkout_on_branch — parking-ref sync path ==============
+#
+# Integration test: when the parking ref is strictly ahead of host's branch
+# tip, ensure_runner_checkout_on_branch must sync to the parking-ref tip so
+# successive on-branch dispatches build linearly on prior runner output.
+
+setup_ensure_checkout_parking_test() {
+  HOST_REPO="$BATS_TEST_TMPDIR/park-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/park-checkout"
+  TARGET_FEATURE="f"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=f
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m init
+
+  # ensure_runner_checkout_on_branch's tail step invokes installer/install.sh.
+  # Stub it to a no-op so the test stays focused on git sync semantics.
+  mkdir -p "$HOST_REPO/installer"
+  cat >"$HOST_REPO/installer/install.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$HOST_REPO/installer/install.sh"
+
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+  git -C "$HOST_CHECKOUT" checkout --quiet -B f origin/f
+}
+
+@test "ensure_runner_checkout_on_branch — parking-ref strictly ahead: syncs to parking-ref tip" {
+  # Verify that when the parking ref is strictly ahead of host's branch, the
+  # runner-checkout is synced to the parking-ref tip (not host's branch tip).
+  # This is the linear-chaining property: the second dispatch's starting commit
+  # is the first dispatch's parked commit, so its output builds on top of it.
+  setup_ensure_checkout_parking_test
+
+  # Simulate dispatch 1: runner-checkout advances past host's f tip.
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "dispatch 1"
+  local d1_tip
+  d1_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  # Publish the dispatch-1 commit to the parking ref on host
+  # (mirrors propagate_feature step 1 when fast-forward is refused).
+  git -C "$HOST_REPO" fetch --quiet "$HOST_CHECKOUT" "+f:refs/remotes/runner/f" >&2
+
+  # Reset runner-checkout back to host's branch tip (mirrors the pre-issue
+  # ensure_runner_checkout_on_branch resetting to origin/<branch>).
+  local host_tip
+  host_tip="$(git -C "$HOST_REPO" rev-parse f)"
+  git -C "$HOST_CHECKOUT" reset --quiet --hard "$host_tip"
+  git -C "$HOST_CHECKOUT" clean --quiet -fd
+
+  # Precondition: parking ref is strictly ahead of host's f.
+  git -C "$HOST_REPO" merge-base --is-ancestor "$host_tip" "$d1_tip"
+  ! git -C "$HOST_REPO" merge-base --is-ancestor "$d1_tip" "$host_tip" 2>/dev/null
+
+  # Call the function under test.
+  ensure_runner_checkout_on_branch "f"
+
+  # The runner-checkout HEAD must equal the parking-ref tip, not host's f tip.
+  local checkout_head
+  checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+  [ "$checkout_head" = "$d1_tip" ]
+}
+
 # === evaluate_feature_gate — skip-reason matrix ============================
 #
 # The gate evaluator's full signal set: branch-missing, fetch-failed,

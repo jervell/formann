@@ -247,6 +247,36 @@ evaluate_feature_gate() {
   echo "drain"
 }
 
+# Pre-dispatch sync-base selector. Pure function — takes a pre-computed
+# parking-ref relation and returns which tip the runner-checkout should sync
+# to before each dispatch.
+#
+# Input:
+#   $1 — parking_rel: absent | equal | ahead | behind | diverged
+#          absent   — parking ref doesn't exist yet (no prior runner output)
+#          equal    — parking ref tip equals host's branch tip
+#          ahead    — parking ref tip is strictly ahead of host's branch tip
+#          behind   — host's branch tip is strictly ahead of parking ref tip
+#          diverged — neither tip is an ancestor of the other
+#
+# Output (stdout): host-branch | parking-ref
+#
+# Rules: absent → host-branch; equal → host-branch; ahead → parking-ref;
+#        behind → host-branch; diverged → parking-ref.
+# Rationale for diverged → parking-ref: the runner's chain is authoritative;
+# the maintainer reconciles via `git pull runner <feature>`.
+select_sync_base() {
+  local parking_rel="${1:-}"
+  case "$parking_rel" in
+    absent|equal|behind) echo "host-branch" ;;
+    ahead|diverged)      echo "parking-ref" ;;
+    *)
+      echo "runner: select_sync_base: unknown relation '$parking_rel'" >&2
+      return 1
+      ;;
+  esac
+}
+
 # Select the next feature the outer drain loop should consider. Analogue
 # of `next_eligible_ref` at the feature level. Pure function — bats
 # coverage exercises both modes exhaustively.
@@ -1037,18 +1067,67 @@ ensure_runner_checkout_on_branch() {
       return 1
     fi
   fi
-  if ! git -C "$HOST_CHECKOUT" fetch --quiet origin "$branch" >&2; then
-    echo "runner: ensure_runner_checkout_on_branch: git fetch origin $branch failed" >&2
-    return 1
+
+  # Read the parking-ref tip directly from host's .git. The runner-checkout's
+  # default origin refspec (+refs/heads/*:refs/remotes/origin/*) does NOT
+  # cover host's refs/remotes/runner/*, so an origin fetch won't bring it
+  # across. Reading the SHA directly from host avoids an extra round-trip.
+  # Use --verify so that a missing ref yields empty stdout (plain rev-parse
+  # prints the literal ref string to stdout on failure, poisoning the check).
+  local host_tip parking_tip parking_rel sync_verdict expected_tip
+  host_tip="$(git -C "$HOST_REPO" rev-parse --verify "$branch" 2>/dev/null || true)"
+  parking_tip="$(git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/$branch" 2>/dev/null || true)"
+
+  if [ -z "$parking_tip" ]; then
+    parking_rel="absent"
+  elif [ "$parking_tip" = "$host_tip" ]; then
+    parking_rel="equal"
+  elif git -C "$HOST_REPO" merge-base --is-ancestor "$parking_tip" "$host_tip" 2>/dev/null; then
+    # parking tip is ancestor of host tip → host is strictly ahead
+    parking_rel="behind"
+  elif git -C "$HOST_REPO" merge-base --is-ancestor "$host_tip" "$parking_tip" 2>/dev/null; then
+    # host tip is ancestor of parking tip → parking ref is strictly ahead
+    parking_rel="ahead"
+  else
+    parking_rel="diverged"
   fi
-  if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "origin/$branch" >&2; then
-    echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch failed" >&2
-    return 1
+
+  sync_verdict="$(select_sync_base "$parking_rel")"
+
+  if [ "$sync_verdict" = "host-branch" ]; then
+    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin "$branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git fetch origin $branch failed" >&2
+      return 1
+    fi
+    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "origin/$branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch failed" >&2
+      return 1
+    fi
+    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/$branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/$branch failed" >&2
+      return 1
+    fi
+    expected_tip="$host_tip"
+  else
+    # parking-ref verdict: fetch the parking-ref's objects from host into the
+    # runner-checkout (the runner-checkout's origin fetch won't carry them),
+    # then sync to the parking-ref tip so successive dispatches chain linearly.
+    if ! git -C "$HOST_CHECKOUT" fetch --quiet "$HOST_REPO" \
+        "refs/remotes/runner/$branch:refs/remotes/host-parking/$branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: fetch parking-ref tip from host failed" >&2
+      return 1
+    fi
+    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "$parking_tip" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch $parking_tip failed" >&2
+      return 1
+    fi
+    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "$parking_tip" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git reset --hard $parking_tip failed" >&2
+      return 1
+    fi
+    expected_tip="$parking_tip"
   fi
-  if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/$branch" >&2; then
-    echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/$branch failed" >&2
-    return 1
-  fi
+
   # `reset --hard` scrubs tracked changes but leaves untracked files
   # alone. The dispatch container can drop CWD-relative artifacts (kernel
   # core dumps from a crashed in-container process, stray writes from a
@@ -1062,16 +1141,16 @@ ensure_runner_checkout_on_branch() {
     echo "runner: ensure_runner_checkout_on_branch: git clean -fd failed" >&2
     return 1
   fi
-  # Defensive: verify the sync actually advanced the runner-checkout to the
-  # branch tip in host. Compare the branch ref directly (not HEAD) so the
-  # check works regardless of what branch host has checked out.
-  local host_tip checkout_head
-  host_tip="$(git -C "$HOST_REPO" rev-parse "$branch" 2>/dev/null || true)"
+
+  # Defensive: verify the sync advanced the runner-checkout to the chosen tip
+  # (parking-ref SHA when verdict is parking-ref; host branch tip otherwise).
+  local checkout_head
   checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
-  if [ -z "$host_tip" ] || [ "$checkout_head" != "$host_tip" ]; then
-    echo "runner: ensure_runner_checkout_on_branch: post-sync HEAD mismatch: host $branch=$host_tip checkout=$checkout_head" >&2
+  if [ -z "$expected_tip" ] || [ "$checkout_head" != "$expected_tip" ]; then
+    echo "runner: ensure_runner_checkout_on_branch: post-sync HEAD mismatch: expected=$expected_tip checkout=$checkout_head" >&2
     return 1
   fi
+
   # Refresh installer products against the checkout so binding wiring on
   # disk matches host. See `refresh_runner_checkout_install_products`
   # above for the rationale.
