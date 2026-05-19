@@ -1616,14 +1616,21 @@ propagate_feature() {
   local branch="$1"
   local parking_ref="refs/remotes/runner/${branch}"
 
-  # Step 1: publish to parking ref — fail-fatal.
+  # Step 1: publish to parking ref — fail-fatal. The `+` prefix force-updates
+  # the parking ref; it is runner-owned and its semantics are "this is the
+  # latest tip the runner produced for <branch>", not "an append-only history".
+  # Without `+`, a 2nd parked-only dispatch in loop mode (where the runner-
+  # checkout was reset to host's old tip, so successive dispatches are siblings
+  # rather than ancestors of the prior parking-ref tip) would be rejected as
+  # non-fast-forward — and that would halt the very on-branch loop this slice
+  # exists to enable.
   if ! git -C "$HOST_REPO" fetch --quiet "$HOST_CHECKOUT" \
-      "${branch}:${parking_ref}" 2>/dev/null; then
+      "+${branch}:${parking_ref}" 2>/dev/null; then
     cat >&2 <<MSG
 runner: propagation error — failed to publish to parking ref '${parking_ref}'.
 The dispatched commit lives in the runner-checkout. Recover with:
 
-    git -C $HOST_REPO fetch $HOST_CHECKOUT ${branch}:${parking_ref}
+    git -C $HOST_REPO fetch $HOST_CHECKOUT +${branch}:${parking_ref}
 
 (The runner did NOT push to any remote.)
 MSG

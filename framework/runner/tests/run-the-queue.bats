@@ -3052,7 +3052,11 @@ setup_propagate_test() {
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
   git -C "$HOST_CHECKOUT" checkout --quiet -B f origin/f
 
-  # Register the runner remote so the parking-ref fetch target exists.
+  # Register the runner remote to mirror real-world setup
+  # (`ensure_runner_remote` does this in pre-flight). `propagate_feature`
+  # itself fetches by path (`$HOST_CHECKOUT`), not by remote name, so the
+  # named remote is not required for the fetch to work — but its presence
+  # matches what a real run looks like.
   git -C "$HOST_REPO" remote add runner "$HOST_CHECKOUT"
 }
 
@@ -3135,6 +3139,49 @@ setup_propagate_test() {
   [ "$parking_after" = "$checkout_tip" ]
   [ "$host_f_after" = "$host_f_before" ]
   [ "$RUNNER_LAST_PROPAGATION" = "parked" ]
+}
+
+@test "propagate_feature — loop mode: 2nd parked-only dispatch with sibling commits force-updates the parking ref" {
+  # Regression guard for the on-branch loop scenario this slice exists to
+  # enable.  Without `+` on the step-1 refspec, dispatch 2's parking-ref
+  # publish would fail as non-fast-forward (sibling of dispatch 1's parked
+  # commit) and halt the loop — defeating the slice's purpose.
+  setup_propagate_test
+
+  # Dispatch 1: runner-checkout advances; host stays on f → parked-only.
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "dispatch 1 (parked)"
+  local d1_tip
+  d1_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  propagate_feature "f"
+  [ "$RUNNER_LAST_PROPAGATION" = "parked" ]
+  [ "$(git -C "$HOST_REPO" rev-parse refs/remotes/runner/f)" = "$d1_tip" ]
+
+  # Simulate the pre-dispatch sync: runner-checkout reset to origin/f
+  # (host's old tip, since the host fast-forward refused).  This mirrors
+  # `ensure_runner_checkout_on_branch` resetting to origin/<branch>.
+  local host_tip
+  host_tip="$(git -C "$HOST_REPO" rev-parse f)"
+  git -C "$HOST_CHECKOUT" reset --quiet --hard "$host_tip"
+
+  # Dispatch 2: build a sibling commit (not a descendant of d1_tip).
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "dispatch 2 (sibling of d1)"
+  local d2_tip
+  d2_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  # The two dispatch tips must be siblings — neither reachable from the other.
+  ! git -C "$HOST_REPO" merge-base --is-ancestor "$d1_tip" "$d2_tip" 2>/dev/null
+  ! git -C "$HOST_REPO" merge-base --is-ancestor "$d2_tip" "$d1_tip" 2>/dev/null
+
+  propagate_feature "f"
+
+  # Dispatch 2 must succeed (parked, not error) and the parking ref must
+  # now point at d2_tip — proving the `+` force-update worked across the
+  # non-ff transition.
+  [ "$RUNNER_LAST_PROPAGATION" = "parked" ]
+  [ "$(git -C "$HOST_REPO" rev-parse refs/remotes/runner/f)" = "$d2_tip" ]
 }
 
 @test "propagate_feature — error: parking-ref publish fails, returns 1, RUNNER_LAST_PROPAGATION cleared" {
