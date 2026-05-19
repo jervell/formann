@@ -4209,3 +4209,57 @@ _setup_mount_capture() {
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|42|#42|done|"* ]]
 }
+
+# === ensure_runner_remote =====================================================
+
+setup_runner_remote_test() {
+  HOST_REPO="$BATS_TEST_TMPDIR/host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m init
+}
+
+@test "ensure_runner_remote — fresh repo: adds runner remote pointing at HOST_CHECKOUT" {
+  setup_runner_remote_test
+
+  ensure_runner_remote
+
+  url="$(git -C "$HOST_REPO" remote get-url runner)"
+  [ "$url" = "$HOST_CHECKOUT" ]
+}
+
+@test "ensure_runner_remote — remote already exists with expected URL: no-op" {
+  setup_runner_remote_test
+  git -C "$HOST_REPO" remote add runner "$HOST_CHECKOUT"
+
+  run ensure_runner_remote
+  assert_success
+
+  url="$(git -C "$HOST_REPO" remote get-url runner)"
+  [ "$url" = "$HOST_CHECKOUT" ]
+  # No duplicate remote entries.
+  count="$(git -C "$HOST_REPO" remote | grep -c '^runner$')"
+  [ "$count" -eq 1 ]
+}
+
+@test "ensure_runner_remote — remote exists with different URL: refuses with error" {
+  setup_runner_remote_test
+  git -C "$HOST_REPO" remote add runner "/some/other/path"
+
+  # Override fail_invariant so the exit 2 doesn't kill the test process.
+  RUN_PREFLIGHT_INVARIANT=""
+  fail_invariant() { RUN_PREFLIGHT_INVARIANT="$1"; return 2; }
+
+  set +e
+  ensure_runner_remote
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$RUN_PREFLIGHT_INVARIANT" = "runner-remote" ]
+  # The conflicting URL still in place (helper didn't overwrite it).
+  url="$(git -C "$HOST_REPO" remote get-url runner)"
+  [ "$url" = "/some/other/path" ]
+}

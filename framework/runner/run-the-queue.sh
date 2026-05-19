@@ -1188,6 +1188,7 @@ retrieve_oauth_token() {
 preflight() {
   acquire_lock
   check_discovery                        # invariant 1: tracker-snapshot --list
+  ensure_runner_remote                   # invariant 1b: runner remote
   # Single-feature / single-issue modes know their target up front, so the
   # CLI-input gate runs here (returns 2 with a `feature-restricted` /
   # `single-dispatch (refused: …)` stop reason). Runner-checkout sync and
@@ -1570,6 +1571,32 @@ run_gate_container() {
   prompt_text="$(cat "$GATE_PROMPT_PATH")"$'\n'"$ref"
   with_transport_retry "$log_file" run_sandbox_container \
     claude -p "$prompt_text" --dangerously-skip-permissions
+}
+
+# === Runner remote registration =============================================
+
+# Register (or verify) the `runner` git remote in the host repo. Called from
+# pre-flight on every run. Three cases:
+#   - Absent          → add the remote pointing at HOST_CHECKOUT.
+#   - Present, URL matches HOST_CHECKOUT → no-op.
+#   - Present, URL differs  → fail_invariant with the conflicting URL and
+#     the recovery recipe; runner aborts pre-flight.
+#
+# Mutates only $HOST_REPO/.git/config. Never fetches, pushes, or writes refs.
+ensure_runner_remote() {
+  local current_url
+  current_url="$(git -C "$HOST_REPO" remote get-url runner 2>/dev/null || true)"
+  if [ -z "$current_url" ]; then
+    git -C "$HOST_REPO" remote add runner "$HOST_CHECKOUT"
+    return 0
+  fi
+  if [ "$current_url" = "$HOST_CHECKOUT" ]; then
+    return 0
+  fi
+  fail_invariant "runner-remote" \
+    "runner remote exists with URL '$current_url' (expected: '$HOST_CHECKOUT')." \
+    "Fix with: git remote remove runner" \
+    "(or: git remote set-url runner $HOST_CHECKOUT)"
 }
 
 # === Host fast-forward propagation =========================================
