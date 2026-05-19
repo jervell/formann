@@ -2128,14 +2128,16 @@ setup_eligibility_test() {
 afk-runner|02|afk-runner/02|FAIL|18|
 afk-runner|03|afk-runner/03|done|301|y'
   result="$(printf '%s\n' "$input" | format_end_of_run_table queue-empty)"
-  # Header line — column names in order.
+  # Header line — column names in order (propagation column added).
   echo "$result" | head -n 1 | grep -q '^issue ' || { echo "header missing 'issue'"; echo "$result"; false; }
   echo "$result" | head -n 1 | grep -q ' outcome ' || { echo "header missing 'outcome'"; false; }
-  echo "$result" | head -n 1 | grep -q ' duration' || { echo "header missing 'duration'"; false; }
+  echo "$result" | head -n 1 | grep -q ' duration ' || { echo "header missing 'duration'"; false; }
+  echo "$result" | head -n 1 | grep -q ' propagation' || { echo "header missing 'propagation'"; echo "$result"; false; }
   # One row per dispatch — `issue` column shows the binding-native ref.
-  echo "$result" | grep -q '^afk-runner/01 .*in-review.* 42s *$' || { echo "row 01 missing"; echo "$result"; false; }
-  echo "$result" | grep -q '^afk-runner/02 .*FAIL.* 18s *$' || { echo "row 02 missing"; echo "$result"; false; }
-  echo "$result" | grep -q '^afk-runner/03 .*done.* 301s *$' || { echo "row 03 missing"; echo "$result"; false; }
+  # Propagation field missing → shows '-' in the propagation column.
+  echo "$result" | grep -q '^afk-runner/01 .*in-review.* 42s ' || { echo "row 01 missing"; echo "$result"; false; }
+  echo "$result" | grep -q '^afk-runner/02 .*FAIL.* 18s ' || { echo "row 02 missing"; echo "$result"; false; }
+  echo "$result" | grep -q '^afk-runner/03 .*done.* 301s ' || { echo "row 03 missing"; echo "$result"; false; }
   # `feature` and `nn` are not exposed in their own columns.
   ! echo "$result" | head -n 2 | tail -n 1 | grep -qE '^afk-runner +01 ' || { echo "feature/nn leaked into issue/outcome columns"; echo "$result"; false; }
   # Trailing stop-reason line below the table.
@@ -2150,8 +2152,8 @@ afk-runner|03|afk-runner/03|done|301|y'
   input='afk-runner|42|#42|in-review|12|
 afk-runner|43|#43|FAIL|5|y'
   result="$(printf '%s\n' "$input" | format_end_of_run_table queue-empty)"
-  echo "$result" | grep -q '^#42 .*in-review.* 12s *$' || { echo "GH row 42 missing"; echo "$result"; false; }
-  echo "$result" | grep -q '^#43 .*FAIL.* 5s *$' || { echo "GH row 43 missing"; echo "$result"; false; }
+  echo "$result" | grep -q '^#42 .*in-review.* 12s ' || { echo "GH row 42 missing"; echo "$result"; false; }
+  echo "$result" | grep -q '^#43 .*FAIL.* 5s ' || { echo "GH row 43 missing"; echo "$result"; false; }
 }
 
 @test "format_end_of_run_table — empty input still prints header + stop reason" {
@@ -2172,11 +2174,12 @@ afk-runner|02|afk-runner/02|FAIL|18|'
   echo "$result" | grep -q -- '- Run: 20260506-091245.*started 09:12:45.*ended 09:25:33' || { echo "$result"; false; }
   # Stop reason line.
   echo "$result" | grep -q -- '- Stop reason: queue-empty$' || { echo "$result"; false; }
-  # Per-issue table headers + rows. The `logs` column carries one or two
+  # Per-issue table headers + rows. The `propagation` column is new; records
+  # without a propagation field show `-`. The `logs` column carries one or two
   # links depending on whether the iteration produced a `<NN>-review.log`.
-  echo "$result" | grep -q '^| issue | outcome | duration | logs |$' || { echo "$result"; false; }
-  echo "$result" | grep -q '| afk-runner/01 | in-review | 42s | \[01.log\](01.log) |' || { echo "$result"; false; }
-  echo "$result" | grep -q '| afk-runner/02 | FAIL | 18s | \[02.log\](02.log) |' || { echo "$result"; false; }
+  echo "$result" | grep -q '^| issue | outcome | duration | propagation | logs |$' || { echo "$result"; false; }
+  echo "$result" | grep -qF '| afk-runner/01 | in-review | 42s | - | [01.log](01.log) |' || { echo "$result"; false; }
+  echo "$result" | grep -qF '| afk-runner/02 | FAIL | 18s | - | [02.log](02.log) |' || { echo "$result"; false; }
 }
 
 @test "format_summary_md — gate-bearing rows include the review-log link" {
@@ -2189,19 +2192,19 @@ afk-runner|05|afk-runner/05|FAIL|3|'
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
   # AFK rows (clean / blocked / gate-failed) carry both the dispatch
-  # log and the review log.
-  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | [01.log](01.log) [01-review.log](01-review.log) |' \
+  # log and the review log. Propagation field absent → '-' indicator.
+  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | - | [01.log](01.log) [01-review.log](01-review.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/02 | blocked | 36s | [02.log](02.log) [02-review.log](02-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/02 | blocked | 36s | - | [02.log](02.log) [02-review.log](02-review.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/03 | gate-failed | 11s | [03.log](03.log) [03-review.log](03-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/03 | gate-failed | 11s | - | [03.log](03.log) [03-review.log](03-review.log) |' \
     || { echo "$result"; false; }
   # Interrupt-between-stages row (implement-step recorded `in-review`,
   # interrupted before gate) and implement-FAIL row carry only the
   # dispatch log.
-  echo "$result" | grep -qF '| afk-runner/04 | in-review | 17s | [04.log](04.log) |' \
+  echo "$result" | grep -qF '| afk-runner/04 | in-review | 17s | - | [04.log](04.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/05 | FAIL | 3s | [05.log](05.log) |' \
+  echo "$result" | grep -qF '| afk-runner/05 | FAIL | 3s | - | [05.log](05.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -2215,7 +2218,7 @@ afk-runner|05|afk-runner/05|FAIL|3|'
 @test "format_summary_md — empty dispatch list still emits headers" {
   result="$(printf '' | format_summary_md afk-runner 20260506-091245 09:12:45 09:12:46 ended queue-empty)"
   echo "$result" | grep -q '^# AFK runner — afk-runner$' || false
-  echo "$result" | grep -q '^| issue | outcome | duration | logs |$' || false
+  echo "$result" | grep -q '^| issue | outcome | duration | propagation | logs |$' || false
   # No data rows expected.
   ! echo "$result" | grep -q '^| afk-' || false
 }
@@ -2227,7 +2230,8 @@ afk-runner|05|afk-runner/05|FAIL|3|'
     some-feature 20260506-091245 09:12:45 09:13:22 ended queue-empty)"
 
   # Issue column shows binding-native ref (#42); log link uses plain nn (42.log).
-  echo "$result" | grep -qF '| #42 | in-review | 37s | [42.log](42.log) |' \
+  # Propagation field absent in this record → '-' indicator.
+  echo "$result" | grep -qF '| #42 | in-review | 37s | - | [42.log](42.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -2238,9 +2242,9 @@ afk-runner|02|afk-runner/02|review-aborted|38|y'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
-  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted | 12s | [01.log](01.log) |' \
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted | 12s | - | [01.log](01.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/02 | review-aborted | 38s | [02.log](02.log) [02-review.log](02-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/02 | review-aborted | 38s | - | [02.log](02.log) [02-review.log](02-review.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -2260,8 +2264,109 @@ afk-runner|02|afk-runner/02|review-aborted|38|y'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
-  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted (2 attempts) | 12s | [01.log](01.log) |' \
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted (2 attempts) | 12s | - | [01.log](01.log) |' \
     || { echo "$result"; false; }
+}
+
+@test "format_summary_md — propagated dispatch shows indicator column" {
+  input='afk-runner|01|afk-runner/01|done|42|y||propagated'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | propagated | [01.log](01.log)' \
+    || { echo "$result"; false; }
+  # No end-of-run parked section — dispatch was propagated, not parked.
+  ! echo "$result" | grep -q 'Unpulled parked work' || { echo "$result"; false; }
+}
+
+@test "format_summary_md — parked dispatch shows indicator column and end-of-run section" {
+  input='afk-runner|01|afk-runner/01|done|42|y||parked → runner/afk-runner'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | parked → runner/afk-runner | [01.log](01.log)' \
+    || { echo "$result"; false; }
+  # End-of-run section appears.
+  echo "$result" | grep -q '## Unpulled parked work' || { echo "$result"; false; }
+  echo "$result" | grep -q '(1 dispatch).*git pull runner afk-runner' \
+    || { echo "$result"; false; }
+}
+
+@test "format_summary_md — multiple parked dispatches counted per feature" {
+  input='afk-runner|01|afk-runner/01|done|42|y||parked → runner/afk-runner
+afk-runner|02|afk-runner/02|in-review|30|||parked → runner/afk-runner'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -q '## Unpulled parked work' || { echo "$result"; false; }
+  echo "$result" | grep -q '(2 dispatches).*git pull runner afk-runner' \
+    || { echo "$result"; false; }
+}
+
+@test "format_summary_md — no parked section when all dispatches propagated" {
+  input='afk-runner|01|afk-runner/01|done|42|y||propagated
+afk-runner|02|afk-runner/02|FAIL|5|||'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  ! echo "$result" | grep -q 'Unpulled parked work' || { echo "$result"; false; }
+}
+
+# === format_parked_ledger — pure aggregator ================================
+#
+# Pure function that reads dispatch records and emits the "## Unpulled
+# parked work" section for SUMMARY.md. Called at end-of-run. Emits nothing
+# when no dispatch has propagation == parked.
+#
+# Input record schema:
+#   feature|nn|ref|label|duration|review_present|attempt_count|propagation
+# The function only cares about fields 1 (feature) and 8 (propagation).
+
+@test "format_parked_ledger — empty input emits nothing" {
+  result="$(printf '' | format_parked_ledger)"
+  [ -z "$result" ]
+}
+
+@test "format_parked_ledger — one parked dispatch: single feature entry" {
+  input='afk-runner|01|afk-runner/01|done|42|y|1|parked → runner/afk-runner'
+  result="$(printf '%s\n' "$input" | format_parked_ledger)"
+
+  echo "$result" | grep -q '## Unpulled parked work' || { echo "$result"; false; }
+  echo "$result" | grep -q 'afk-runner.*1 dispatch.*git pull runner afk-runner' \
+    || { echo "$result"; false; }
+}
+
+@test "format_parked_ledger — multiple parked dispatches same feature: count aggregated" {
+  input='afk-runner|01|afk-runner/01|done|42|y|1|parked → runner/afk-runner
+afk-runner|02|afk-runner/02|done|31||1|parked → runner/afk-runner'
+  result="$(printf '%s\n' "$input" | format_parked_ledger)"
+
+  echo "$result" | grep -q '## Unpulled parked work' || { echo "$result"; false; }
+  echo "$result" | grep -q 'afk-runner.*2 dispatches.*git pull runner afk-runner' \
+    || { echo "$result"; false; }
+  # Only one feature entry.
+  count="$(echo "$result" | grep -c 'afk-runner')"
+  [ "$count" -eq 1 ]
+}
+
+@test "format_parked_ledger — multiple parked dispatches across features: grouped per feature" {
+  input='afk-runner|01|afk-runner/01|done|42|y|1|parked → runner/afk-runner
+other-feat|01|other-feat/01|done|13||1|parked → runner/other-feat
+afk-runner|02|afk-runner/02|in-review|20||1|parked → runner/afk-runner'
+  result="$(printf '%s\n' "$input" | format_parked_ledger)"
+
+  echo "$result" | grep -q '## Unpulled parked work' || { echo "$result"; false; }
+  echo "$result" | grep -q 'afk-runner.*2 dispatches.*git pull runner afk-runner' \
+    || { echo "$result"; false; }
+  echo "$result" | grep -q 'other-feat.*1 dispatch.*git pull runner other-feat' \
+    || { echo "$result"; false; }
+}
+
+@test "format_parked_ledger — propagated-only records emit nothing" {
+  input='afk-runner|01|afk-runner/01|done|42|y|1|propagated
+other-feat|01|other-feat/01|FAIL|5||1|'
+  result="$(printf '%s\n' "$input" | format_parked_ledger)"
+  [ -z "$result" ]
 }
 
 @test "format_preflight_summary_md — names the failing invariant" {
@@ -2512,8 +2617,8 @@ setup_loop_output_test() {
   grep -q '^# AFK runner — f$' "$RUN_DIR/SUMMARY.md"
   grep -q -- '- Run: 20260506-091245.*started 09:12:45.*ended ' "$RUN_DIR/SUMMARY.md"
   grep -q -- '- Stop reason: queue-empty$' "$RUN_DIR/SUMMARY.md"
-  grep -q '| f/01 | in-review | 42s | \[01.log\](01.log) |' "$RUN_DIR/SUMMARY.md"
-  grep -q '| f/02 | FAIL | 18s | \[02.log\](02.log) |' "$RUN_DIR/SUMMARY.md"
+  grep -qF '| f/01 | in-review | 42s | - | [01.log](01.log) |' "$RUN_DIR/SUMMARY.md"
+  grep -qF '| f/02 | FAIL | 18s | - | [02.log](02.log) |' "$RUN_DIR/SUMMARY.md"
 }
 
 @test "finalize_run — pre-flight abort writes a SUMMARY.md naming the invariant" {
@@ -3477,9 +3582,10 @@ I|gamma|01|gamma/01|in-review|13|'
   [ "$beta_line" -lt "$gamma_line" ]
 
   # Drained features carry per-issue tables nested under their section.
-  echo "$result" | grep -qF '| alpha/01 | done | 42s | [alpha/01.log](alpha/01.log) [alpha/01-review.log](alpha/01-review.log) |' \
+  # Propagation field absent in these records → '-' indicator.
+  echo "$result" | grep -qF '| alpha/01 | done | 42s | - | [alpha/01.log](alpha/01.log) [alpha/01-review.log](alpha/01-review.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| gamma/01 | in-review | 13s | [gamma/01.log](gamma/01.log) |' \
+  echo "$result" | grep -qF '| gamma/01 | in-review | 13s | - | [gamma/01.log](gamma/01.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -3526,7 +3632,7 @@ I|some-feature|42|#42|done|25|y'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:10:35 ended completed)"
 
-  echo "$result" | grep -qF '| #42 | done | 25s | [some-feature/42.log](some-feature/42.log) [some-feature/42-review.log](some-feature/42-review.log) |' \
+  echo "$result" | grep -qF '| #42 | done | 25s | - | [some-feature/42.log](some-feature/42.log) [some-feature/42-review.log](some-feature/42-review.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -3537,9 +3643,9 @@ I|alpha|02|alpha/02|review-aborted|38|y'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:30:00 ended completed)"
 
-  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted | 12s | [alpha/01.log](alpha/01.log) |' \
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted | 12s | - | [alpha/01.log](alpha/01.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| alpha/02 | review-aborted | 38s | [alpha/02.log](alpha/02.log) [alpha/02-review.log](alpha/02-review.log) |' \
+  echo "$result" | grep -qF '| alpha/02 | review-aborted | 38s | - | [alpha/02.log](alpha/02.log) [alpha/02-review.log](alpha/02-review.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -3560,8 +3666,55 @@ I|alpha|01|alpha/01|dispatch-aborted|12||2'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:10:22 ended completed)"
 
-  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted (2 attempts) | 12s | [alpha/01.log](alpha/01.log) |' \
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted (2 attempts) | 12s | - | [alpha/01.log](alpha/01.log) |' \
     || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — propagation indicator column shown per row" {
+  input='F|alpha|drained
+I|alpha|01|alpha/01|done|42|y|1|propagated
+I|alpha|02|alpha/02|done|30|y|1|parked → runner/alpha'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:30:00 ended completed)"
+
+  echo "$result" | grep -qF '| alpha/01 | done | 42s | propagated | [alpha/01.log](alpha/01.log)' \
+    || { echo "$result"; false; }
+  echo "$result" | grep -qF '| alpha/02 | done | 30s | parked → runner/alpha | [alpha/02.log](alpha/02.log)' \
+    || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — parked dispatch produces end-of-run section" {
+  input='F|alpha|drained
+I|alpha|01|alpha/01|done|42|y|1|parked → runner/alpha
+F|beta|drained
+I|beta|01|beta/01|done|13||1|propagated'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:30:00 ended completed)"
+
+  echo "$result" | grep -q '## Unpulled parked work' || { echo "$result"; false; }
+  echo "$result" | grep -q 'alpha.*1 dispatch.*git pull runner alpha' \
+    || { echo "$result"; false; }
+  # beta was propagated — not listed in the parked section.
+  ! echo "$result" | grep -q '\*\*beta\*\*' || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — no parked section when all dispatches propagated" {
+  input='F|alpha|drained
+I|alpha|01|alpha/01|done|42|y|1|propagated'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:30:00 ended completed)"
+
+  ! echo "$result" | grep -q 'Unpulled parked work' || { echo "$result"; false; }
+}
+
+@test "format_end_of_run_table — propagation indicator column shown per row" {
+  input='afk-runner|01|afk-runner/01|done|42||1|propagated
+afk-runner|02|afk-runner/02|done|30||1|parked → runner/afk-runner'
+  result="$(printf '%s\n' "$input" | format_end_of_run_table queue-empty)"
+
+  echo "$result" | head -n 1 | grep -q ' propagation' || { echo "header missing 'propagation'"; echo "$result"; false; }
+  echo "$result" | grep -q 'afk-runner/01.*propagated' || { echo "propagated row missing"; echo "$result"; false; }
+  echo "$result" | grep -q 'afk-runner/02.*parked' || { echo "parked row missing"; echo "$result"; false; }
 }
 
 # === drain_one_feature + run_drain — outer-loop integration ================
@@ -4035,8 +4188,8 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -n "$d" ]
   [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] && [ "$c" -lt "$d" ]
   # Drained features carry per-issue rows; skipped/snapshot-failed do not.
-  grep -qF '| alpha/01 | done | 42s | [alpha/01.log](alpha/01.log) [alpha/01-review.log](alpha/01-review.log) |' "$RUN_DIR/SUMMARY.md"
-  grep -qF '| gamma/01 | in-review | 13s | [gamma/01.log](gamma/01.log) |' "$RUN_DIR/SUMMARY.md"
+  grep -qF '| alpha/01 | done | 42s | - | [alpha/01.log](alpha/01.log) [alpha/01-review.log](alpha/01-review.log) |' "$RUN_DIR/SUMMARY.md"
+  grep -qF '| gamma/01 | in-review | 13s | - | [gamma/01.log](gamma/01.log) |' "$RUN_DIR/SUMMARY.md"
   # Skipped features don't get a per-issue row.
   ! grep -qF '| beta/' "$RUN_DIR/SUMMARY.md"
   ! grep -qF '| delta/' "$RUN_DIR/SUMMARY.md"

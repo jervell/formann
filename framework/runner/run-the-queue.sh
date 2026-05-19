@@ -392,55 +392,75 @@ format_progress_outcome() {
   printf '[%s] %s %s → %s (%ss)\n' "$clock" "$ref" "$stage" "$label" "$duration"
 }
 
-# End-of-run table. Reads `feature|nn|ref|outcome|duration|review_present`
-# records on stdin (one per line — the `review_present` field is optional
-# and unused here). Emits a header row, one row per record, and a trailing
-# `stop reason: <reason>` line. The `issue` column shows the binding-native
-# `ref`; `feature` and `nn` are ignored for this view. Column widths size
-# to the longest entry, bounded below by the header label widths.
+# End-of-run table. Reads `feature|nn|ref|outcome|duration|review_present|attempt_count|propagation`
+# records on stdin (one per line — fields past `outcome` are optional and
+# `review_present` is unused here). Emits a header row, one row per record,
+# and a trailing `stop reason: <reason>` line. The `issue` column shows the
+# binding-native `ref`; `feature` and `nn` are ignored for this view. Column
+# widths size to the longest entry, bounded below by the header label widths.
+# The `propagation` column shows `propagated → host`, `parked → runner/<f>`,
+# or `-` when propagation was not reached.
 format_end_of_run_table() {
   local stop_reason="$1"
   awk -v stop="$stop_reason" '
-    BEGIN { FS="|"; max_ref=length("issue"); max_out=length("outcome"); max_dur=length("duration") }
+    BEGIN { FS="|"; max_ref=length("issue"); max_out=length("outcome"); max_dur=length("duration"); max_prop=length("propagation") }
     NF >= 5 {
       n++;
       refs[n]=$3; outs[n]=$4; durs[n]=$5 "s";
+      props[n]=(NF >= 8 && $8 != "") ? $8 : "-";
       if (length(refs[n]) > max_ref) max_ref = length(refs[n]);
       if (length(outs[n]) > max_out) max_out = length(outs[n]);
       if (length(durs[n]) > max_dur) max_dur = length(durs[n]);
+      if (length(props[n]) > max_prop) max_prop = length(props[n]);
     }
     END {
-      fmt = sprintf("%%-%ds  %%-%ds  %%-%ds\n", max_ref, max_out, max_dur);
-      printf fmt, "issue", "outcome", "duration";
-      for (i = 1; i <= n; i++) printf fmt, refs[i], outs[i], durs[i];
+      fmt = sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds\n", max_ref, max_out, max_dur, max_prop);
+      printf fmt, "issue", "outcome", "duration", "propagation";
+      for (i = 1; i <= n; i++) printf fmt, refs[i], outs[i], durs[i], props[i];
       printf "stop reason: %s\n", stop;
     }
   '
 }
 
 # SUMMARY.md content for a normal run (loop drained or interrupted).
-# Reads `ref|outcome|duration|review_present` records on
-# stdin (the `review_present` field is optional — when `y`, the row's
-# logs cell adds a `<NN>-review.log` link alongside `<NN>.log`).
+# Reads `feature|nn|ref|outcome|duration|review_present|attempt_count|propagation`
+# records on stdin (fields past `outcome` are optional — when `review_present`
+# is `y`, the row's logs cell adds a `<NN>-review.log` link alongside `<NN>.log`;
+# `propagation` is `propagated`, `parked`, or empty). The `propagation` column
+# shows `propagated → host`, `parked → runner/<feature>`, or `-` when empty.
+# An end-of-run "## Unpulled parked work" section follows the table whenever
+# any dispatch parked; it is omitted entirely when no dispatch parked.
 # `end_state` is the verb used in the run line — "ended" or "interrupted".
 format_summary_md() {
   local feature="$1" ts="$2" start_clock="$3" end_clock="$4" end_state="$5" stop_reason="$6"
   printf '# AFK runner — %s\n\n' "$feature"
   printf -- '- Run: %s (started %s, %s %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock"
   printf -- '- Stop reason: %s\n\n' "$stop_reason"
-  printf '| issue | outcome | duration | logs |\n'
-  printf '|-------|---------|----------|------|\n'
+  printf '| issue | outcome | duration | propagation | logs |\n'
+  printf '|-------|---------|----------|-------------|------|\n'
   awk -F'|' '
     NF >= 5 {
       feature=$1; nn=$2; ref=$3; out=$4; dur=$5;
       review=(NF >= 6 ? $6 : "");
       attempt_count=(NF >= 7 ? $7+0 : 1);
+      prop=(NF >= 8 && $8 != "") ? $8 : "-";
       if (attempt_count > 1) { out = out " (" attempt_count " attempts)" }
       logs = sprintf("[%s.log](%s.log)", nn, nn);
       if (review == "y") {
         logs = logs " [" nn "-review.log](" nn "-review.log)";
       }
-      printf "| %s | %s | %ss | %s |\n", ref, out, dur, logs;
+      printf "| %s | %s | %ss | %s | %s |\n", ref, out, dur, prop, logs;
+      if (prop ~ /^parked/) { parked_features[feature]++ }
+    }
+    END {
+      if (length(parked_features) > 0) {
+        printf "\n## Unpulled parked work\n\n";
+        for (f in parked_features) {
+          count = parked_features[f];
+          suffix = (count == 1) ? "dispatch" : "dispatches";
+          printf "- **%s** (%d %s): `git pull runner %s`\n", f, count, suffix, f;
+        }
+      }
     }'
 }
 
@@ -455,13 +475,16 @@ format_summary_md() {
 #   F|<feature>|drained
 #   F|<feature>|skipped:<reason>
 #   F|<feature>|feature-snapshot-failed
-#   I|<ref>|<outcome>|<duration>|<review_present>
+#   I|<feature>|<nn>|<ref>|<outcome>|<duration>|<review_present>|<attempt_count>|<propagation>
 #
 # `I` rows belong to the most recent preceding `F|<slug>|drained` section.
 # `review_present` is `y` when the iteration produced a `<ref>-review.log`
-# alongside `<ref>.log`. Log paths in multi-feature mode embed the feature
-# segment of the ref (`<feature>/<NN>.log`) so per-issue artifacts don't
-# collide across features that share `<NN>`.
+# alongside `<ref>.log`. `propagation` is `propagated`, `parked`, or empty.
+# Log paths in multi-feature mode embed the feature segment of the ref
+# (`<feature>/<NN>.log`) so per-issue artifacts don't collide across features
+# that share `<NN>`. The `propagation` column shows the per-dispatch indicator;
+# an end-of-run "## Unpulled parked work" section follows when any dispatch
+# parked, and is omitted entirely when no dispatch parked.
 format_multi_feature_summary_md() {
   local ts="$1" start_clock="$2" end_clock="$3" end_state="$4" stop_reason="$5"
   printf '# AFK runner — multi-feature drain\n\n'
@@ -469,8 +492,8 @@ format_multi_feature_summary_md() {
   printf -- '- Stop reason: %s\n\n' "$stop_reason"
   awk -F'|' '
     function emit_table_header() {
-      printf "| issue | outcome | duration | logs |\n";
-      printf "|-------|---------|----------|------|\n";
+      printf "| issue | outcome | duration | propagation | logs |\n";
+      printf "|-------|---------|----------|-------------|------|\n";
     }
     function close_drained_section() {
       if (in_drained) {
@@ -507,17 +530,55 @@ format_multi_feature_summary_md() {
       feature=$2; nn=$3; ref=$4; out=$5; dur=$6;
       review=(NF >= 7 ? $7 : "");
       attempt_count=(NF >= 8 ? $8+0 : 1);
+      prop=(NF >= 9 && $9 != "") ? $9 : "-";
       if (attempt_count > 1) { out = out " (" attempt_count " attempts)" }
       logs = sprintf("[%s/%s.log](%s/%s.log)", feature, nn, feature, nn);
       if (review == "y") {
         logs = logs " [" feature "/" nn "-review.log](" feature "/" nn "-review.log)";
       }
-      printf "| %s | %s | %ss | %s |\n", ref, out, dur, logs;
+      printf "| %s | %s | %ss | %s | %s |\n", ref, out, dur, prop, logs;
+      if (prop ~ /^parked/) { parked_features[feature]++ }
       next;
     }
     END {
       if (in_drained) printf "\n";
+      if (length(parked_features) > 0) {
+        printf "\n## Unpulled parked work\n\n";
+        for (f in parked_features) {
+          count = parked_features[f];
+          suffix = (count == 1) ? "dispatch" : "dispatches";
+          printf "- **%s** (%d %s): `git pull runner %s`\n", f, count, suffix, f;
+        }
+      }
     }'
+}
+
+# Pure aggregator for the parked-work ledger. Reads dispatch records
+# (`feature|nn|ref|label|duration|review_present|attempt_count|propagation`)
+# on stdin and emits the "## Unpulled parked work" SUMMARY.md section when
+# one or more dispatches have `propagation == parked`. Emits nothing when no
+# dispatch parked. Groups by feature; counts per-feature parked dispatches.
+# Also used for the per-dispatch stdout reminder: pipe a single parked record
+# to get the one-line feature entry.
+#
+# Output (when parked dispatches exist):
+#   ## Unpulled parked work
+#
+#   - **<feature>** (<N> dispatch[es]): `git pull runner <feature>`
+#   …one line per feature with at least one parked dispatch…
+format_parked_ledger() {
+  awk -F'|' '
+    NF >= 8 && $8 ~ /^parked/ { parked[$1]++ }
+    END {
+      if (length(parked) == 0) exit 0;
+      printf "\n## Unpulled parked work\n\n";
+      for (f in parked) {
+        count = parked[f];
+        suffix = (count == 1) ? "dispatch" : "dispatches";
+        printf "- **%s** (%d %s): `git pull runner %s`\n", f, count, suffix, f;
+      }
+    }
+  '
 }
 
 # SUMMARY.md content for a pre-flight abort. Replaces the per-issue
@@ -665,16 +726,18 @@ stop_runner_log_capture() {
   RUNNER_LOG_FIFO=""
 }
 
-# Append a `feature|nn|ref|label|duration|review_present|attempt_count` record
-# to RUN_DISPATCHES. `label` is the iteration's combined outcome — one of
+# Append a `feature|nn|ref|label|duration|review_present|attempt_count|propagation`
+# record to RUN_DISPATCHES. `label` is the iteration's combined outcome — one of
 # `done | blocked | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL`.
 # `review_present` is `y` when the iteration produced a `<NN>-review.log`.
 # `attempt_count` (default 1) is the data hook for the retry slice; the
 # formatters render `(N attempts)` only when N > 1, so it is silent here.
+# `propagation` is the value of $RUNNER_LAST_PROPAGATION at record time
+# (`propagated`, `parked`, or empty when propagation was not reached).
 record_dispatch() {
   local feature="$1" nn="$2" ref="$3" label="$4" duration="$5" review="${6:-}" \
         attempt_count="${7:-1}"
-  RUN_DISPATCHES+=("$feature|$nn|$ref|$label|$duration|$review|$attempt_count")
+  RUN_DISPATCHES+=("$feature|$nn|$ref|$label|$duration|$review|$attempt_count|${RUNNER_LAST_PROPAGATION}")
 }
 
 # Emit RUN_DISPATCHES records on stdout (one per line) for the table /
@@ -1724,7 +1787,7 @@ MSG
     printf '[%s] propagated → host\n' "$(now_clock)"
   else
     RUNNER_LAST_PROPAGATION="parked"
-    printf '[%s] parked → runner/%s\n' "$(now_clock)" "$branch"
+    printf '[%s] parked → runner/%s  (git pull runner %s)\n' "$(now_clock)" "$branch" "$branch"
   fi
 }
 
