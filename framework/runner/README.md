@@ -87,11 +87,12 @@ When a dispatch container exits with a transport-class failure (API 5xx or 429, 
 |---------|--------------------------|
 | 1 → 2   | 30 s                     |
 | 2 → 3   | 90 s                     |
-| (max 3 attempts total) | —          |
+| 3 → 4   | 240 s                    |
+| (max 4 attempts total) | —          |
 
 The wait is a 1-second poll loop so `Ctrl-C` / `SIGTERM` exits immediately rather than blocking until the sleep expires.
 
-**Defensive guard:** if the host repo `HEAD` advances between attempts (a prior attempt committed partial work), retries are suppressed and the original failure is propagated. The intent is to avoid double-applying work.
+**Defensive guard:** if the runner-checkout's `HEAD` advances between attempts (a prior attempt committed partial work), retries are suppressed and the original failure is propagated. The intent is to avoid double-applying work. The check inspects the runner-checkout under `.runner-state/checkout/`, not the host repo.
 
 **Per-attempt logs:** each failed attempt's log is preserved as `<log>.attempt-<N>` alongside the primary log file, so the maintainer can inspect what each attempt produced.
 
@@ -107,7 +108,7 @@ Set `RUNNER_DISABLE_TRANSPORT_RETRY=1` to skip the retry layer entirely (useful 
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS` | `3` | Maximum total attempts (including the first) |
+| `RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS` | `4` | Maximum total attempts (including the first) |
 | `RUNNER_TRANSPORT_RETRY_BACKOFFS` | `"30 90 240"` | Space-separated list of wait seconds for attempts 1→2, 2→3, 3→4, … |
 | `RUNNER_DISABLE_TRANSPORT_RETRY` | `0` | Set to `1` to bypass all retry logic |
 

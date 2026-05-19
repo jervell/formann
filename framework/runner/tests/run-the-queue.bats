@@ -892,6 +892,16 @@ setup_ensure_checkout_test() {
   git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m init
 
+  # ensure_runner_checkout's tail step (refresh_runner_checkout_install_products)
+  # unconditionally invokes $HOST_REPO/installer/install.sh. Stub it to a no-op
+  # so this test stays focused on the clean-untracked behavior it pins.
+  mkdir -p "$HOST_REPO/installer"
+  cat >"$HOST_REPO/installer/install.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$HOST_REPO/installer/install.sh"
+
   # Pre-clone so ensure_runner_checkout exercises the sync path, not the
   # initial-clone path. The sync is where the regression lived.
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
@@ -1123,6 +1133,17 @@ setup_loop_halt_test() {
   git -C "$HOST_REPO" init --quiet --initial-branch="$TARGET_FEATURE"
   git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m init
+
+  # ensure_runner_checkout's tail step (refresh_runner_checkout_install_products)
+  # unconditionally invokes $HOST_REPO/installer/install.sh. Stub it to a no-op
+  # so the unmocked ensure_runner_checkout path this test deliberately exercises
+  # doesn't trip on a missing installer.
+  mkdir -p "$HOST_REPO/installer"
+  cat >"$HOST_REPO/installer/install.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$HOST_REPO/installer/install.sh"
 
   mkdir -p "$(dirname "$HOST_CHECKOUT")"
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
@@ -2751,7 +2772,13 @@ setup_abort_test() {
   install_afk_snapshots in-review
 
   propagate_to_host() { return 0; }
-  run_gate_container() { return 137; }
+  run_gate_container() {
+    # Non-transport gate failure (e.g. OOM kill). The log must carry a
+    # non-whitespace line so is_transport_crash doesn't misclassify the empty
+    # log as a transport crash and flip the verdict to review-aborted.
+    echo "Killed" >"$2"
+    return 137
+  }
 
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
@@ -2761,6 +2788,10 @@ setup_abort_test() {
 
   [ -f "$HOST_ABORT_DIR/f/01" ]
   grep -q '^dispatch: gate$' "$HOST_ABORT_DIR/f/01"
+  # Pin the gate-failed (non-transport) verdict explicitly — without these the
+  # test passes silently against the review-aborted path too.
+  grep -q '^type: technical$' "$HOST_ABORT_DIR/f/01"
+  [[ "${RUN_DISPATCHES[0]}" == *"|gate-failed|"* ]]
 }
 
 @test "dispatch_one — gate propagation halt writes abort flag with dispatch: gate" {

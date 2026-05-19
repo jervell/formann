@@ -65,8 +65,9 @@ RUNNER_KILL_GRACE_SECONDS=10
 # Transport-crash retry policy. A ~4.5-minute Anthropic API blip (observed
 # 2026-05-16) crashed four sequential dispatches. The 30+90+240=360s window
 # comfortably covers the observed ~270s blip; the step sizes keep mid-blip
-# waits short while the total budget stays bounded under 6 minutes.
-RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=3
+# waits short while the total budget stays bounded under 6 minutes. Four
+# attempts total: initial + three retries spaced by the backoff schedule.
+RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=4
 RUNNER_TRANSPORT_RETRY_BACKOFFS="30 90 240"
 # When set to 1, the wrapper short-circuits to a single attempt regardless of
 # is_transport_crash's verdict — useful for testing and declared-outage
@@ -1514,8 +1515,11 @@ with_transport_retry() {
       fi
     fi
 
-    # Select the backoff duration for this attempt (attempt-1 is the 0-based
-    # index into RUNNER_TRANSPORT_RETRY_BACKOFFS).
+    # Select the wait before the next attempt. `attempt` is 1-based and
+    # awk fields are 1-based, so attempt=1 picks field 1 (wait before
+    # attempt 2), attempt=2 picks field 2 (wait before attempt 3), etc.
+    # If the configured list is shorter than max, fall back to the final
+    # default backoff so the schedule never runs off the end.
     local backoff
     backoff="$(echo "$backoffs" | awk -v n="$attempt" '{print $n}')"
     backoff="${backoff:-240}"
