@@ -65,6 +65,18 @@ _Avoid_: "execution", "agent run"
 **Dockerfile**:
 Consumer-owned. Lives in the **Consumer** repo (not Formann), because container contents are project-specific (toolchain, build commands). The **Installer** scaffolds an initial one.
 
+**Runner-checkout**:
+The separate git clone at `.runner-state/checkout/` that the **Runner** mounts into the sandbox container as `/repo`. Distinct from the **Consumer**'s host repo: the **Dispatch** has no access to the host's `.git/`, working tree, or `~/`. The **Parking ref** is where the **Runner-checkout**'s committed work lands on the host side.
+_Avoid_: "runner clone", "sandbox repo"
+
+**Parking ref**:
+Per-feature ref (`refs/remotes/runner/<feature>`) in the **Consumer**'s repo where the **Runner** publishes every **Dispatch**'s output. The **Runner**'s authoritative chain for the feature; advances linearly across dispatches. The maintainer pulls from this ref via `git pull runner <feature>` to bring runner work into the local feature branch.
+_Avoid_: "shadow branch", "runner branch"
+
+**Runner remote**:
+The local git remote named `runner` in the **Consumer**'s repo, pointing at `.runner-state/checkout/`. Registered lazily on the **Runner**'s first invocation. The **Parking ref**s live under this remote (`refs/remotes/runner/<feature>`).
+_Avoid_: "runner clone" (that's the **Runner-checkout** at `.runner-state/checkout/`, a separate concept).
+
 ### Installer
 
 **Installer**:
