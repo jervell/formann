@@ -187,14 +187,14 @@ cat >"$tmpfile" <<'EOF'
 - #5
 - #8
 EOF
-body-edit <N> "Blocked by" "$tmpfile"
+docs/formann/issue-tracker/body-edit <N> "Blocked by" "$tmpfile"
 rm -f "$tmpfile"
 ```
 
 The content uses GitHub's native `#N` autolink form — not the portable `<feature>/<N>` form. `body-edit` replaces the entire `## Blocked by` section; surrounding sections are preserved verbatim. To clear all blockers, pass `/dev/null`:
 
 ```bash
-body-edit <N> "Blocked by" /dev/null
+docs/formann/issue-tracker/body-edit <N> "Blocked by" /dev/null
 ```
 
 ### Publish the agent brief
@@ -208,7 +208,7 @@ tmpfile=$(mktemp)
 cat >"$tmpfile" <<'EOF'
 <brief content>
 EOF
-body-edit <N> "Agent Brief" "$tmpfile"
+docs/formann/issue-tracker/body-edit <N> "Agent Brief" "$tmpfile"
 rm -f "$tmpfile"
 ```
 
@@ -233,14 +233,14 @@ tmpfile=$(mktemp)
 cat >"$tmpfile" <<'EOF'
 <triage notes content>
 EOF
-body-edit <N> "Triage Notes" "$tmpfile"
+docs/formann/issue-tracker/body-edit <N> "Triage Notes" "$tmpfile"
 rm -f "$tmpfile"
 ```
 
 To remove the section when the issue transitions out of `needs-info`, pass `/dev/null` as the new content:
 
 ```bash
-body-edit <N> "Triage Notes" /dev/null
+docs/formann/issue-tracker/body-edit <N> "Triage Notes" /dev/null
 ```
 
 `body-edit` with empty new-content removes the section heading and its contents; surrounding sections are preserved verbatim.
@@ -512,8 +512,8 @@ Other bindings (local-markdown) keep their own `## Parent` convention; this omis
 `tracker-snapshot` is the machine-readable interface for the github-issues binding. It requires `jq` on PATH. Usage:
 
 ```
-tracker-snapshot --list
-tracker-snapshot <feature-slug>
+docs/formann/issue-tracker/tracker-snapshot --list
+docs/formann/issue-tracker/tracker-snapshot <feature-slug>
 ```
 
 Override the GitHub repo via `GH_TRACKER_REPO=owner/repo` (used by tests; production auto-detects from the `origin` git remote).

@@ -1,0 +1,4 @@
+Error: read ECONNRESET
+    at TLSSocket.onConnectEnd (_tls_wrap.js:1495:19)
+    at Object.onceWrapper (events.js:422:26)
+exit status 1

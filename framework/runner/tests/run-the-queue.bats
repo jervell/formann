@@ -171,6 +171,333 @@ snapshot_one() {
   [ "$result" = "gate-failed" ]
 }
 
+@test "classify_gate_outcome — transport-crash=true + nonzero exit is review-aborted" {
+  pre="$(snapshot_one f/01 in-review)"
+  post="$(snapshot_one f/01 in-review)"
+  result="$(classify_gate_outcome "$pre" "$post" f/01 1 true)"
+  [ "$result" = "review-aborted" ]
+}
+
+@test "classify_gate_outcome — transport-crash=true does not override clean/blocked/pre-status guard" {
+  # clean: exit 0 + post=done → still clean, transport-crash irrelevant.
+  pre="$(snapshot_one f/01 in-review)"
+  post="$(snapshot_one f/01 done)"
+  [ "$(classify_gate_outcome "$pre" "$post" f/01 0 true)" = "clean" ]
+  # blocked: exit 0 + post=in-review → still blocked.
+  post="$(snapshot_one f/01 in-review)"
+  [ "$(classify_gate_outcome "$pre" "$post" f/01 0 true)" = "blocked" ]
+  # pre-status guard: pre=ready-for-agent → gate-failed (not review-aborted).
+  pre="$(snapshot_one f/01 ready-for-agent)"
+  post="$(snapshot_one f/01 done)"
+  [ "$(classify_gate_outcome "$pre" "$post" f/01 1 true)" = "gate-failed" ]
+}
+
+@test "classify_outcome — transport-crash=true + failure is dispatch-aborted" {
+  pre="$(snapshot_one f/01 ready-for-agent)"
+  post="$(snapshot_one f/01 ready-for-agent)"
+  result="$(classify_outcome "$pre" "$post" f/01 true)"
+  [ "$result" = "dispatch-aborted" ]
+}
+
+@test "classify_outcome — transport-crash=true does not override success" {
+  pre="$(snapshot_one f/01 ready-for-agent)"
+  post="$(snapshot_one f/01 in-review)"
+  result="$(classify_outcome "$pre" "$post" f/01 true)"
+  [ "$result" = "success" ]
+}
+
+# === is_transport_crash =======================================================
+#
+# Pure predicate: returns exit 0 when a dispatch log carries a transport-class
+# failure signature (empty/whitespace log, API 5xx/429 error, network errors).
+
+@test "is_transport_crash — empty log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/empty.log"
+}
+
+@test "is_transport_crash — whitespace-only log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/whitespace-only.log"
+}
+
+@test "is_transport_crash — API 5xx log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/5xx.log"
+}
+
+@test "is_transport_crash — API 429 log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/429.log"
+}
+
+@test "is_transport_crash — fetch failed log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/fetch-failed.log"
+}
+
+@test "is_transport_crash — ECONNRESET log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/econnreset.log"
+}
+
+@test "is_transport_crash — ETIMEDOUT log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/etimedout.log"
+}
+
+@test "is_transport_crash — getaddrinfo log is a crash" {
+  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
+  is_transport_crash "$HERE/fixtures/transport-crashes/getaddrinfo.log"
+}
+
+@test "is_transport_crash — model-produced output without crash signature is not a crash" {
+  local log_file="$BATS_TEST_TMPDIR/model-exit.log"
+  printf 'claude: The brief is insufficient. Cannot implement without a clearer spec.\nexit status 0\n' >"$log_file"
+  ! is_transport_crash "$log_file"
+}
+
+@test "is_transport_crash — intentional prompt-error exit is not a crash" {
+  local log_file="$BATS_TEST_TMPDIR/prompt-error.log"
+  printf 'Error: prompt file not found: /path/to/review-and-gate.md\nexit status 1\n' >"$log_file"
+  ! is_transport_crash "$log_file"
+}
+
+# === with_transport_retry =====================================================
+#
+# Wraps a sandbox dispatch with bounded exponential backoff on transport-class
+# failures. Sets TRANSPORT_RETRY_ATTEMPTS to the actual attempt count. All
+# tests shim `sleep` to a no-op and use small backoff values
+# (RUNNER_TRANSPORT_RETRY_BACKOFFS="1 2 3") so the suite runs in seconds.
+# The schedule is verified by counting the number of `sleep 1` calls.
+
+_setup_retry_test() {
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  mkdir -p "$HOST_CHECKOUT"
+  git -C "$HOST_CHECKOUT" init --quiet
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m init
+  RUNNER_INTERRUPTED=0
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=3
+  RUNNER_TRANSPORT_RETRY_BACKOFFS="1 2 3"
+  RUNNER_DISABLE_TRANSPORT_RETRY=0
+  TRANSPORT_RETRY_ATTEMPTS=0
+  SLEEP_ARGS_FILE="$BATS_TEST_TMPDIR/sleep-args"
+  : >"$SLEEP_ARGS_FILE"
+  sleep() { echo "$@" >>"$SLEEP_ARGS_FILE"; }
+}
+
+@test "with_transport_retry — first-attempt success: no retry, no log archival, attempts=1" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() { : >"$1"; return 0; }
+
+  with_transport_retry "$log_file" fake_dispatch
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ ! -f "${log_file}.attempt-1" ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "with_transport_retry — transport crash then success: .attempt-1 archived, schedule honoured, attempts=2" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  local call_count=0
+  fake_dispatch() {
+    call_count=$(( call_count + 1 ))
+    if [ "$call_count" -eq 1 ]; then
+      printf 'API Error: 500 Internal server error.\n' >"$1"
+      return 1
+    fi
+    printf 'success output\n' >"$1"
+    return 0
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 2 ]
+  # attempt-1 archived, carries the transport-crash content
+  [ -f "${log_file}.attempt-1" ]
+  grep -q "500" "${log_file}.attempt-1"
+  # No second archived log — final attempt succeeded
+  [ ! -f "${log_file}.attempt-2" ]
+  # Backoff for attempt 1 is RUNNER_TRANSPORT_RETRY_BACKOFFS[0]=1 → 1 sleep call
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 1 ]
+  grep -qx "1" "$SLEEP_ARGS_FILE"
+}
+
+@test "with_transport_retry — three transport crashes: budget exhausted, two archived logs, final log at log_file, attempts=3" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf 'API Error: 500 Internal server error.\n' >"$1"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 3 ]
+  # Attempts 1 and 2 archived; final attempt's log stays at $log_file
+  [ -f "${log_file}.attempt-1" ]
+  [ -f "${log_file}.attempt-2" ]
+  [ ! -f "${log_file}.attempt-3" ]
+  [ -f "$log_file" ]
+  # Sleep calls: backoff[0]=1 (attempt 1) + backoff[1]=2 (attempt 2) = 3 total
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 3 ]
+}
+
+@test "with_transport_retry — non-transport failure: no retry, exit code passed through, no archival" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf 'Error: brief is insufficient.\n' >"$1"
+    return 42
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 42 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ ! -f "${log_file}.attempt-1" ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "with_transport_retry — RUNNER_INTERRUPTED during backoff: returns without consuming another attempt" {
+  _setup_retry_test
+  # The sleep shim sets RUNNER_INTERRUPTED=1, simulating Ctrl-C mid-backoff.
+  sleep() {
+    echo "$@" >>"$SLEEP_ARGS_FILE"
+    RUNNER_INTERRUPTED=1
+  }
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf 'API Error: 500 Internal server error.\n' >"$1"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  # Returned non-zero (the dispatch's exit code); interrupt not disguised as abort
+  [ "$rc" -ne 0 ]
+  # Only one attempt consumed — interrupt fired during the first backoff
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ "$RUNNER_INTERRUPTED" -eq 1 ]
+}
+
+@test "with_transport_retry — new-commits guard: HEAD advances between attempts, wrapper refuses retry" {
+  _setup_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  # The dispatch function advances HOST_CHECKOUT's HEAD, simulating partial work.
+  fake_dispatch() {
+    printf 'API Error: 500 Internal server error.\n' >"$1"
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "partial work"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  # Only one attempt — guard fired after noticing HEAD advanced
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  # No sleep — guard fires before the backoff loop
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "with_transport_retry — RUNNER_DISABLE_TRANSPORT_RETRY=1: single attempt regardless of crash" {
+  _setup_retry_test
+  RUNNER_DISABLE_TRANSPORT_RETRY=1
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf 'API Error: 500 Internal server error.\n' >"$1"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ ! -f "${log_file}.attempt-1" ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "dispatch_one — retry-then-success: second attempt succeeds, .attempt-1 archived, no abort flag" {
+  setup_dispatch_one_test
+  # Shim sleep to no-op and use small backoffs so the test runs in milliseconds.
+  sleep() { :; }
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=3
+  RUNNER_TRANSPORT_RETRY_BACKOFFS="0 0 0"
+
+  # Restore the real with_transport_retry wiring in run_dispatch_container.
+  # (setup_dispatch_one_test replaces it with a simple commit-and-return mock.)
+  SANDBOX_CALL_COUNT_FILE="$BATS_TEST_TMPDIR/sandbox-calls"
+  echo 0 >"$SANDBOX_CALL_COUNT_FILE"
+
+  run_sandbox_container() {
+    local lf="$1"
+    local n
+    n=$(( $(cat "$SANDBOX_CALL_COUNT_FILE") + 1 ))
+    echo "$n" >"$SANDBOX_CALL_COUNT_FILE"
+    if [ "$n" -eq 1 ]; then
+      # First implement attempt: transport crash
+      printf 'API Error: 500 Internal server error.\n' >"$lf"
+      return 1
+    fi
+    # Second implement attempt: success — commit so impl_has_runner_commits=1
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: f/01 (test)"
+    : >"$lf"
+    return 0
+  }
+
+  run_dispatch_container() {
+    local ref="$1" log_file="$2"
+    with_transport_retry "$log_file" run_sandbox_container \
+      claude -p "/implement $ref" --dangerously-skip-permissions
+  }
+  # keep setup_dispatch_one_test's run_gate_container (no-op returning 0)
+  propagate_to_host() { :; }
+
+  RUNNER_INTERRUPTED=0
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  local dispatch_rc=$?
+  set -e
+
+  # Implement succeeded (issue flipped to in-review); gate ran (blocked — snapshot
+  # didn't advance further, so classify_gate_outcome returns blocked / clean).
+  [ "$dispatch_rc" -eq 0 ]
+  [ "$RUNNER_LAST_OUTCOME" = "success" ]
+
+  # .attempt-1 was archived during the retry backoff
+  [ -f "$TEST_RUN_DIR/01.log.attempt-1" ]
+
+  # No abort flag written for a successful dispatch
+  [ ! -f "$HOST_ABORT_DIR/f/01" ]
+
+  # Verify the sandbox was called at least twice (crash attempt + success attempt)
+  [ "$(cat "$SANDBOX_CALL_COUNT_FILE")" -ge 2 ]
+}
+
 # === check_gate_prompt =====================================================
 #
 # Pre-flight invariant: the gate prompt file must exist on disk before
@@ -565,6 +892,16 @@ setup_ensure_checkout_test() {
   git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m init
 
+  # ensure_runner_checkout's tail step (refresh_runner_checkout_install_products)
+  # unconditionally invokes $HOST_REPO/installer/install.sh. Stub it to a no-op
+  # so this test stays focused on the clean-untracked behavior it pins.
+  mkdir -p "$HOST_REPO/installer"
+  cat >"$HOST_REPO/installer/install.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$HOST_REPO/installer/install.sh"
+
   # Pre-clone so ensure_runner_checkout exercises the sync path, not the
   # initial-clone path. The sync is where the regression lived.
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
@@ -796,6 +1133,17 @@ setup_loop_halt_test() {
   git -C "$HOST_REPO" init --quiet --initial-branch="$TARGET_FEATURE"
   git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m init
+
+  # ensure_runner_checkout's tail step (refresh_runner_checkout_install_products)
+  # unconditionally invokes $HOST_REPO/installer/install.sh. Stub it to a no-op
+  # so the unmocked ensure_runner_checkout path this test deliberately exercises
+  # doesn't trip on a missing installer.
+  mkdir -p "$HOST_REPO/installer"
+  cat >"$HOST_REPO/installer/install.sh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$HOST_REPO/installer/install.sh"
 
   mkdir -p "$(dirname "$HOST_CHECKOUT")"
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
@@ -1535,7 +1883,7 @@ setup_eligibility_test() {
   [ "$RUNNER_LAST_OUTCOME" = "success" ]
   # One record, combined label `done`, review-log marker present.
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
   # Two propagations: post-implement and post-gate.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
@@ -1596,7 +1944,7 @@ setup_eligibility_test() {
   # Blocked is operationally clean — counter resets, no failure.
   [ "$RUNNER_LAST_OUTCOME" = "success" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y|"* ]]
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
@@ -1611,7 +1959,10 @@ setup_eligibility_test() {
     return 0
   }
   run_gate_container() {
-    # Container crashed — nonzero exit.
+    # Container crashed (OOM kill) — nonzero exit. We must write a non-whitespace
+    # line to the log ($2) so is_transport_crash doesn't misclassify the empty log
+    # as a transport crash and flip the verdict to review-aborted.
+    echo "Killed" >"$2"
     return 137
   }
 
@@ -1625,7 +1976,7 @@ setup_eligibility_test() {
   [ "$rc" -ne 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
   # Only the post-implement propagation ran; the gate-failed branch
   # does not propagate.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
@@ -1650,7 +2001,7 @@ setup_eligibility_test() {
 
   [ "$rc" -ne 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "failure" ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
 }
 
 @test "dispatch_one — RUNNER_INTERRUPTED between implement and gate prevents gate dispatch" {
@@ -1741,7 +2092,7 @@ setup_eligibility_test() {
   [ "$rc" -eq 0 ]
   [ "$RUNNER_LAST_OUTCOME" = "success" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y|"* ]]
   # Both the post-implement and post-gate propagations ran — the gate's
   # tracker commit reaches host.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
@@ -1894,6 +2245,39 @@ afk-runner|05|afk-runner/05|FAIL|3|'
 
   # Issue column shows binding-native ref (#42); log link uses plain nn (42.log).
   echo "$result" | grep -qF '| #42 | in-review | 37s | [42.log](42.log) |' \
+    || { echo "$result"; false; }
+}
+
+@test "format_summary_md — dispatch-aborted and review-aborted render as outcome labels" {
+  # dispatch-aborted has no review log; review-aborted does (gate stage ran).
+  input='afk-runner|01|afk-runner/01|dispatch-aborted|12|
+afk-runner|02|afk-runner/02|review-aborted|38|y'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted | 12s | [01.log](01.log) |' \
+    || { echo "$result"; false; }
+  echo "$result" | grep -qF '| afk-runner/02 | review-aborted | 38s | [02.log](02.log) [02-review.log](02-review.log) |' \
+    || { echo "$result"; false; }
+}
+
+@test "format_summary_md — attempt_count=1 omits the attempts suffix" {
+  # When attempt_count is present but equals 1, no suffix is appended.
+  input='afk-runner|01|afk-runner/01|dispatch-aborted|12||1'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted | 12s |' \
+    || { echo "$result"; false; }
+  ! echo "$result" | grep -q 'attempts' || { echo "$result"; false; }
+}
+
+@test "format_summary_md — attempt_count > 1 appends the attempts suffix" {
+  input='afk-runner|01|afk-runner/01|dispatch-aborted|12||2'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted (2 attempts) | 12s | [01.log](01.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -2292,6 +2676,13 @@ setup_abort_test() {
   [[ "$log_line" != *"$HOST_REPO"* ]]
 }
 
+@test "write_abort_flag — type: transport written when 6th arg is transport" {
+  setup_abort_test
+  local flag_file="$HOST_ABORT_DIR/f/01"
+  write_abort_flag "f" "01" "gate" 1 "$HOST_REPO/.runner-state/runs/ts/01-review.log" "transport"
+  grep -q '^type: transport$' "$flag_file"
+}
+
 @test "dispatch_one — implement-stuck: classifier failure + eligible post-status writes abort flag" {
   setup_abort_test
   # Snapshots: status stays at ready-for-agent (eligible=true) → classifier=failure.
@@ -2381,7 +2772,13 @@ setup_abort_test() {
   install_afk_snapshots in-review
 
   propagate_to_host() { return 0; }
-  run_gate_container() { return 137; }
+  run_gate_container() {
+    # Non-transport gate failure (e.g. OOM kill). The log must carry a
+    # non-whitespace line so is_transport_crash doesn't misclassify the empty
+    # log as a transport crash and flip the verdict to review-aborted.
+    echo "Killed" >"$2"
+    return 137
+  }
 
   RUNNER_LAST_OUTCOME=""
   RUN_DISPATCHES=()
@@ -2391,6 +2788,10 @@ setup_abort_test() {
 
   [ -f "$HOST_ABORT_DIR/f/01" ]
   grep -q '^dispatch: gate$' "$HOST_ABORT_DIR/f/01"
+  # Pin the gate-failed (non-transport) verdict explicitly — without these the
+  # test passes silently against the review-aborted path too.
+  grep -q '^type: technical$' "$HOST_ABORT_DIR/f/01"
+  [[ "${RUN_DISPATCHES[0]}" == *"|gate-failed|"* ]]
 }
 
 @test "dispatch_one — gate propagation halt writes abort flag with dispatch: gate" {
@@ -2450,6 +2851,69 @@ setup_abort_test() {
   set -e
 
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
+}
+
+@test "dispatch_one — transport crash on implement sets dispatch-aborted and transport abort flag" {
+  # Behavioural guarantee for AC #8: is_transport_crash fires on the implement
+  # log, classify_outcome returns dispatch-aborted, and write_abort_flag records
+  # type: transport. The dispatch record carries dispatch-aborted, not FAIL.
+  setup_abort_test
+  # Both snapshots return ready-for-agent so classify_outcome sees a transport
+  # crash on the non-success path.
+  take_snapshot() {
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  }
+  run_dispatch_container() {
+    # Transport-signature log + nonzero exit — triggers is_transport_crash.
+    echo "API Error: 503 " >"$2"
+    return 1
+  }
+  propagate_to_host() { return 0; }
+
+  RUNNER_INTERRUPTED=0
+  RUNNER_LAST_OUTCOME=""
+  RUN_DISPATCHES=()
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  set -e
+
+  # Dispatch record carries dispatch-aborted.
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == *"|dispatch-aborted|"* ]]
+  # Abort flag written with type: transport and dispatch: implement.
+  [ -f "$HOST_ABORT_DIR/f/01" ]
+  grep -q '^type: transport$' "$HOST_ABORT_DIR/f/01"
+  grep -q '^dispatch: implement$' "$HOST_ABORT_DIR/f/01"
+}
+
+@test "dispatch_one — transport crash on gate sets review-aborted and transport abort flag" {
+  # Behavioural guarantee for AC #8 (gate path): is_transport_crash fires on
+  # the review log, classify_gate_outcome returns review-aborted, and
+  # write_abort_flag records type: transport. The dispatch record carries
+  # review-aborted, not gate-failed.
+  setup_abort_test
+  install_afk_snapshots in-review
+  propagate_to_host() { return 0; }
+  run_gate_container() {
+    # Transport-signature log + nonzero exit — triggers is_transport_crash.
+    echo "API Error: 503 " >"$2"
+    return 1
+  }
+
+  RUNNER_INTERRUPTED=0
+  RUNNER_LAST_OUTCOME=""
+  RUN_DISPATCHES=()
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  set -e
+
+  # Dispatch record carries review-aborted (not gate-failed).
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == *"|review-aborted|"* ]]
+  # Abort flag written with type: transport and dispatch: gate.
+  [ -f "$HOST_ABORT_DIR/f/01" ]
+  grep -q '^type: transport$' "$HOST_ABORT_DIR/f/01"
+  grep -q '^dispatch: gate$' "$HOST_ABORT_DIR/f/01"
 }
 
 @test "run_loop — aborted ref is skipped with rm recipe in stdout" {
@@ -2933,6 +3397,40 @@ I|some-feature|42|#42|done|25|y'
     20260513-101010 10:10:10 10:10:35 ended completed)"
 
   echo "$result" | grep -qF '| #42 | done | 25s | [some-feature/42.log](some-feature/42.log) [some-feature/42-review.log](some-feature/42-review.log) |' \
+    || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — dispatch-aborted and review-aborted render as outcome labels" {
+  input='F|alpha|drained
+I|alpha|01|alpha/01|dispatch-aborted|12|
+I|alpha|02|alpha/02|review-aborted|38|y'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:30:00 ended completed)"
+
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted | 12s | [alpha/01.log](alpha/01.log) |' \
+    || { echo "$result"; false; }
+  echo "$result" | grep -qF '| alpha/02 | review-aborted | 38s | [alpha/02.log](alpha/02.log) [alpha/02-review.log](alpha/02-review.log) |' \
+    || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — attempt_count=1 omits the attempts suffix" {
+  input='F|alpha|drained
+I|alpha|01|alpha/01|dispatch-aborted|12||1'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:10:22 ended completed)"
+
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted | 12s |' \
+    || { echo "$result"; false; }
+  ! echo "$result" | grep -q 'attempts' || { echo "$result"; false; }
+}
+
+@test "format_multi_feature_summary_md — attempt_count > 1 appends the attempts suffix" {
+  input='F|alpha|drained
+I|alpha|01|alpha/01|dispatch-aborted|12||2'
+  result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
+    20260513-101010 10:10:10 10:10:22 ended completed)"
+
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted (2 attempts) | 12s | [alpha/01.log](alpha/01.log) |' \
     || { echo "$result"; false; }
 }
 
