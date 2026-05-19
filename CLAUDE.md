@@ -18,7 +18,7 @@ bats -p --print-output-on-failure <path>
 ```
 
 - `-p` (pretty) forces the trailing `N tests, M failures` summary even when stdout is piped. Without it, bats defaults to TAP when stdout is not a TTY and emits **no** summary — the last line of a run with failures can still read `ok N <name>` if the final tests happened to pass.
-- `--print-output-on-failure` dumps each failing test's `$output` inline. A single run gives you both the verdict and the diagnostic context — don't re-run with `-x` or `--verbose-run` "to see what happened".
+- `--print-output-on-failure` dumps each failing test's `$output` inline, right under its `not ok` line. A single run gives you both the verdict and the diagnostic context — don't re-run with `-x` or `--verbose-run`, and don't pipe to `grep` / `head` / `tail`. Post-processing strips the summary and can drop failures or their inline diagnostics. If the output is too noisy, narrow the test selection upstream (`-f`, `--filter-status failed`, a single file) instead of trimming the output.
 
 ### Pass check — all three must hold
 
@@ -28,7 +28,7 @@ bats -p --print-output-on-failure <path>
 
 ### Focused re-runs
 
-After locating a failure, focus the next run (`--filter-status failed` or `-f '<regex>'`). A focused run proves the fix for the targeted tests; it does not prove the suite is green. Re-run the full suite before claiming suite-wide success.
+Don't re-run the full suite while iterating on a fix. Use `--filter-status failed` — it re-runs only the previously-failed tests, and the recorded set updates each run. A focused run proves the fix for the targeted tests; it doesn't prove the suite is green, so do one final full run before claiming suite-wide success.
 
 
 ## Formann methodology (self-referencing dog-fooding info)
