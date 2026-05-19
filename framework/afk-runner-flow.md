@@ -196,7 +196,9 @@ Wraps the per-issue loop and walks every feature in the discovery output.
 │         │ yes ──► RUN_STOP_REASON = "queue-empty"; stop                  │
 │         │ no                                                             │
 │         ▼                                                                │
-│   ensure_runner_checkout                (re-sync to host tip;            │
+│   ensure_runner_checkout                (re-sync to chosen tip;          │
+│         │                                parking-ref when strictly ahead │
+│         │                                or diverged, else host branch;  │
 │         │                                fetch + checkout + reset --hard │
 │         │                                + clean -fd; HEAD must match)   │
 │         ▼                                                                │

@@ -106,7 +106,7 @@ Each iteration picks the next eligible issue — skipping any with a runner-priv
 
 A `/implement` bail (logical failure: the dispatch posted an explanation and flipped status to `needs-info`) is binding-agnostic: under local-markdown the bail comment and status flip land as a `tracker:` commit in the runner-checkout; under GitHub Issues they land as API calls with no resulting commit. Either way, the runner-checkout's HEAD delta (present or absent) determines whether propagation runs — the propagation gate is the commit delta, not the classifier verdict. The abort flag (`.runner-state/aborted/<feature>/<NN>`) is a runner-internal file, independent of the binding and of whether any commit was produced; it operates the same in both worlds.
 
-When a dispatch fails and leaves an issue stuck (eligible status unchanged, propagation halted, or gate failed), the runner writes an abort flag to prevent re-dispatch across runs. The maintainer `rm`s the flag to re-include the issue after diagnosing and fixing the root cause. See [`runner/README.md`](runner/README.md) for the `ls` / `cat` / `rm` recipe.
+When a dispatch fails and leaves an issue stuck (eligible status unchanged, or gate failed), the runner writes an abort flag to prevent re-dispatch across runs. The maintainer `rm`s the flag to re-include the issue after diagnosing and fixing the root cause. See [`runner/README.md`](runner/README.md) for the `ls` / `cat` / `rm` recipe.
 
 ### Moving parts
 

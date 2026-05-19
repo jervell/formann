@@ -425,21 +425,26 @@ format_end_of_run_table() {
 # Reads `feature|nn|ref|outcome|duration|review_present|attempt_count|propagation`
 # records on stdin (fields past `outcome` are optional — when `review_present`
 # is `y`, the row's logs cell adds a `<NN>-review.log` link alongside `<NN>.log`;
-# `propagation` is `propagated`, `parked`, or empty). The `propagation` column
-# shows `propagated → host`, `parked → runner/<feature>`, or `-` when empty.
+# `propagation` is the indicator string from `propagate_feature` —
+# `propagated → host`, `parked → runner/<branch>`, or empty). The
+# `propagation` column shows the indicator verbatim, or `-` when empty.
 # An end-of-run "## Unpulled parked work" section follows the table whenever
 # any dispatch parked; it is omitted entirely when no dispatch parked.
 # `end_state` is the verb used in the run line — "ended" or "interrupted".
 format_summary_md() {
   local feature="$1" ts="$2" start_clock="$3" end_clock="$4" end_state="$5" stop_reason="$6"
+  # Capture once so the table awk and the parked-work aggregator both see the
+  # same records without the caller having to materialize them twice.
+  local records
+  records="$(cat)"
   printf '# AFK runner — %s\n\n' "$feature"
   printf -- '- Run: %s (started %s, %s %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock"
   printf -- '- Stop reason: %s\n\n' "$stop_reason"
   printf '| issue | outcome | duration | propagation | logs |\n'
   printf '|-------|---------|----------|-------------|------|\n'
-  awk -F'|' '
+  printf '%s' "$records" | awk -F'|' '
     NF >= 5 {
-      feature=$1; nn=$2; ref=$3; out=$4; dur=$5;
+      nn=$2; ref=$3; out=$4; dur=$5;
       review=(NF >= 6 ? $6 : "");
       attempt_count=(NF >= 7 ? $7+0 : 1);
       prop=(NF >= 8 && $8 != "") ? $8 : "-";
@@ -449,18 +454,8 @@ format_summary_md() {
         logs = logs " [" nn "-review.log](" nn "-review.log)";
       }
       printf "| %s | %s | %ss | %s | %s |\n", ref, out, dur, prop, logs;
-      if (prop ~ /^parked/) { parked_features[feature]++ }
-    }
-    END {
-      if (length(parked_features) > 0) {
-        printf "\n## Unpulled parked work\n\n";
-        for (f in parked_features) {
-          count = parked_features[f];
-          suffix = (count == 1) ? "dispatch" : "dispatches";
-          printf "- **%s** (%d %s): `git pull runner %s`\n", f, count, suffix, f;
-        }
-      }
     }'
+  printf '%s' "$records" | format_parked_ledger
 }
 
 # SUMMARY.md content for a multi-feature drain run (bare invocation).
@@ -478,18 +473,24 @@ format_summary_md() {
 #
 # `I` rows belong to the most recent preceding `F|<slug>|drained` section.
 # `review_present` is `y` when the iteration produced a `<ref>-review.log`
-# alongside `<ref>.log`. `propagation` is `propagated`, `parked`, or empty.
-# Log paths in multi-feature mode embed the feature segment of the ref
-# (`<feature>/<NN>.log`) so per-issue artifacts don't collide across features
-# that share `<NN>`. The `propagation` column shows the per-dispatch indicator;
-# an end-of-run "## Unpulled parked work" section follows when any dispatch
-# parked, and is omitted entirely when no dispatch parked.
+# alongside `<ref>.log`. `propagation` is the indicator string from
+# `propagate_feature` — `propagated → host`, `parked → runner/<branch>`,
+# or empty. Log paths in multi-feature mode embed the feature segment of the
+# ref (`<feature>/<NN>.log`) so per-issue artifacts don't collide across
+# features that share `<NN>`. The `propagation` column shows the indicator
+# verbatim, or `-` when empty; an end-of-run "## Unpulled parked work"
+# section follows when any dispatch parked, and is omitted entirely when no
+# dispatch parked.
 format_multi_feature_summary_md() {
   local ts="$1" start_clock="$2" end_clock="$3" end_state="$4" stop_reason="$5"
+  # Capture once so the per-feature renderer and `format_parked_ledger` both
+  # see the same records.
+  local records
+  records="$(cat)"
   printf '# AFK runner — multi-feature drain\n\n'
   printf -- '- Run: %s (started %s, %s %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock"
   printf -- '- Stop reason: %s\n\n' "$stop_reason"
-  awk -F'|' '
+  printf '%s' "$records" | awk -F'|' '
     function emit_table_header() {
       printf "| issue | outcome | duration | propagation | logs |\n";
       printf "|-------|---------|----------|-------------|------|\n";
@@ -536,20 +537,14 @@ format_multi_feature_summary_md() {
         logs = logs " [" feature "/" nn "-review.log](" feature "/" nn "-review.log)";
       }
       printf "| %s | %s | %ss | %s | %s |\n", ref, out, dur, prop, logs;
-      if (prop ~ /^parked/) { parked_features[feature]++ }
       next;
     }
     END {
       if (in_drained) printf "\n";
-      if (length(parked_features) > 0) {
-        printf "\n## Unpulled parked work\n\n";
-        for (f in parked_features) {
-          count = parked_features[f];
-          suffix = (count == 1) ? "dispatch" : "dispatches";
-          printf "- **%s** (%d %s): `git pull runner %s`\n", f, count, suffix, f;
-        }
-      }
     }'
+  # Drop the `I|` discriminator so the leftover line shape matches
+  # `format_parked_ledger`'s flat record schema (feature in $1, propagation in $8).
+  printf '%s' "$records" | sed -n 's/^I|//p' | format_parked_ledger
 }
 
 # Pure aggregator for the parked-work ledger. Reads dispatch records
@@ -557,8 +552,8 @@ format_multi_feature_summary_md() {
 # on stdin and emits the "## Unpulled parked work" SUMMARY.md section when
 # one or more dispatches have `propagation == parked`. Emits nothing when no
 # dispatch parked. Groups by feature; counts per-feature parked dispatches.
-# Also used for the per-dispatch stdout reminder: pipe a single parked record
-# to get the one-line feature entry.
+# Called by `format_summary_md` and `format_multi_feature_summary_md` so the
+# end-of-run section's shape lives in exactly one place.
 #
 # Output (when parked dispatches exist):
 #   ## Unpulled parked work
@@ -668,7 +663,7 @@ RUN_FEATURE_OUTCOMES=()
 RUN_LOG_LAYOUT="flat"
 RUNNER_TEE_PID=""
 RUNNER_LOG_FIFO=""
-RUNNER_LAST_PROPAGATION=""   # 'propagated' | 'parked' | '' (set by propagate_feature)
+RUNNER_LAST_PROPAGATION=""   # 'propagated → host' | 'parked → runner/<branch>' | '' (set by propagate_feature)
 DISCOVERY_JSON=""     # populated by check_discovery pre-flight invariant
 
 # Set RUN_TS / RUN_DIR / RUN_START_CLOCK and create the per-run dir under
@@ -730,8 +725,9 @@ stop_runner_log_capture() {
 # `review_present` is `y` when the iteration produced a `<NN>-review.log`.
 # `attempt_count` (default 1) is the data hook for the retry slice; the
 # formatters render `(N attempts)` only when N > 1, so it is silent here.
-# `propagation` is the value of $RUNNER_LAST_PROPAGATION at record time
-# (`propagated`, `parked`, or empty when propagation was not reached).
+# `propagation` is the value of $RUNNER_LAST_PROPAGATION at record time —
+# `propagated → host`, `parked → runner/<branch>`, or empty when propagation
+# was not reached.
 record_dispatch() {
   local feature="$1" nn="$2" ref="$3" label="$4" duration="$5" review="${6:-}" \
         attempt_count="${7:-1}"
@@ -1744,10 +1740,11 @@ ensure_runner_remote() {
 #   --update-head-ok.  Git's own refusal (HEAD-on-target or non-ff) is the
 #   parked-only trigger — the runner does not model "am I on-branch?".
 #
-# On return 0, RUNNER_LAST_PROPAGATION is set to:
-#   'propagated'  — both steps succeeded (propagated-to-host)
-#   'parked'      — step 1 ok, step 2 refused (parked-only)
-# and a propagation indicator is printed to stdout.
+# On return 0, RUNNER_LAST_PROPAGATION is set to the human-readable indicator
+# that ends up in the SUMMARY column and the per-dispatch progress line:
+#   'propagated → host'           — both steps succeeded (propagated-to-host)
+#   'parked → runner/<branch>'    — step 1 ok, step 2 refused (parked-only)
+# and the same indicator is printed to stdout.
 #
 # On return 1 (error), RUNNER_LAST_PROPAGATION is cleared to ''.
 #
@@ -1759,11 +1756,10 @@ propagate_feature() {
   # Step 1: publish to parking ref — fail-fatal. The `+` prefix force-updates
   # the parking ref; it is runner-owned and its semantics are "this is the
   # latest tip the runner produced for <branch>", not "an append-only history".
-  # Without `+`, a 2nd parked-only dispatch in loop mode (where the runner-
-  # checkout was reset to host's old tip, so successive dispatches are siblings
-  # rather than ancestors of the prior parking-ref tip) would be rejected as
-  # non-fast-forward — and that would halt the very on-branch loop this slice
-  # exists to enable.
+  # The force-update is the recovery path for the diverged case: when the
+  # maintainer pulls runner work and rebases, the next runner dispatch's tip
+  # is no longer a descendant of the prior parking-ref tip, and a non-`+`
+  # refspec would refuse as non-fast-forward.
   if ! git -C "$HOST_REPO" fetch --quiet "$HOST_CHECKOUT" \
       "+${branch}:${parking_ref}" 2>/dev/null; then
     cat >&2 <<MSG
@@ -1779,13 +1775,40 @@ MSG
   fi
 
   # Step 2: best-effort host fast-forward — no --update-head-ok.
-  if git -C "$HOST_REPO" fetch --quiet "$HOST_CHECKOUT" \
-      "${branch}:${branch}" 2>/dev/null; then
-    RUNNER_LAST_PROPAGATION="propagated"
-    printf '[%s] propagated → host\n' "$(now_clock)"
+  # Capture stderr so we can surface true errors (lock contention, FS
+  # error, etc.) to runner.log without printing the noisy diagnostic on
+  # every expected refusal.  `|| rc=$?` keeps set -e happy on non-zero.
+  local step2_stderr step2_rc=0
+  step2_stderr="$(git -C "$HOST_REPO" fetch --quiet "$HOST_CHECKOUT" \
+      "${branch}:${branch}" 2>&1)" || step2_rc=$?
+  if [ "$step2_rc" -eq 0 ]; then
+    RUNNER_LAST_PROPAGATION="propagated → host"
+    printf '[%s] %s\n' "$(now_clock)" "$RUNNER_LAST_PROPAGATION"
   else
-    RUNNER_LAST_PROPAGATION="parked"
-    printf '[%s] parked → runner/%s  (git pull runner %s)\n' "$(now_clock)" "$branch" "$branch"
+    # Two refusal modes are expected and self-evidently safe:
+    #   - HEAD-on-target: host has the target branch checked out.
+    #   - non-fast-forward: host's branch and the parking ref diverged.
+    # Anything else (lock contention, FS error, etc.) is unusual and worth
+    # surfacing to runner.log even though the classification stays `parked`
+    # — the work is on the parking ref either way. Distinguish via
+    # post-conditions rather than parsing git's locale-dependent stderr.
+    local host_head host_tip checkout_tip expected_refusal=0
+    host_head="$(git -C "$HOST_REPO" symbolic-ref --quiet HEAD 2>/dev/null || true)"
+    host_tip="$(git -C "$HOST_REPO" rev-parse --verify "$branch" 2>/dev/null || true)"
+    checkout_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "$branch" 2>/dev/null || true)"
+    if [ "$host_head" = "refs/heads/${branch}" ]; then
+      expected_refusal=1
+    elif [ -n "$host_tip" ] && [ -n "$checkout_tip" ] \
+        && ! git -C "$HOST_REPO" merge-base --is-ancestor \
+            "$host_tip" "$checkout_tip" 2>/dev/null; then
+      expected_refusal=1
+    fi
+    if [ "$expected_refusal" -eq 0 ]; then
+      printf 'runner: unexpected step-2 fetch failure for branch %s:\n%s\n' \
+        "$branch" "$step2_stderr" >&2
+    fi
+    RUNNER_LAST_PROPAGATION="parked → runner/${branch}"
+    printf '[%s] %s (git pull runner %s)\n' "$(now_clock)" "$RUNNER_LAST_PROPAGATION" "$branch"
   fi
 }
 
@@ -1800,8 +1823,9 @@ MSG
 # Sets $RUNNER_LAST_OUTCOME (`success` for classifier success with any
 # propagation outcome including parked-only; `failure` for classifier
 # failure or parking-ref error). Also sets $RUNNER_LAST_PROPAGATION to
-# `propagated` or `parked` on the success path (empty on failure or when
-# no propagation occurred). Return code mirrors RUNNER_LAST_OUTCOME.
+# `propagated → host` or `parked → runner/<branch>` on the success path
+# (empty on failure or when no propagation occurred). Return code mirrors
+# RUNNER_LAST_OUTCOME.
 #
 # Args: $1=feature  $2=nn  $3=run_dir
 dispatch_one() {

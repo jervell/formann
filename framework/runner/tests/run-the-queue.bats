@@ -1562,8 +1562,8 @@ setup_eligibility_test() {
 
 @test "check_feature_eligibility — feature in discovery, host on same branch, branch exists → passes silently" {
   setup_eligibility_test
-  # Host is on the feature branch. After removing branch-checked-out from the
-  # gate, this must pass — the runner is branch-state-agnostic on the host side.
+  # The runner is branch-state-agnostic on the host side: the eligibility
+  # gate passes whether or not host has the feature branch checked out.
   git -C "$HOST_REPO" checkout --quiet -B "my-feature"
   RUN_MODE="loop"
   TARGET_FEATURE="my-feature"
@@ -2128,8 +2128,9 @@ afk-runner|02|afk-runner/02|FAIL|5|||'
 # === format_parked_ledger — pure aggregator ================================
 #
 # Pure function that reads dispatch records and emits the "## Unpulled
-# parked work" section for SUMMARY.md. Called at end-of-run. Emits nothing
-# when no dispatch has propagation == parked.
+# parked work" section for SUMMARY.md. Called by `format_summary_md` and
+# `format_multi_feature_summary_md`; emits nothing when no dispatch has
+# propagation == parked.
 #
 # Input record schema:
 #   feature|nn|ref|label|duration|review_present|attempt_count|propagation
@@ -2247,12 +2248,11 @@ other-feat|01|other-feat/01|FAIL|5||1|'
 #
 # The implement-stage propagation gate is the runner-checkout having any
 # committed change ahead of the host's branch tip — not the classifier
-# verdict. /implement's documented bail behavior (status stays at
-# `ready-for-agent`, `tracker:` comment-only commit) used to be wiped
-# by the next iteration's `ensure_runner_checkout` reset because
-# propagation was gated by the classifier's `success` verdict. The new
-# rule lets bail comments reach the host while still recording the
-# iteration as a failure (since the classifier verdict is independent).
+# verdict. This lets /implement's documented bail behavior (status stays at
+# `ready-for-agent`, `tracker:` comment-only commit) reach the host before
+# the next iteration's `ensure_runner_checkout` resets the checkout, while
+# the classifier still records the iteration as a failure (the classifier
+# verdict is independent of propagation).
 
 @test "dispatch_one — non-success classifier with committed change still propagates" {
   setup_dispatch_one_test
@@ -2947,7 +2947,7 @@ setup_propagate_test() {
   # Both host branch and parking ref advance to the runner-checkout tip.
   [ "$host_f_after" = "$checkout_tip" ]
   [ "$parking_after" = "$checkout_tip" ]
-  [ "$RUNNER_LAST_PROPAGATION" = "propagated" ]
+  [ "$RUNNER_LAST_PROPAGATION" = "propagated → host" ]
   # host HEAD (master) must not have moved.
   [ "$(git -C "$HOST_REPO" symbolic-ref --short HEAD)" = "master" ]
 }
@@ -2964,7 +2964,8 @@ setup_propagate_test() {
   host_f_before="$(git -C "$HOST_REPO" rev-parse f)"
   checkout_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
 
-  propagate_feature "f"
+  local err_file="$BATS_TEST_TMPDIR/propagate-err.txt"
+  propagate_feature "f" 2>"$err_file"
 
   local host_f_after parking_after
   host_f_after="$(git -C "$HOST_REPO" rev-parse f)"
@@ -2973,7 +2974,9 @@ setup_propagate_test() {
   # Parking ref advanced; host branch ref is unchanged (HEAD-on-target).
   [ "$parking_after" = "$checkout_tip" ]
   [ "$host_f_after" = "$host_f_before" ]
-  [ "$RUNNER_LAST_PROPAGATION" = "parked" ]
+  [ "$RUNNER_LAST_PROPAGATION" = "parked → runner/f" ]
+  # HEAD-on-target is an expected refusal; no unexpected-error diagnostic.
+  ! grep -q 'unexpected step-2' "$err_file" || { cat "$err_file"; false; }
 }
 
 @test "propagate_feature — parked-only (non-ff): parking ref advances, host branch unchanged" {
@@ -2992,7 +2995,8 @@ setup_propagate_test() {
   host_f_before="$(git -C "$HOST_REPO" rev-parse f)"
   checkout_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
 
-  propagate_feature "f"
+  local err_file="$BATS_TEST_TMPDIR/propagate-err.txt"
+  propagate_feature "f" 2>"$err_file"
 
   local host_f_after parking_after
   host_f_after="$(git -C "$HOST_REPO" rev-parse f)"
@@ -3002,14 +3006,17 @@ setup_propagate_test() {
   # divergent tip (non-ff refusal).
   [ "$parking_after" = "$checkout_tip" ]
   [ "$host_f_after" = "$host_f_before" ]
-  [ "$RUNNER_LAST_PROPAGATION" = "parked" ]
+  [ "$RUNNER_LAST_PROPAGATION" = "parked → runner/f" ]
+  # Non-ff is an expected refusal; no unexpected-error diagnostic.
+  ! grep -q 'unexpected step-2' "$err_file" || { cat "$err_file"; false; }
 }
 
-@test "propagate_feature — loop mode: 2nd parked-only dispatch with sibling commits force-updates the parking ref" {
-  # Regression guard for the on-branch loop scenario this slice exists to
-  # enable.  Without `+` on the step-1 refspec, dispatch 2's parking-ref
-  # publish would fail as non-fast-forward (sibling of dispatch 1's parked
-  # commit) and halt the loop — defeating the slice's purpose.
+@test "propagate_feature — diverged dispatch tip force-updates the parking ref" {
+  # Pin that the `+` on the step-1 refspec lets the parking ref move
+  # sideways: when a dispatch's tip is not in an ancestor relation with the
+  # prior parking-ref tip (e.g. after the maintainer pulled and rebased),
+  # the non-fast-forward refspec would refuse without `+` and propagation
+  # would error.
   setup_propagate_test
 
   # Dispatch 1: runner-checkout advances; host stays on f → parked-only.
@@ -3019,32 +3026,30 @@ setup_propagate_test() {
   d1_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
 
   propagate_feature "f"
-  [ "$RUNNER_LAST_PROPAGATION" = "parked" ]
+  [ "$RUNNER_LAST_PROPAGATION" = "parked → runner/f" ]
   [ "$(git -C "$HOST_REPO" rev-parse refs/remotes/runner/f)" = "$d1_tip" ]
 
-  # Simulate the pre-dispatch sync: runner-checkout reset to origin/f
-  # (host's old tip, since the host fast-forward refused).  This mirrors
-  # `ensure_runner_checkout_on_branch` resetting to origin/<branch>.
+  # Set up the diverged-tip scenario: reset the runner-checkout back to
+  # host's branch tip, then add a fresh commit. The resulting tip is a
+  # sibling of the prior parking-ref tip (neither is an ancestor of the
+  # other), so a non-`+` refspec would refuse to update the parking ref.
   local host_tip
   host_tip="$(git -C "$HOST_REPO" rev-parse f)"
   git -C "$HOST_CHECKOUT" reset --quiet --hard "$host_tip"
 
-  # Dispatch 2: build a sibling commit (not a descendant of d1_tip).
   git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m "dispatch 2 (sibling of d1)"
   local d2_tip
   d2_tip="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
 
-  # The two dispatch tips must be siblings — neither reachable from the other.
+  # Confirm the diverged-tip precondition.
   ! git -C "$HOST_REPO" merge-base --is-ancestor "$d1_tip" "$d2_tip" 2>/dev/null
   ! git -C "$HOST_REPO" merge-base --is-ancestor "$d2_tip" "$d1_tip" 2>/dev/null
 
   propagate_feature "f"
 
-  # Dispatch 2 must succeed (parked, not error) and the parking ref must
-  # now point at d2_tip — proving the `+` force-update worked across the
-  # non-ff transition.
-  [ "$RUNNER_LAST_PROPAGATION" = "parked" ]
+  # The parking ref moves to d2_tip and the dispatch is parked, not errored.
+  [ "$RUNNER_LAST_PROPAGATION" = "parked → runner/f" ]
   [ "$(git -C "$HOST_REPO" rev-parse refs/remotes/runner/f)" = "$d2_tip" ]
 }
 
@@ -3591,7 +3596,8 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
 
   drain_one_feature "alpha"
 
-  # branch-checked-out no longer skips; the feature is drained normally.
+  # Host being on the feature branch is not a skip condition; the feature
+  # drains normally.
   [ "$(drain_outcome_nth 0)" = "alpha|drained" ]
   [ "$(drained_features_count)" = "1" ]
 }
