@@ -56,7 +56,26 @@ For each approved slice, write and publish a new issue per `docs/formann/issue-t
 
 Publish issues in dependency order (blockers first) so you can reference real issue identifiers in the "Blocked by" field.
 
+### Writing the Gist
+
+Open every issue body with `## Gist`: 1–3 plain-English sentences for a colleague reading cold. The technical detail lives under `## What to build`; the Gist exists so a new teammate can grasp what's at stake before hitting it.
+
+- Lead with the human-level problem or change, not the mechanism.
+- Use shared vocabulary — the consumer's `GLOSSARY.md` terms are fair game. Code identifiers, paths, line numbers, label strings, and internal jargon are not.
+- Prose. No bullets, no code spans, no "This issue…" / "We will…" boilerplate.
+- A teammate reading only the Gist should be able to paraphrase what's wrong and what's changing. If they'd need to open the code first, rewrite it.
+
+Worked example, same bug, two writeups:
+
+> **Good:** When an upload fails partway through, the user sees "Success" but the file isn't saved. This surfaces the failure so the user can retry.
+>
+> **Bad:** `upload_handler` returns `nil` instead of an error tuple when `S3Client.put_object` raises, so the caller's `case` falls through to `:ok`.
+
 <issue-body-template>
+## Gist
+
+1–3 plain-English sentences. See "Writing the Gist" above.
+
 ## Parent
 
 A reference to whatever this issue is a slice of — the source PRD, or a parent issue. Omit only when the issue has no spawning artifact.

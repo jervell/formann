@@ -21,7 +21,26 @@ Check with the user that these modules match their expectations. Check with the 
 
 5. Write and publish the PRD using the template below; publish per `docs/formann/issue-tracker/BINDING.md`.
 
+### Writing the Gist
+
+Open the PRD with `## Gist`: 1–3 plain-English sentences for a colleague reading cold. The structured sections below carry the contract; the Gist exists so a new teammate can grasp what's at stake before hitting them.
+
+- Lead with the human-level problem or change, not the mechanism.
+- Use shared vocabulary — the consumer's `GLOSSARY.md` terms are fair game. Code identifiers, paths, line numbers, label strings, and internal jargon are not.
+- Prose. No bullets, no code spans, no "This PRD…" / "We will…" boilerplate.
+- A teammate reading only the Gist should be able to paraphrase what's wrong and what's changing. If they'd need to open the code first, rewrite it.
+
+Worked example, same feature, two writeups:
+
+> **Good:** Today every upload goes to one shared bucket, so a leaked credential exposes every tenant's files. This carves storage into per-tenant prefixes with their own access policies.
+>
+> **Bad:** `S3Uploader.put_object/3` uses a single `@bucket` module attribute; we'll thread a `tenant_id` through the call sites and key off `{tenant_id, bucket}` in `StorageRouter`.
+
 <prd-template>
+
+## Gist
+
+1–3 plain-English sentences. See "Writing the Gist" above.
 
 ## Problem Statement
 
