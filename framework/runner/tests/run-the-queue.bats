@@ -3286,6 +3286,67 @@ STUB
   [ "$checkout_head" = "$d1_tip" ]
 }
 
+@test "ensure_runner_checkout_on_branch — host-branch: returns 0 when host advances mid-sync" {
+  # Regression test for TOCTOU: host branch advances between the early
+  # rev-parse of host_tip and the runner-checkout's fetch.  With the
+  # post-sync HEAD assertion removed, the function must return 0 and land
+  # on the post-fetch tip (not abort with "post-sync HEAD mismatch").
+  setup_ensure_checkout_parking_test
+
+  # No parking ref → parking_rel=absent → sync_verdict=host-branch.
+
+  # Capture what host_tip will see before the shim fires.
+  local pre_fetch_tip
+  pre_fetch_tip="$(git -C "$HOST_REPO" rev-parse f)"
+
+  # Resolve real git before mutating PATH.
+  local real_git
+  real_git="$(command -v git)"
+
+  # Build a git shim that, on the first "git -C <HOST_CHECKOUT> fetch …"
+  # call, commits to HOST_REPO (simulating the TOCTOU advance), then
+  # delegates to the real git so the fetch brings the new tip across.
+  local fake_bin fired_file
+  fake_bin="$BATS_TEST_TMPDIR/fake_bin"
+  fired_file="$BATS_TEST_TMPDIR/shim_fired"
+  mkdir -p "$fake_bin"
+
+  export SHIM_HOST_CHECKOUT="$HOST_CHECKOUT"
+  export SHIM_HOST_REPO="$HOST_REPO"
+  export SHIM_FIRED_FILE="$fired_file"
+  export SHIM_REAL_GIT="$real_git"
+
+  cat >"$fake_bin/git" <<'SHIM'
+#!/usr/bin/env bash
+# On first "git -C <HOST_CHECKOUT> fetch …": advance HOST_REPO, then delegate.
+if [ "${1:-}" = "-C" ] && [ "${2:-}" = "$SHIM_HOST_CHECKOUT" ] && [ "${3:-}" = "fetch" ]; then
+  if [ ! -f "$SHIM_FIRED_FILE" ]; then
+    touch "$SHIM_FIRED_FILE"
+    "$SHIM_REAL_GIT" -C "$SHIM_HOST_REPO" \
+      -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "host advance mid-sync"
+  fi
+fi
+exec "$SHIM_REAL_GIT" "$@"
+SHIM
+  chmod +x "$fake_bin/git"
+
+  export PATH="$fake_bin:$PATH"
+
+  # Must return 0 — the TOCTOU race no longer aborts the sync.
+  ensure_runner_checkout_on_branch "f"
+
+  # Confirm the shim actually fired (the race scenario ran).
+  [ -f "$fired_file" ]
+
+  # Runner-checkout must be at the post-advance tip, not the stale pre-fetch tip.
+  local checkout_head post_advance_tip
+  checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+  post_advance_tip="$(git -C "$HOST_REPO" rev-parse f)"
+  [ "$checkout_head" = "$post_advance_tip" ]
+  [ "$checkout_head" != "$pre_fetch_tip" ]
+}
+
 # === evaluate_feature_gate — skip-reason matrix ============================
 #
 # The gate evaluator's full signal set: branch-missing, fetch-failed,

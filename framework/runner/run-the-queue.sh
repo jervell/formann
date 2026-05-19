@@ -1133,7 +1133,7 @@ ensure_runner_checkout_on_branch() {
   # across. Reading the SHA directly from host avoids an extra round-trip.
   # Use --verify so that a missing ref yields empty stdout (plain rev-parse
   # prints the literal ref string to stdout on failure, poisoning the check).
-  local host_tip parking_tip parking_rel sync_verdict expected_tip
+  local host_tip parking_tip parking_rel sync_verdict
   host_tip="$(git -C "$HOST_REPO" rev-parse --verify "$branch" 2>/dev/null || true)"
   parking_tip="$(git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/$branch" 2>/dev/null || true)"
 
@@ -1166,7 +1166,6 @@ ensure_runner_checkout_on_branch() {
       echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/$branch failed" >&2
       return 1
     fi
-    expected_tip="$host_tip"
   else
     # parking-ref verdict: fetch the parking-ref's objects from host into the
     # runner-checkout (the runner-checkout's origin fetch won't carry them),
@@ -1184,7 +1183,6 @@ ensure_runner_checkout_on_branch() {
       echo "runner: ensure_runner_checkout_on_branch: git reset --hard $parking_tip failed" >&2
       return 1
     fi
-    expected_tip="$parking_tip"
   fi
 
   # `reset --hard` scrubs tracked changes but leaves untracked files
@@ -1198,15 +1196,6 @@ ensure_runner_checkout_on_branch() {
   # state at this point in the loop, so cleaning is unconditionally safe.
   if ! git -C "$HOST_CHECKOUT" clean --quiet -fd >&2; then
     echo "runner: ensure_runner_checkout_on_branch: git clean -fd failed" >&2
-    return 1
-  fi
-
-  # Defensive: verify the sync advanced the runner-checkout to the chosen tip
-  # (parking-ref SHA when verdict is parking-ref; host branch tip otherwise).
-  local checkout_head
-  checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
-  if [ -z "$expected_tip" ] || [ "$checkout_head" != "$expected_tip" ]; then
-    echo "runner: ensure_runner_checkout_on_branch: post-sync HEAD mismatch: expected=$expected_tip checkout=$checkout_head" >&2
     return 1
   fi
 
