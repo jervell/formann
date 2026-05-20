@@ -1375,11 +1375,8 @@ preflight() {
   check_discovery                        # invariant 1: tracker-snapshot --list
   ensure_runner_remote                   # invariant 1b: runner remote
   # Checkout-exists and installer-refresh are unconditional for all run
-  # modes. Drain mode previously skipped all checkout work in preflight;
-  # that exception narrows to skipping branch-sync only — the exists step
-  # and installer refresh are now invariant for every run-the-queue.sh
-  # invocation, so install.sh fires exactly once per pass regardless of
-  # how many features or iterations the pass processes.
+  # modes — install.sh fires exactly once per pass regardless of how
+  # many features or iterations the pass processes.
   if ! ensure_runner_checkout_exists >&2; then
     fail_invariant "runner-checkout" \
       "ensure_runner_checkout_exists failed (rm -rf $HOST_CHECKOUT and re-run to recover)"
@@ -2031,8 +2028,13 @@ dispatch_one() {
   # list helps the operator see what `/implement` neglected to commit
   # (e.g. a missed `tracker: move … to in-review` commit) when the
   # outcome is unexpectedly `failure`.
+  # --untracked-files=all enumerates files inside untracked directories;
+  # the default summarises them as a single `?? <dir>/` entry, whose
+  # basename is the directory itself — `capture_dispatch_core_files`
+  # matches `core | core.*` on basename, so a core dropped inside an
+  # untracked subdirectory would never be captured without the flag.
   local dirty
-  dirty="$(git -C "$HOST_CHECKOUT" status --porcelain)"
+  dirty="$(git -C "$HOST_CHECKOUT" status --porcelain --untracked-files=all)"
 
   local impl_ended_at impl_duration
   impl_ended_at=$(date +%s)

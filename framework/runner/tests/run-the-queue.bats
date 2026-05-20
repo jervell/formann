@@ -2214,6 +2214,34 @@ setup_eligibility_test() {
   [ ! -f "$TEST_RUN_DIR/f/01-core.core" ]
 }
 
+@test "capture_dispatch_core_files — captures core inside untracked directory" {
+  setup_dispatch_one_test
+  mkdir -p "$HOST_CHECKOUT/target"
+  touch "$HOST_CHECKOUT/target/core"
+  # `git status --porcelain --untracked-files=all` enumerates files
+  # inside untracked directories; the helper depends on the caller
+  # producing that form rather than the default `?? target/` summary.
+  local dirty="?? target/core"
+  capture_dispatch_core_files "$dirty" "$TEST_RUN_DIR" "f" "01"
+  [ -f "$TEST_RUN_DIR/f/01-core.target-core" ]
+}
+
+@test "capture_dispatch_core_files — collapsed untracked-dir summary line is ignored" {
+  setup_dispatch_one_test
+  mkdir -p "$HOST_CHECKOUT/target"
+  touch "$HOST_CHECKOUT/target/core"
+  # Default `git status --porcelain` collapses an untracked directory to
+  # a single `?? target/` line. The helper basename-matches on
+  # `core | core.*`; the collapsed entry's basename is the directory
+  # itself, so nothing matches and nothing is captured. This pins why
+  # `dispatch_one` must invoke git with `--untracked-files=all`: drop
+  # the flag and cores inside untracked subdirs become invisible.
+  local dirty="?? target/"
+  capture_dispatch_core_files "$dirty" "$TEST_RUN_DIR" "f" "01"
+  [ ! -e "$TEST_RUN_DIR/f/01-core.target" ]
+  [ ! -e "$TEST_RUN_DIR/f/01-core.target-core" ]
+}
+
 # === Output formatters =====================================================
 #
 # Pin the exact stdout shape and SUMMARY.md shape the AC requires. The
@@ -4007,6 +4035,15 @@ setup_drain_test() {
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
   mkdir -p "$HOST_ABORT_DIR"
 
+  # Capture the production ensure_runner_checkout_on_branch before the
+  # test mock overwrites it. Tests that need to exercise the real
+  # branch-sync path (e.g., to assert install.sh is not called from
+  # inside it) restore it via
+  # `eval "$DRAIN_REAL_ENSURE_RUNNER_CHECKOUT_ON_BRANCH"`. `unset -f`
+  # does not work here — it deletes the function entirely rather than
+  # falling back to a prior definition.
+  DRAIN_REAL_ENSURE_RUNNER_CHECKOUT_ON_BRANCH="$(declare -f ensure_runner_checkout_on_branch)"
+
   # Mocks — all controllable via the scratch files above.
   ensure_runner_checkout_on_branch() {
     local branch="$1"
@@ -4316,17 +4353,12 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
 }
 
 @test "install.sh invoked exactly once across a drain-mode multi-iteration run" {
-  # Pin the once-per-pass installer invariant. Before the fix,
-  # refresh_runner_checkout_install_products lived at the tail of
-  # ensure_runner_checkout_on_branch — firing once per feature (from
-  # drain_one_feature's pre-loop sync) and once per dispatch iteration
-  # (from run_loop's per-iteration ensure_runner_checkout re-sync). For a
-  # one-feature run with two dispatches that produced three invocations,
-  # crowding runner.log with repeated "rules not found" warnings.
-  #
-  # After the fix the installer runs only from preflight (one
-  # refresh_runner_checkout_install_products call per run-the-queue.sh
-  # invocation); ensure_runner_checkout_on_branch is branch-sync only.
+  # Pin the once-per-pass installer invariant: install.sh fires exactly
+  # once per run-the-queue.sh invocation. The test fails if
+  # refresh_runner_checkout_install_products is called from
+  # ensure_runner_checkout_on_branch, drain_one_feature's pre-loop sync,
+  # or run_loop's per-iteration re-sync — each would add an invocation
+  # across the fixture below.
   #
   # Fixture: one feature ("alpha"), two eligible issues. The test drives
   # the real run_loop and the real ensure_runner_checkout_on_branch (backed
@@ -4362,10 +4394,10 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   printf '#!/usr/bin/env bash\necho "invoked" >>"%s"\n' \
     "$INSTALL_COUNT_FILE" >"$HOST_REPO/installer/install.sh"
   chmod +x "$HOST_REPO/installer/install.sh"
-  # Remove the mock from setup_drain_test; restore the real function so
-  # the branch-sync path exercises the production code (which must not
-  # call install.sh after the fix).
-  unset -f ensure_runner_checkout_on_branch
+  # Restore the real ensure_runner_checkout_on_branch (captured by
+  # setup_drain_test before its mock overwrote it) so the branch-sync
+  # path exercises the production code, which must not call install.sh.
+  eval "$DRAIN_REAL_ENSURE_RUNNER_CHECKOUT_ON_BRANCH"
 
   # Pre-clone the checkout — preflight calls ensure_runner_checkout_exists
   # before any per-feature work.
