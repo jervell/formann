@@ -1595,6 +1595,9 @@ run_sandbox_container() {
     ${claude_mounts[@]+"${claude_mounts[@]}"} \
     -v "$MVN_VOLUME:$RUNNER_CONTAINER_M2_PATH" \
     --env-file <(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOKEN") \
+    --env-file <(printf 'GIT_AUTHOR_NAME=%s\nGIT_AUTHOR_EMAIL=%s\nGIT_COMMITTER_NAME=%s\nGIT_COMMITTER_EMAIL=%s\n' \
+      "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL" \
+      "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL") \
     ${binding_env_args[@]+"${binding_env_args[@]}"} \
     "$RUNNER_IMAGE_NAME" \
     "$@" \

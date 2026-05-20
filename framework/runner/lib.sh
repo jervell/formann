@@ -26,6 +26,12 @@ RUNNER_FW_CHAIN="AFK-RUNNER-SANDBOX-FW"
 RUNNER_OAUTH_KEYCHAIN_SERVICE="claude-code-oauth"
 RUNNER_OAUTH_KEYCHAIN_ACCOUNT="anthropic"
 
+# Git identity injected into the sandbox container via GIT_AUTHOR_NAME /
+# GIT_AUTHOR_EMAIL / GIT_COMMITTER_NAME / GIT_COMMITTER_EMAIL env vars.
+# Override at runner-invoke time to attribute commits differently.
+RUNNER_GIT_USER_NAME="${RUNNER_GIT_USER_NAME:-Claude}"
+RUNNER_GIT_USER_EMAIL="${RUNNER_GIT_USER_EMAIL:-claude@anthropic.com}"
+
 # Per-feature Maven cache volume name template. The actual volume is
 # named "${RUNNER_MVN_CACHE_PREFIX}<feature-slug>" so each feature gets
 # an isolated repository.

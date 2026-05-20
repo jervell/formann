@@ -57,6 +57,7 @@ RUN printf '%s\n' \
  && chmod +x /usr/local/bin/entrypoint.sh
 
 USER runner
+RUN git config --global --add safe.directory /repo
 WORKDIR /repo
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
