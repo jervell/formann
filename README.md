@@ -47,3 +47,7 @@ The runner Dockerfile template (`installer/templates/Dockerfile`) bakes in JDK 2
 ## Docs
 
 [`GLOSSARY.md`](./GLOSSARY.md) · [`docs/adr/`](./docs/adr/) · [`docs/formann/`](./docs/formann/) (methodology) · [`framework/bindings/`](./framework/bindings/) · [`CHANGELOG.md`](./CHANGELOG.md) · [`RELEASING.md`](./RELEASING.md)
+
+## License
+
+MIT. See [`LICENSE`](./LICENSE).
