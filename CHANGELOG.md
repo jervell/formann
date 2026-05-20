@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-20
+
 ### Added
 - Initial release. Methodology and tooling for running autonomous coding agents against tracked issues.
 - Issue lifecycle as Claude Code skills: `/triage` for grooming, `/implement` for delivery.
