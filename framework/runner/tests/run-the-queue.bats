@@ -2161,6 +2161,47 @@ setup_eligibility_test() {
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
+# === capture_dispatch_core_files ==========================================
+
+@test "capture_dispatch_core_files — copies root-level core to run-state dir" {
+  setup_dispatch_one_test
+  touch "$HOST_CHECKOUT/core"
+  local dirty="?? core"
+  capture_dispatch_core_files "$dirty" "$TEST_RUN_DIR" "f" "01"
+  [ -f "$TEST_RUN_DIR/f/01-core.core" ]
+}
+
+@test "capture_dispatch_core_files — copies cwd-relative core to run-state dir" {
+  setup_dispatch_one_test
+  mkdir -p "$HOST_CHECKOUT/framework/runner/tests"
+  touch "$HOST_CHECKOUT/framework/runner/tests/core"
+  local dirty="?? framework/runner/tests/core"
+  capture_dispatch_core_files "$dirty" "$TEST_RUN_DIR" "f" "01"
+  [ -f "$TEST_RUN_DIR/f/01-core.core" ]
+}
+
+@test "capture_dispatch_core_files — no-op when dirty list has no core-pattern file" {
+  setup_dispatch_one_test
+  local dirty="?? some-unrelated-file.txt"
+  capture_dispatch_core_files "$dirty" "$TEST_RUN_DIR" "f" "01"
+  [ ! -f "$TEST_RUN_DIR/f/01-core.some-unrelated-file.txt" ]
+  [ ! -f "$TEST_RUN_DIR/f/01-core.core" ]
+}
+
+@test "capture_dispatch_core_files — no-op when dirty list is empty" {
+  setup_dispatch_one_test
+  capture_dispatch_core_files "" "$TEST_RUN_DIR" "f" "01"
+  [ ! -f "$TEST_RUN_DIR/f/01-core.core" ]
+}
+
+@test "capture_dispatch_core_files — safe re-entry when source already removed" {
+  setup_dispatch_one_test
+  # Dirty list mentions a core that no longer exists (already swept)
+  local dirty="?? core"
+  capture_dispatch_core_files "$dirty" "$TEST_RUN_DIR" "f" "01"
+  [ ! -f "$TEST_RUN_DIR/f/01-core.core" ]
+}
+
 # === Output formatters =====================================================
 #
 # Pin the exact stdout shape and SUMMARY.md shape the AC requires. The

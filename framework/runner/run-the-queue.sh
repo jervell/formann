@@ -1891,6 +1891,30 @@ MSG
 
 # === Top-level dispatch ====================================================
 
+# Copy any core-dump untracked files from the runner-checkout into the run-
+# state directory before the per-iteration sweep removes them.
+#
+# Args: $1=dirty_list (output of `git status --porcelain`)
+#       $2=run_dir  $3=feature  $4=nn
+capture_dispatch_core_files() {
+  local dirty_list="$1" run_dir="$2" feature="$3" nn="$4"
+  [ -z "$dirty_list" ] && return 0
+
+  local line path bn src dest_dir dest
+  while IFS= read -r line; do
+    [[ "$line" == '?? '* ]] || continue
+    path="${line:3}"
+    bn="$(basename -- "$path")"
+    [[ "$bn" == "core" || "$bn" == core.* ]] || continue
+    src="$HOST_CHECKOUT/$path"
+    [ -e "$src" ] || continue
+    dest_dir="$run_dir/$feature"
+    dest="$dest_dir/${nn}-core.${bn}"
+    mkdir -p "$dest_dir"
+    cp -- "$src" "$dest"
+  done <<< "$dirty_list"
+}
+
 # Dispatch one issue end-to-end inside the run dir at $3. Consumes a
 # (feature, nn) pair — never regex-parses the binding-native ref. The
 # binding-native ref is resolved via `binding_native_ref` from the pre-
@@ -2029,6 +2053,7 @@ dispatch_one() {
     echo "runner: dispatch left runner-checkout with uncommitted changes:" >&2
     echo "$dirty" | sed 's/^/  /' >&2
   fi
+  capture_dispatch_core_files "$dirty" "$run_dir" "$feature" "$nn"
 
   # Propagate any committed runner-checkout work to the host, regardless
   # of the classifier's verdict. This makes the host repo a faithful

@@ -151,6 +151,9 @@ _run_installer() {
   grep -q "@anthropic-ai/claude-code" "$CONSUMER/runner/Dockerfile"
   grep -q "RUNNER_UID" "$CONSUMER/runner/Dockerfile"
   grep -q "ulimit -c 0" "$CONSUMER/runner/Dockerfile"
+  grep -q "ulimit -c soft=" "$CONSUMER/runner/Dockerfile"
+  grep -q "ulimit -Hc" "$CONSUMER/runner/Dockerfile"
+  grep -q "core_pattern=" "$CONSUMER/runner/Dockerfile"
 }
 
 # ---------------------------------------------------------------------------

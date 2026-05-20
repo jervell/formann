@@ -42,11 +42,16 @@ RUN groupadd --gid ${RUNNER_GID} runner \
  && chown ${RUNNER_UID}:${RUNNER_GID} /repo
 
 # Inline entrypoint — suppresses kernel core dumps so a container crash can't
-# drop a `core` file into the bind-mounted runner-checkout.
+# drop a `core` file into the bind-mounted runner-checkout, and logs the
+# actual limit state and core_pattern so each dispatch log carries direct
+# evidence of whether the prevention is in force.
 RUN printf '%s\n' \
       '#!/usr/bin/env bash' \
       'set -e' \
       'ulimit -c 0' \
+      'echo "runner: entrypoint: ulimit -c soft=$(ulimit -c)" >&2' \
+      'echo "runner: entrypoint: ulimit -c hard=$(ulimit -Hc)" >&2' \
+      'echo "runner: entrypoint: core_pattern=$(cat /proc/sys/kernel/core_pattern)" >&2' \
       'exec "$@"' \
     > /usr/local/bin/entrypoint.sh \
  && chmod +x /usr/local/bin/entrypoint.sh
