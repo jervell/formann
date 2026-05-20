@@ -889,9 +889,8 @@ setup_ensure_checkout_test() {
   git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m init
 
-  # ensure_runner_checkout's tail step (refresh_runner_checkout_install_products)
-  # unconditionally invokes $HOST_REPO/installer/install.sh. Stub it to a no-op
-  # so this test stays focused on the clean-untracked behavior it pins.
+  # ensure_runner_checkout_on_branch no longer calls the installer (that moved
+  # to preflight). Stub install.sh to a no-op as a belt-and-suspenders guard.
   mkdir -p "$HOST_REPO/installer"
   cat >"$HOST_REPO/installer/install.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -1827,6 +1826,9 @@ setup_eligibility_test() {
   TEST_CHECKOUT_SENTINEL="$BATS_TEST_TMPDIR/checkout-called"
   acquire_lock() { :; }
   check_discovery() { DISCOVERY_JSON='["other"]'; }
+  ensure_runner_checkout_exists() { :; }
+  refresh_runner_checkout_install_products() { :; }
+  ensure_runner_remote() { :; }
   ensure_runner_checkout() {
     echo "ensure_runner_checkout invoked before refusal" >"$TEST_CHECKOUT_SENTINEL"
     return 99
@@ -4258,6 +4260,90 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
 
   [ "$RUN_STOP_REASON" = "completed" ]
   [ "$(drain_outcomes_count)" = "0" ]
+}
+
+@test "install.sh invoked exactly once across a drain-mode multi-iteration run" {
+  # Pin the once-per-pass installer invariant. Before the fix,
+  # refresh_runner_checkout_install_products lived at the tail of
+  # ensure_runner_checkout_on_branch — firing once per feature (from
+  # drain_one_feature's pre-loop sync) and once per dispatch iteration
+  # (from run_loop's per-iteration ensure_runner_checkout re-sync). For a
+  # one-feature run with two dispatches that produced three invocations,
+  # crowding runner.log with repeated "rules not found" warnings.
+  #
+  # After the fix the installer runs only from preflight (one
+  # refresh_runner_checkout_install_products call per run-the-queue.sh
+  # invocation); ensure_runner_checkout_on_branch is branch-sync only.
+  #
+  # Fixture: one feature ("alpha"), two eligible issues. The test drives
+  # the real run_loop and the real ensure_runner_checkout_on_branch (backed
+  # by real git repos) so all three branch-sync calls (one pre-loop from
+  # drain_one_feature and two per-iteration from run_loop) are exercised.
+  # The install.sh counter must read exactly 1 at the end.
+  setup_drain_test
+  eval "$DRAIN_REAL_RUN_LOOP"
+
+  DISCOVERY_JSON='["alpha"]'
+
+  # Build a real feature branch so drain_one_feature's gate passes and
+  # ensure_runner_checkout_on_branch has a real branch to sync to.
+  git -C "$HOST_REPO" checkout --quiet -B "alpha"
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "alpha: first"
+
+  # Stub install.sh to record each invocation. Embed the count-file path
+  # directly (no single-quoted heredoc) so the script can write to it at
+  # runtime without $INSTALL_COUNT_FILE being set in its environment.
+  INSTALL_COUNT_FILE="$BATS_TEST_TMPDIR/install-count"
+  : >"$INSTALL_COUNT_FILE"
+  mkdir -p "$HOST_REPO/docs/formann" "$HOST_REPO/installer"
+  printf '#!/usr/bin/env bash\necho "invoked" >>"%s"\n' \
+    "$INSTALL_COUNT_FILE" >"$HOST_REPO/installer/install.sh"
+  chmod +x "$HOST_REPO/installer/install.sh"
+  # Remove the mock from setup_drain_test; restore the real function so
+  # the branch-sync path exercises the production code (which must not
+  # call install.sh after the fix).
+  unset -f ensure_runner_checkout_on_branch
+
+  # Pre-clone the checkout — preflight calls ensure_runner_checkout_exists
+  # before any per-feature work.
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  ensure_runner_checkout_exists
+
+  # Preflight also calls refresh_runner_checkout_install_products exactly
+  # once. This is the single install.sh invocation for the whole pass.
+  refresh_runner_checkout_install_products "$HOST_REPO" "$HOST_CHECKOUT"
+
+  # Two-issue queue: produces two per-iteration ensure_runner_checkout
+  # calls inside run_loop plus one pre-loop call in drain_one_feature.
+  # Override take_snapshot to present the 2-issue queue and drain it.
+  ALPHA_DRAINED_FILE="$BATS_TEST_TMPDIR/alpha-drained"
+  : >"$ALPHA_DRAINED_FILE"
+  take_snapshot() {
+    local lines
+    lines="$(wc -l <"$ALPHA_DRAINED_FILE" | tr -d ' ')"
+    case "$lines" in
+      0) printf '{"feature":"alpha","issues":[{"ref":"alpha/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true},{"ref":"alpha/02","nn":"02","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' ;;
+      1) printf '{"feature":"alpha","issues":[{"ref":"alpha/02","nn":"02","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' ;;
+      *) printf '{"feature":"alpha","issues":[]}' ;;
+    esac
+  }
+  dispatch_one() {
+    local feature="$1" nn="$2"
+    echo "$feature/$nn" >>"$ALPHA_DRAINED_FILE"
+    return 0
+  }
+  propagate_feature() { :; }
+
+  RUN_MODE="drain"
+  run_drain
+
+  [ "$RUN_STOP_REASON" = "completed" ]
+
+  # Exactly one install.sh invocation for the entire pass — not three.
+  local count
+  count="$(wc -l <"$INSTALL_COUNT_FILE" | tr -d ' ')"
+  [ "$count" = "1" ]
 }
 
 @test "run_drain — feature-snapshot-failed continues the run (does not abort)" {

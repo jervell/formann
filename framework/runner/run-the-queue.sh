@@ -1148,17 +1148,11 @@ refresh_runner_checkout_install_products() {
   fi
 }
 
-# 2. Runner-checkout exists or can be created; sync to the named branch's
-#    tip on host. Branch-parameterized: the runner-checkout is a single
-#    clone that gets branch-switched per drained feature inside the drain
-#    loop. Single-feature / single-issue modes call this once with the
-#    target feature.
-#
-# Failure mode:
-#   - Returns 1 with a stderr diagnostic for any git failure or post-sync
-#     mismatch. The caller decides whether to `fail_invariant` (pre-flight
-#     / narrowed mode) or record a per-feature `skip:fetch-failed` (drain
-#     mode). The function itself never aborts — it has no run-mode context.
+# 2a. Runner-checkout directory is present (clones from host if absent).
+#     Branch-agnostic: only the clone lives here; branch-switching is in
+#     ensure_runner_checkout_on_branch below. Called from preflight
+#     unconditionally so the clone fires at most once per pass, before any
+#     branch-sync or installer refresh.
 #
 # PRD deviation: §Git and propagation specifies `git clone --reference`
 # for cheap shared-object-store clones. Empirically, that approach is
@@ -1176,18 +1170,33 @@ refresh_runner_checkout_install_products() {
 # host commits arrive via `git fetch origin <branch>`, which copies
 # loose objects into the runner-checkout's own store — no alternates
 # dependency, so container-side git ops cannot decouple us from host.
+ensure_runner_checkout_exists() {
+  if [ ! -d "$HOST_CHECKOUT/.git" ]; then
+    mkdir -p "$(dirname "$HOST_CHECKOUT")"
+    if ! git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2; then
+      echo "runner: ensure_runner_checkout_exists: git clone into $HOST_CHECKOUT failed" >&2
+      return 1
+    fi
+  fi
+}
+
+# 2b. Runner-checkout is synced to the named branch's tip on host.
+#     Branch-parameterized: the runner-checkout is a single clone that
+#     gets branch-switched per drained feature inside the drain loop.
+#     Single-feature / single-issue modes call this once with the target
+#     feature. Requires the checkout directory to already exist (see
+#     ensure_runner_checkout_exists above).
+#
+# Failure mode:
+#   - Returns 1 with a stderr diagnostic for any git failure or post-sync
+#     mismatch. The caller decides whether to `fail_invariant` (pre-flight
+#     / narrowed mode) or record a per-feature `skip:fetch-failed` (drain
+#     mode). The function itself never aborts — it has no run-mode context.
 ensure_runner_checkout_on_branch() {
   local branch="$1"
   if [ -z "$branch" ]; then
     echo "runner: ensure_runner_checkout_on_branch: empty branch" >&2
     return 1
-  fi
-  if [ ! -d "$HOST_CHECKOUT/.git" ]; then
-    mkdir -p "$(dirname "$HOST_CHECKOUT")"
-    if ! git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git clone into $HOST_CHECKOUT failed" >&2
-      return 1
-    fi
   fi
 
   # Read the parking-ref tip directly from host's .git. The runner-checkout's
@@ -1259,13 +1268,6 @@ ensure_runner_checkout_on_branch() {
   # state at this point in the loop, so cleaning is unconditionally safe.
   if ! git -C "$HOST_CHECKOUT" clean --quiet -fd >&2; then
     echo "runner: ensure_runner_checkout_on_branch: git clean -fd failed" >&2
-    return 1
-  fi
-
-  # Refresh installer products against the checkout so binding wiring on
-  # disk matches host. See `refresh_runner_checkout_install_products`
-  # above for the rationale.
-  if ! refresh_runner_checkout_install_products "$HOST_REPO" "$HOST_CHECKOUT"; then
     return 1
   fi
   return 0
@@ -1371,20 +1373,34 @@ preflight() {
   acquire_lock
   check_discovery                        # invariant 1: tracker-snapshot --list
   ensure_runner_remote                   # invariant 1b: runner remote
+  # Checkout-exists and installer-refresh are unconditional for all run
+  # modes. Drain mode previously skipped all checkout work in preflight;
+  # that exception narrows to skipping branch-sync only — the exists step
+  # and installer refresh are now invariant for every run-the-queue.sh
+  # invocation, so install.sh fires exactly once per pass regardless of
+  # how many features or iterations the pass processes.
+  if ! ensure_runner_checkout_exists >&2; then
+    fail_invariant "runner-checkout" \
+      "ensure_runner_checkout_exists failed (rm -rf $HOST_CHECKOUT and re-run to recover)"
+  fi
+  if ! refresh_runner_checkout_install_products "$HOST_REPO" "$HOST_CHECKOUT"; then
+    fail_invariant "runner-checkout" \
+      "installer refresh against $HOST_CHECKOUT failed"
+  fi
   # Single-feature / single-issue modes know their target up front, so the
   # CLI-input gate runs here (returns 2 with a `feature-restricted` /
-  # `single-dispatch (refused: …)` stop reason). Runner-checkout sync and
-  # mvn-cache materialization also happen up front because there's exactly
+  # `single-dispatch (refused: …)` stop reason). Runner-checkout branch-sync
+  # and mvn-cache materialization also happen up front because there's exactly
   # one feature to drain.
   #
-  # Drain mode (bare invocation) defers all per-feature work into the
-  # outer loop: each feature gets its own gate evaluation, lazy
-  # runner-checkout sync, and lazy mvn-cache. A feature whose host branch
-  # doesn't exist / whose snapshot crashes / whose queue is empty
-  # surfaces as a `skipped` SUMMARY row, not a pre-flight abort.
+  # Drain mode (bare invocation) defers per-feature work into the outer
+  # loop: each feature gets its own gate evaluation, lazy branch-sync, and
+  # lazy mvn-cache. A feature whose host branch doesn't exist / whose
+  # snapshot crashes / whose queue is empty surfaces as a `skipped` SUMMARY
+  # row, not a pre-flight abort.
   if [ "$RUN_MODE" != "drain" ]; then
     check_feature_eligibility || return $?
-    ensure_runner_checkout               # invariant 2
+    ensure_runner_checkout               # invariant 2 (branch-sync)
   fi
   check_docker_daemon                    # invariant 3
   ensure_image                           # invariant 4
