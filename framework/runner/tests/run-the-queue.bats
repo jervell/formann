@@ -4321,6 +4321,15 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   # by real git repos) so all three branch-sync calls (one pre-loop from
   # drain_one_feature and two per-iteration from run_loop) are exercised.
   # The install.sh counter must read exactly 1 at the end.
+  #
+  # jq is required by feature_has_dispatchable_ref (drain gate) and by
+  # run_loop's issue-selection loop. Without it both paths silently return
+  # early so run_loop is never invoked and the installer count of 1 from
+  # the manual preflight call satisfies the assertion vacuously — a
+  # regression restoring the installer to ensure_runner_checkout_on_branch
+  # would go undetected. Skip explicitly rather than passing vacuously.
+  command -v jq >/dev/null || skip "jq required for feature_has_dispatchable_ref and run_loop issue-selection"
+
   setup_drain_test
   eval "$DRAIN_REAL_RUN_LOOP"
 
@@ -4380,6 +4389,15 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   run_drain
 
   [ "$RUN_STOP_REASON" = "completed" ]
+
+  # Both issues must have been dispatched — confirms run_loop ran, which
+  # means the per-iteration branch-sync path was exercised. Without this
+  # assertion a regression restoring the installer to
+  # ensure_runner_checkout_on_branch could go undetected if run_loop were
+  # somehow skipped and the count still read 1 from the preflight call alone.
+  local dispatched
+  dispatched="$(wc -l <"$ALPHA_DRAINED_FILE" | tr -d ' ')"
+  [ "$dispatched" = "2" ]
 
   # Exactly one install.sh invocation for the entire pass — not three.
   local count
