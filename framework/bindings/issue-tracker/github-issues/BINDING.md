@@ -484,23 +484,6 @@ Convention: commits that do work toward an issue reference the issue as `#N` in 
 
 Under the github-issues binding, sub-issue bodies follow the same template as the local-markdown binding, with one per-binding difference: **`## Parent` is omitted**.
 
-```markdown
-## What to build
-
-A concise description of this vertical slice. Describe the end-to-end behavior, not layer-by-layer implementation.
-
-## Acceptance criteria
-
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-## Blocked by
-
-- #N
-
-Or "None — can start immediately" if no blockers.
-```
-
 Use GitHub's native `#N` autolink form inside `## Blocked by` — not the portable `<feature>/<N>` form. The snapshot's blocker extractor matches `#N` refs against the parent's in-memory sub-issue set.
 
 **Rationale for omitting `## Parent`:** Under local-markdown, `## Parent` carries a file path to the PRD (e.g., `.features/<slug>/PRD.md`) — the only in-file pointer to the parent artifact. Under the github-issues binding, GitHub's native sub-issue panel on the parent issue already surfaces the parent → sub-issue relationship visually; and the **Read the feature** verb (`gh issue view <parent-N>`) gives skills programmatic access to the PRD body. The `## Parent` section would be redundant and would drift if the parent issue number changed.
