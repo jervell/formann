@@ -1200,6 +1200,28 @@ ensure_runner_checkout_on_branch() {
     return 1
   fi
 
+  # Scrub stray WT changes in the runner-checkout before attempting any
+  # ref-changing operation. The runner-checkout is runtime state — no human
+  # authors changes there — so any non-empty `git status` reflects either a
+  # previous dispatch that failed to commit/propagate or an external write
+  # that leaked in (e.g. an IDE rooted at the host repo also editing this
+  # nested checkout). The downstream `checkout -B` refuses on a dirty WT
+  # whenever the new tip's version of a touched file differs from HEAD's, so
+  # one stray write would deadlock every subsequent pass. Log the dirty set
+  # loudly so the diagnostic survives the scrub, then `reset --hard HEAD` to
+  # bring the WT in line with current HEAD before the ref switch below. The
+  # trailing `git clean -fd` (post-switch) still handles untracked files.
+  local dirty
+  dirty="$(git -C "$HOST_CHECKOUT" status --porcelain 2>/dev/null)"
+  if [ -n "$dirty" ]; then
+    echo "runner: ensure_runner_checkout_on_branch: dirty runner-checkout WT before sync — scrubbing:" >&2
+    echo "$dirty" >&2
+    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard HEAD >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git reset --hard HEAD failed" >&2
+      return 1
+    fi
+  fi
+
   # Read the parking-ref tip directly from host's .git. The runner-checkout's
   # default origin refspec (+refs/heads/*:refs/remotes/origin/*) does NOT
   # cover host's refs/remotes/runner/*, so an origin fetch won't bring it

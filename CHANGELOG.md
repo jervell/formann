@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Runner captures core-dump files left in untracked subdirectories of the runner-checkout (previously only root-level cores).
+- Runner recovers from a dirty runner-checkout working tree before syncing the branch, instead of refusing the checkout. The leaked changes are logged to stderr before being scrubbed.
 
 ## [0.1.0] - 2026-05-20
 
