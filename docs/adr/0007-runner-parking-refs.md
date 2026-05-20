@@ -10,7 +10,7 @@ Treating the runner as a contributor — one that publishes to a known place —
 
 ## Decision A: Parking ref as the runner's authoritative chain
 
-The runner's output for `<feature>` always lives in `refs/remotes/runner/<feature>`. Per-feature; advances linearly across dispatches. Pre-dispatch sync uses the parking ref (when it exists and is at-or-ahead-of host's branch) as the runner-checkout's base, so subsequent dispatches build on prior runner output even when the maintainer hasn't pulled.
+The runner's output for `<feature>` always lives in `refs/remotes/runner/<feature>`. Per-feature; advances linearly in the steady-state on-branch loop, and is force-updated when the maintainer pulls and rebases (the next dispatch's tip is no longer a descendant of the prior parking-ref tip, so a non-`+` refspec would refuse). Pre-dispatch sync uses the parking ref (when it exists and is at-or-ahead-of host's branch) as the runner-checkout's base, so subsequent dispatches build on prior runner output even when the maintainer hasn't pulled.
 
 ### Considered options
 

@@ -403,22 +403,50 @@ format_progress_outcome() {
 # or `-` when propagation was not reached.
 format_end_of_run_table() {
   local stop_reason="$1"
+  # `length()` returns bytes on byte-mode awk (BSD awk in non-UTF-8 locales,
+  # mawk, busybox awk) and code points on UTF-8-aware awk (gawk in a UTF-8
+  # locale). The propagation column contains "→" (3 bytes / 1 code point),
+  # so the column padding must measure display width, not bytes, or the
+  # header and data rows end at different visual columns on byte-mode awk.
+  # We probe `length("→")` at startup to derive the per-arrow byte
+  # overhead and apply it to every cell measurement and pad calculation.
   awk -v stop="$stop_reason" '
-    BEGIN { FS="|"; max_ref=length("issue"); max_out=length("outcome"); max_dur=length("duration"); max_prop=length("propagation") }
+    BEGIN {
+      FS="|"
+      arrow_overhead = length("→") - 1
+      max_ref=length("issue"); max_out=length("outcome")
+      max_dur=length("duration"); max_prop=length("propagation")
+    }
+    function display_len(s,    n) {
+      # gsub returns the replacement count; on byte-mode awk each → costs
+      # arrow_overhead (2) extra bytes vs its 1-column display width.
+      n = gsub(/→/, "→", s)
+      return length(s) - n * arrow_overhead
+    }
+    function pad_right(s, w,    pad) {
+      pad = w - display_len(s)
+      if (pad > 0) return s sprintf("%*s", pad, "")
+      return s
+    }
     NF >= 5 {
-      n++;
-      refs[n]=$3; outs[n]=$4; durs[n]=$5 "s";
-      props[n]=(NF >= 8 && $8 != "") ? $8 : "-";
-      if (length(refs[n]) > max_ref) max_ref = length(refs[n]);
-      if (length(outs[n]) > max_out) max_out = length(outs[n]);
-      if (length(durs[n]) > max_dur) max_dur = length(durs[n]);
-      if (length(props[n]) > max_prop) max_prop = length(props[n]);
+      n++
+      refs[n]=$3; outs[n]=$4; durs[n]=$5 "s"
+      props[n]=(NF >= 8 && $8 != "") ? $8 : "-"
+      if (display_len(refs[n])  > max_ref)  max_ref  = display_len(refs[n])
+      if (display_len(outs[n])  > max_out)  max_out  = display_len(outs[n])
+      if (display_len(durs[n])  > max_dur)  max_dur  = display_len(durs[n])
+      if (display_len(props[n]) > max_prop) max_prop = display_len(props[n])
     }
     END {
-      fmt = sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds\n", max_ref, max_out, max_dur, max_prop);
-      printf fmt, "issue", "outcome", "duration", "propagation";
-      for (i = 1; i <= n; i++) printf fmt, refs[i], outs[i], durs[i], props[i];
-      printf "stop reason: %s\n", stop;
+      printf "%s  %s  %s  %s\n", \
+        pad_right("issue", max_ref), pad_right("outcome", max_out), \
+        pad_right("duration", max_dur), pad_right("propagation", max_prop)
+      for (i = 1; i <= n; i++) {
+        printf "%s  %s  %s  %s\n", \
+          pad_right(refs[i], max_ref), pad_right(outs[i], max_out), \
+          pad_right(durs[i], max_dur), pad_right(props[i], max_prop)
+      }
+      printf "stop reason: %s\n", stop
     }
   '
 }
@@ -1757,8 +1785,12 @@ propagate_feature() {
   # maintainer pulls runner work and rebases, the next runner dispatch's tip
   # is no longer a descendant of the prior parking-ref tip, and a non-`+`
   # refspec would refuse as non-fast-forward.
+  #
+  # Git's own stderr is left to flow through so runner.log carries the actual
+  # failure cause (permissions, lock contention, FS error, disk full) ahead
+  # of the runner's heredoc — diagnostic without re-running the recipe.
   if ! git -C "$HOST_REPO" fetch --quiet "$HOST_CHECKOUT" \
-      "+${branch}:${parking_ref}" 2>/dev/null; then
+      "+${branch}:${parking_ref}" >&2; then
     cat >&2 <<MSG
 runner: propagation error — failed to publish to parking ref '${parking_ref}'.
 The dispatched commit lives in the runner-checkout. Recover with:
@@ -2014,11 +2046,32 @@ dispatch_one() {
   gate_start_clock="$(now_clock)"
   format_progress_start "$gate_start_clock" "$ref" "review"
 
+  # Capture the runner-checkout's HEAD around the gate dispatch on the same
+  # principle as the implement stage above: the post-gate advance signals
+  # whether the gate produced commits. Under local-markdown the gate prompt
+  # contracts to commit on clean and blocked alike, so HEAD advances and the
+  # post-gate propagation fires. Under github-issues the gate's comment and
+  # set-state land as API calls, HEAD is unchanged, and there is no commit
+  # to publish — gating on the delta keeps us from publishing a no-op to the
+  # parking ref and (when the maintainer is on the target branch) from
+  # recording a misleading `parked → runner/<feature>` ledger entry.
+  local pre_gate_head
+  pre_gate_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
+
   local gate_started_at
   gate_started_at=$(date +%s)
   local gate_rc=0
   run_gate_container "$ref" "$review_log_file" || gate_rc=$?
   local gate_attempts="${TRANSPORT_RETRY_ATTEMPTS:-1}"
+
+  local post_gate_head
+  post_gate_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
+
+  local gate_has_runner_commits=0
+  if [ -n "$pre_gate_head" ] && [ -n "$post_gate_head" ] \
+      && [ "$pre_gate_head" != "$post_gate_head" ]; then
+    gate_has_runner_commits=1
+  fi
 
   local gate_transport_crash=false
   if [ "$gate_rc" != "0" ] && is_transport_crash "$review_log_file"; then
@@ -2076,23 +2129,29 @@ dispatch_one() {
     return 1
   fi
 
-  # Propagate the gate's `tracker:` commit to the host. The gate prompt
-  # contracts to commit on clean and blocked alike; the classifier itself
-  # only checks exit code and status delta, so this is a prompt-level
-  # invariant rather than one enforced here. A parking-ref publish failure
-  # (error) halts the loop — same as the implement-stage path above.
-  if ! propagate_feature "$feature"; then
-    # As in the implement stage: the review outcome line above already
-    # showed the gate verdict (clean → done / blocked). Emit a follow-up
-    # `halt → gate-failed` line so the visible record matches the
-    # SUMMARY.md row.
-    local gate_halt_duration iter_halt_duration
-    gate_halt_duration=$(( $(date +%s) - gate_started_at ))
-    iter_halt_duration=$(( impl_duration + gate_halt_duration ))
-    format_progress_outcome "$(now_clock)" "$ref" "review" "halt → gate-failed" "$gate_halt_duration"
-    record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$iter_halt_duration" "y" "$gate_attempts"
-    RUN_STOP_REASON="propagation-error"
-    return 1
+  # Propagate the gate's commit to the host — same commit-delta gate as the
+  # implement stage. Under local-markdown the gate prompt contracts to
+  # commit on clean and blocked alike, so the branch advances and this
+  # fires; under github-issues the gate's tracker mutations are API calls
+  # producing no commit, the branch tip is unchanged, and this is a no-op.
+  # The classifier itself only checks exit code and status delta, so the
+  # local-markdown commit invariant is a prompt-level concern, not enforced
+  # here. A parking-ref publish failure (error) halts the loop — same as
+  # the implement-stage path above.
+  if [ "$gate_has_runner_commits" -eq 1 ]; then
+    if ! propagate_feature "$feature"; then
+      # As in the implement stage: the review outcome line above already
+      # showed the gate verdict (clean → done / blocked). Emit a follow-up
+      # `halt → gate-failed` line so the visible record matches the
+      # SUMMARY.md row.
+      local gate_halt_duration iter_halt_duration
+      gate_halt_duration=$(( $(date +%s) - gate_started_at ))
+      iter_halt_duration=$(( impl_duration + gate_halt_duration ))
+      format_progress_outcome "$(now_clock)" "$ref" "review" "halt → gate-failed" "$gate_halt_duration"
+      record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$iter_halt_duration" "y" "$gate_attempts"
+      RUN_STOP_REASON="propagation-error"
+      return 1
+    fi
   fi
 
   record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_duration" "y" "$gate_attempts"

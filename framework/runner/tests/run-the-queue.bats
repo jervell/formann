@@ -1142,7 +1142,13 @@ install_afk_snapshots() {
     # Post-implement propagation succeeds; post-gate halts.
     [ "$n" -eq 0 ]
   }
-  run_gate_container() { return 0; }
+  # local-markdown-shaped gate commit so the HEAD delta triggers
+  # gate-stage propagation (the path under test).
+  run_gate_container() {
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → done"
+    return 0
+  }
 
   run dispatch_one "f" "01" "$TEST_RUN_DIR"
 
@@ -1195,7 +1201,13 @@ install_afk_snapshots() {
     # Post-implement propagation succeeds; post-gate halts.
     [ "$n" -eq 0 ]
   }
-  run_gate_container() { return 0; }
+  # local-markdown-shaped gate commit so the HEAD delta triggers
+  # gate-stage propagation (the path under test).
+  run_gate_container() {
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → done"
+    return 0
+  }
 
   RUN_STOP_REASON=""
   set +e
@@ -1845,9 +1857,11 @@ setup_eligibility_test() {
     echo "called" >>"$TEST_PROPAGATE_CALLS"
     return 0
   }
+  # local-markdown-shaped gate: commits a `tracker:` row on clean and
+  # blocked alike. The HEAD delta triggers gate-stage propagation.
   run_gate_container() {
-    # Pretend the gate session succeeded (claude exit 0) and the
-    # snapshot-mock will return status=done at post-gate phase.
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → done"
     return 0
   }
 
@@ -1862,6 +1876,73 @@ setup_eligibility_test() {
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
   # Two propagations: post-implement and post-gate.
+  [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
+}
+
+@test "dispatch_one — gate that produces no commits skips post-gate propagation" {
+  # Regression: the gate-stage propagate_feature call was unconditional,
+  # mirroring the local-markdown binding's "gate prompt always commits"
+  # contract. Under the github-issues binding the gate's comment + set-state
+  # are API calls — no runner-checkout commit. The implement stage already
+  # gates propagation on the HEAD delta; the gate stage must do the same so
+  # a no-commit gate dispatch does not produce a redundant parking-ref
+  # publish (and, on an on-branch maintainer, a spurious "parked → runner"
+  # ledger entry telling the maintainer to pull nothing).
+  setup_dispatch_one_test
+  install_afk_snapshots done
+
+  TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
+  : >"$TEST_PROPAGATE_CALLS"
+  propagate_feature() {
+    echo "called" >>"$TEST_PROPAGATE_CALLS"
+    return 0
+  }
+  # github-issues-shaped gate: state flip and comment go through API calls,
+  # leaving the runner-checkout HEAD unchanged.
+  run_gate_container() {
+    return 0
+  }
+
+  RUN_DISPATCHES=()
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
+  # Only the implement-stage propagate ran; the gate-stage call was gated
+  # out by the empty HEAD delta.
+  [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
+}
+
+@test "dispatch_one — gate that commits still propagates twice" {
+  # Companion to the above: under local-markdown the gate commits a
+  # `tracker:` row, so the post-gate HEAD delta is non-empty and the
+  # gate-stage propagation must still fire. This pins the local-markdown
+  # path's invariant after the gate-stage commit-delta gate is added.
+  setup_dispatch_one_test
+  install_afk_snapshots done
+
+  TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
+  : >"$TEST_PROPAGATE_CALLS"
+  propagate_feature() {
+    echo "called" >>"$TEST_PROPAGATE_CALLS"
+    return 0
+  }
+  # local-markdown-shaped gate: contracts to commit on clean and blocked
+  # alike (the tracker mutation lands as a git commit, not an API call).
+  run_gate_container() {
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → done"
+    return 0
+  }
+
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  set -e
+
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
@@ -1883,7 +1964,13 @@ setup_eligibility_test() {
     printf '%s\n' "${1-}" >>"$TEST_PROPAGATE_ARGS"
     return 0
   }
-  run_gate_container() { return 0; }
+  # local-markdown-shaped gate commit so the HEAD delta triggers
+  # gate-stage propagation.
+  run_gate_container() {
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → done"
+    return 0
+  }
 
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR"
@@ -1904,8 +1991,12 @@ setup_eligibility_test() {
     echo "called" >>"$TEST_PROPAGATE_CALLS"
     return 0
   }
+  # local-markdown-shaped gate: commits a `tracker:` row even on blocked
+  # (the gate prompt contracts to commit on clean and blocked alike).
+  # The HEAD delta triggers gate-stage propagation.
   run_gate_container() {
-    # Gate appended a comment but did not flip status; exit 0.
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → blocked"
     return 0
   }
 
@@ -2043,8 +2134,12 @@ setup_eligibility_test() {
     return 0
   }
   run_gate_container() {
-    # Exit 0 with no working-tree change of its own; the classifier sees
-    # status unchanged (in-review → in-review) and returns `blocked`.
+    # local-markdown-shaped gate: commits a `tracker:` row even on
+    # blocked. The classifier still sees status unchanged
+    # (in-review → in-review) and returns `blocked`; the HEAD delta
+    # triggers gate-stage propagation so the tracker commit reaches host.
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → blocked"
     return 0
   }
 
@@ -3255,6 +3350,37 @@ setup_propagate_test() {
   [ "$RUNNER_LAST_PROPAGATION" = "" ]
 }
 
+@test "propagate_feature — error: git's own diagnostic survives to stderr" {
+  # Regression: step 1 used to silence git's stderr via 2>/dev/null, so the
+  # operator saw only the runner's generic "propagation error" line and the
+  # recovery recipe — with no signal as to WHY publish failed (FS error,
+  # lock contention, disk full, permissions). The recipe had to be re-run
+  # manually just to surface git's error. Step 2 captures stderr and
+  # conditionally surfaces it; step 1 should be at least as informative on
+  # a fail-fatal path.
+  setup_propagate_test
+
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "tracker: f/01 → in-review"
+
+  HOST_CHECKOUT="/nonexistent/path"
+
+  RUNNER_LAST_PROPAGATION="stale"
+  local err_file="$BATS_TEST_TMPDIR/propagate-err.txt"
+  local propagate_rc=0
+  propagate_feature "f" >"$err_file" 2>&1 || propagate_rc=$?
+
+  [ "$propagate_rc" -ne 0 ]
+  # Git's own diagnostic must reach the captured stream alongside the
+  # runner's heredoc — otherwise the operator can't tell publish-failed
+  # from any other publish-failed.
+  grep -q "does not appear to be a git repository" "$err_file" || {
+    echo "expected git's diagnostic in stderr; got:"
+    cat "$err_file"
+    false
+  }
+}
+
 # === select_sync_base — pre-dispatch sync-base selector ====================
 #
 # Pure function: takes a pre-computed parking-ref relation and returns
@@ -3718,6 +3844,33 @@ afk-runner|02|afk-runner/02|done|30||1|parked → runner/afk-runner'
   echo "$result" | head -n 1 | grep -q ' propagation' || { echo "header missing 'propagation'"; echo "$result"; false; }
   echo "$result" | grep -q 'afk-runner/01.*propagated' || { echo "propagated row missing"; echo "$result"; false; }
   echo "$result" | grep -q 'afk-runner/02.*parked' || { echo "parked row missing"; echo "$result"; false; }
+}
+
+@test "format_end_of_run_table — header and data rows align visually under UTF-8 → indicator" {
+  # Regression: awk's length() returns BYTES on BSD awk / mawk / busybox awk,
+  # so column widths derived from length() over-counted "→" cells by 2 bytes
+  # each, leaving the propagation column misaligned between the header row
+  # (padded to byte width) and the data row (visual width 2 chars short of
+  # the padding). Visual alignment requires the column-padding logic to use
+  # display width (1 per code point), not byte count.
+  input='f|01|f/01|done|10|y|1|propagated → host
+f|02|f/02|done|20|y|1|parked → runner/f'
+  result="$(printf '%s\n' "$input" | format_end_of_run_table completed)"
+
+  # Count code points per row including trailing padding — alignment means
+  # every row ends at the same display column. `wc -m` under a UTF-8 locale
+  # gives code-point counts on both macOS and Linux (-m is POSIX; counts
+  # characters when LC_CTYPE is multibyte).
+  local header data1 data2 wh wd1 wd2
+  header="$(printf '%s\n' "$result" | sed -n '1p')"
+  data1="$( printf '%s\n' "$result" | sed -n '2p')"
+  data2="$( printf '%s\n' "$result" | sed -n '3p')"
+  wh=$(  LC_ALL=en_US.UTF-8 printf '%s' "$header" | wc -m | tr -d ' ')
+  wd1=$( LC_ALL=en_US.UTF-8 printf '%s' "$data1"  | wc -m | tr -d ' ')
+  wd2=$( LC_ALL=en_US.UTF-8 printf '%s' "$data2"  | wc -m | tr -d ' ')
+
+  [ "$wh" = "$wd1" ] || { echo "header($wh) ≠ data1($wd1):"; printf '[%s]\n[%s]\n' "$header" "$data1"; false; }
+  [ "$wh" = "$wd2" ] || { echo "header($wh) ≠ data2($wd2):"; printf '[%s]\n[%s]\n' "$header" "$data2"; false; }
 }
 
 # === drain_one_feature + run_drain — outer-loop integration ================

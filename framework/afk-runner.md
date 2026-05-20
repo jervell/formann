@@ -206,7 +206,7 @@ One iteration, end to end:
 7. **Gate decision** — every successful AFK implement proceeds to the review-and-gate dispatch. Both run modes refuse non-AFK refs before reaching this point (loop via the snapshot's `eligible` filter, single-dispatch via the same flag in `run_single`), so `dispatch_one` never sees a non-AFK ref.
 8. **Review-and-gate dispatch** — `claude -p "<gate-prompt>\n<ref>" --dangerously-skip-permissions` in another fresh sandbox container. Output captured to `<NN>-review.log`.
 9. **Classify gate** — pre/post snapshots and the dispatch exit code feed `classify_gate_outcome`. Verdict is `clean`, `blocked`, or `gate-failed`.
-10. **Propagate (if gate succeeded)** — fast-forward the host's branch again to land the gate's `tracker:` commit.
+10. **Propagate (if gate succeeded and produced commits)** — same publish-then-fast-forward sequence as step 6, gated on the runner-checkout HEAD delta across the gate dispatch. Under local-markdown the gate prompt's `tracker:` commit advances HEAD and this fires; under github-issues the gate's API-only mutations leave HEAD unchanged and this is a no-op.
 
 Per-issue failures don't stop the queue — they're logged, the runner moves to the next eligible issue. The failed `/implement` already posts its own comment on the issue; the runner adds nothing beyond the abort flag written on stuck failures (see "Failure handling" below).
 

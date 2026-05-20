@@ -70,7 +70,7 @@ The separate git clone at `.runner-state/checkout/` that the **Runner** mounts i
 _Avoid_: "runner clone", "sandbox repo"
 
 **Parking ref**:
-Per-feature ref (`refs/remotes/runner/<feature>`) in the **Consumer**'s repo where the **Runner** publishes every **Dispatch**'s output. The **Runner**'s authoritative chain for the feature; advances linearly across dispatches. The maintainer pulls from this ref via `git pull runner <feature>` to bring runner work into the local feature branch.
+Per-feature ref (`refs/remotes/runner/<feature>`) in the **Consumer**'s repo where the **Runner** publishes every **Dispatch**'s output. The **Runner**'s authoritative chain for the feature; advances linearly in the steady-state on-branch loop and is force-updated when the maintainer pulls and rebases (the next dispatch's tip is no longer a descendant of the prior parking-ref tip). The maintainer pulls from this ref via `git pull runner <feature>` to bring runner work into the local feature branch.
 _Avoid_: "shadow branch", "runner branch"
 
 **Runner remote**:
