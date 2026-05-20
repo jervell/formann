@@ -2177,7 +2177,19 @@ setup_eligibility_test() {
   touch "$HOST_CHECKOUT/framework/runner/tests/core"
   local dirty="?? framework/runner/tests/core"
   capture_dispatch_core_files "$dirty" "$TEST_RUN_DIR" "f" "01"
+  [ -f "$TEST_RUN_DIR/f/01-core.framework-runner-tests-core" ]
+}
+
+@test "capture_dispatch_core_files — both root and subdir cores preserved without collision" {
+  setup_dispatch_one_test
+  mkdir -p "$HOST_CHECKOUT/framework/runner/tests"
+  touch "$HOST_CHECKOUT/core"
+  touch "$HOST_CHECKOUT/framework/runner/tests/core"
+  local dirty="?? core
+?? framework/runner/tests/core"
+  capture_dispatch_core_files "$dirty" "$TEST_RUN_DIR" "f" "01"
   [ -f "$TEST_RUN_DIR/f/01-core.core" ]
+  [ -f "$TEST_RUN_DIR/f/01-core.framework-runner-tests-core" ]
 }
 
 @test "capture_dispatch_core_files — no-op when dirty list has no core-pattern file" {

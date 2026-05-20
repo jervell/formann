@@ -1903,7 +1903,7 @@ capture_dispatch_core_files() {
   local dirty_list="$1" run_dir="$2" feature="$3" nn="$4"
   [ -z "$dirty_list" ] && return 0
 
-  local line path bn src dest_dir dest
+  local line path bn dest_suffix src dest_dir dest
   while IFS= read -r line; do
     [[ "$line" == '?? '* ]] || continue
     path="${line:3}"
@@ -1912,7 +1912,11 @@ capture_dispatch_core_files() {
     src="$HOST_CHECKOUT/$path"
     [ -e "$src" ] || continue
     dest_dir="$run_dir/$feature"
-    dest="$dest_dir/${nn}-core.${bn}"
+    # Use the full relative path (slashes → dashes) to avoid silent overwrites
+    # when two core files share the same basename (e.g. "core" at root and
+    # "framework/runner/tests/core" in a subdirectory).
+    dest_suffix="${path//\//-}"
+    dest="$dest_dir/${nn}-core.${dest_suffix}"
     mkdir -p "$dest_dir"
     cp -- "$src" "$dest"
   done <<< "$dirty_list"
