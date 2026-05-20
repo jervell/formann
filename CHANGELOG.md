@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Sandbox container image bundles `gh` and `bats`, so agents can drive the GitHub issues binding and run framework test suites without installing them first.
+
+### Changed
+- Runner renders dispatch durations as `Xs` / `Xm Ys` / `Xh Ym` across the mid-run progress line, the terminal stop table, and SUMMARY.md. On-disk records still use integer seconds.
+- Runner applies the consumer's `install.sh` exactly once per `run-the-queue.sh` invocation instead of refreshing it on every dispatch iteration.
+- Runner pins the sandbox git commit identity to `Claude <claude@anthropic.com>` so agent commits land with a deterministic author regardless of host git config. Override with `RUNNER_GIT_USER_NAME` / `RUNNER_GIT_USER_EMAIL`.
+
 ### Fixed
 - Runner captures core-dump files left in untracked subdirectories of the runner-checkout (previously only root-level cores).
 - Runner recovers from a dirty runner-checkout working tree before syncing the branch, instead of refusing the checkout. The leaked changes are logged to stderr before being scrubbed.
