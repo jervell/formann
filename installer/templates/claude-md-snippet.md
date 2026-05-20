@@ -6,6 +6,12 @@ This repo uses the Formann agentic methodology.
 
 Issues, PRDs, and triage are described in `docs/formann/issue-tracker/BINDING.md`.
 
+When creating an issue, use the template from `.formann/skills/to-issues/SKILL.md`.
+
+When creating a PRD, use the template from `.formann/skills/to-prd/SKILL.md`.
+
+Do NOT look at existing issues or PRDs for inspiration, they may be outdated or non-compliant. Use the relevant skills instead.
+
 ### Inbox
 
 Pre-lifecycle capture for deferred thoughts (bugs, tweaks, half-formed ideas). Optional add-on, described in `docs/formann/inbox.md`.
