@@ -27,6 +27,18 @@ RUN wget -qO- https://packages.adoptium.net/artifactory/api/gpg/key/public \
  && apt-get install -y --no-install-recommends temurin-21-jdk \
  && rm -rf /var/lib/apt/lists/*
 
+# GitHub CLI (github-issues binding) and bats (framework test suite).
+RUN wget -qO /usr/share/keyrings/githubcli-archive-keyring.gpg \
+      https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+ && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bats \
+      gh \
+ && rm -rf /var/lib/apt/lists/*
+
 # Node.js 20 from NodeSource, then the Claude CLI.
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
