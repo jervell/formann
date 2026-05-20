@@ -1122,12 +1122,13 @@ check_feature_eligibility() {
 # git history. A fresh runner-checkout clone therefore lacks them, and
 # the dispatch agent falls back to whichever binding it can find on disk
 # (typically local-markdown) — regardless of what the host has selected.
-# Running the installer against the checkout at the end of each per-pass
-# sync keeps the checkout's wiring matched to the host's.
+# Called from preflight exactly once per run-the-queue.sh invocation,
+# after ensure_runner_checkout_exists guarantees the directory is present.
 #
-# Idempotent: the installer's own contract requires it, and the per-pass
-# `git clean -fd` upstream of this call removes any prior untracked
-# products before we re-apply.
+# Idempotent: the installer's own contract requires it. The installer's
+# products are gitignored, so the per-iteration `git clean -fd` inside
+# ensure_runner_checkout_on_branch leaves them in place — they persist
+# across the entire pass without a second install call.
 refresh_runner_checkout_install_products() {
   local host_repo="$1"
   local checkout="$2"
