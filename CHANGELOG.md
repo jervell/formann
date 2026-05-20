@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- Runner now captures core-dump files dropped inside untracked subdirectories of the runner-checkout into the run-state directory (previously only root-level cores were visible). The post-dispatch dirty-file warning enumerates files inside untracked dirs instead of summarising them as `?? <dir>/`.
+- Runner captures core-dump files left in untracked subdirectories of the runner-checkout (previously only root-level cores).
 
 ## [0.1.0] - 2026-05-20
 
