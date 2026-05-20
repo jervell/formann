@@ -381,6 +381,19 @@ now_clock() { date +"%H:%M:%S"; }
 #   in-review        — HITL (gate skipped)
 #   FAIL             — implement-stage failure (classifier, propagation, container)
 
+# Convert integer seconds to a human-friendly string.
+# Rules: <60 → Xs; 60..3599 → Xm Ys; ≥3600 → Xh Ym (seconds dropped).
+humanize_duration() {
+  local s="$1"
+  if [ "$s" -lt 60 ]; then
+    printf '%ss\n' "$s"
+  elif [ "$s" -lt 3600 ]; then
+    printf '%sm %ss\n' "$((s / 60))" "$((s % 60))"
+  else
+    printf '%sh %sm\n' "$((s / 3600))" "$(( (s % 3600) / 60 ))"
+  fi
+}
+
 # Progress-line "starting" form: emitted at the start of a stage.
 format_progress_start() {
   local clock="$1" ref="$2" stage="$3"
@@ -390,7 +403,7 @@ format_progress_start() {
 # Progress-line outcome form: emitted at the end of a stage with its duration.
 format_progress_outcome() {
   local clock="$1" ref="$2" stage="$3" label="$4" duration="$5"
-  printf '[%s] %s %s → %s (%ss)\n' "$clock" "$ref" "$stage" "$label" "$duration"
+  printf '[%s] %s %s → %s (%s)\n' "$clock" "$ref" "$stage" "$label" "$(humanize_duration "$duration")"
 }
 
 # End-of-run table. Reads `feature|nn|ref|outcome|duration|review_present|attempt_count|propagation`
@@ -417,6 +430,12 @@ format_end_of_run_table() {
       max_ref=length("issue"); max_out=length("outcome")
       max_dur=length("duration"); max_prop=length("propagation")
     }
+    function humanize_dur(s,    h,m,r) {
+      s = int(s)
+      if (s < 60)   { return s "s" }
+      if (s < 3600) { m = int(s/60); r = s % 60; return m "m " r "s" }
+      h = int(s/3600); m = int((s % 3600) / 60); return h "h " m "m"
+    }
     function display_len(s,    n) {
       # gsub returns the replacement count; on byte-mode awk each → costs
       # arrow_overhead (2) extra bytes vs its 1-column display width.
@@ -430,7 +449,7 @@ format_end_of_run_table() {
     }
     NF >= 5 {
       n++
-      refs[n]=$3; outs[n]=$4; durs[n]=$5 "s"
+      refs[n]=$3; outs[n]=$4; durs[n]=humanize_dur($5)
       props[n]=(NF >= 8 && $8 != "") ? $8 : "-"
       if (display_len(refs[n])  > max_ref)  max_ref  = display_len(refs[n])
       if (display_len(outs[n])  > max_out)  max_out  = display_len(outs[n])
@@ -473,6 +492,12 @@ format_summary_md() {
   printf '| issue | outcome | duration | propagation | logs |\n'
   printf '|-------|---------|----------|-------------|------|\n'
   printf '%s' "$records" | awk -F'|' '
+    function humanize_dur(s,    h,m,r) {
+      s = int(s)
+      if (s < 60)   { return s "s" }
+      if (s < 3600) { m = int(s/60); r = s % 60; return m "m " r "s" }
+      h = int(s/3600); m = int((s % 3600) / 60); return h "h " m "m"
+    }
     NF >= 5 {
       nn=$2; ref=$3; out=$4; dur=$5;
       review=(NF >= 6 ? $6 : "");
@@ -483,7 +508,7 @@ format_summary_md() {
       if (review == "y") {
         logs = logs " [" nn "-review.log](" nn "-review.log)";
       }
-      printf "| %s | %s | %ss | %s | %s |\n", ref, out, dur, prop, logs;
+      printf "| %s | %s | %s | %s | %s |\n", ref, out, humanize_dur(dur), prop, logs;
     }'
   printf '%s' "$records" | format_parked_ledger
 }
@@ -521,6 +546,12 @@ format_multi_feature_summary_md() {
   printf -- '- Run: %s (started %s, %s %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock"
   printf -- '- Stop reason: %s\n\n' "$stop_reason"
   printf '%s' "$records" | awk -F'|' '
+    function humanize_dur(s,    h,m,r) {
+      s = int(s)
+      if (s < 60)   { return s "s" }
+      if (s < 3600) { m = int(s/60); r = s % 60; return m "m " r "s" }
+      h = int(s/3600); m = int((s % 3600) / 60); return h "h " m "m"
+    }
     function emit_table_header() {
       printf "| issue | outcome | duration | propagation | logs |\n";
       printf "|-------|---------|----------|-------------|------|\n";
@@ -566,7 +597,7 @@ format_multi_feature_summary_md() {
       if (review == "y") {
         logs = logs " [" feature "/" nn "-review.log](" feature "/" nn "-review.log)";
       }
-      printf "| %s | %s | %ss | %s | %s |\n", ref, out, dur, prop, logs;
+      printf "| %s | %s | %s | %s | %s |\n", ref, out, humanize_dur(dur), prop, logs;
       next;
     }
     END {

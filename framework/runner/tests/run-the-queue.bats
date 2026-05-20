@@ -2165,6 +2165,49 @@ setup_eligibility_test() {
 # formatters are pure (stdin→stdout, no globals) so the tests pass
 # fixture inputs and string-compare the output.
 
+# === humanize_duration =====================================================
+
+@test "humanize_duration — 1s" {
+  [ "$(humanize_duration 1)" = "1s" ]
+}
+
+@test "humanize_duration — 59s" {
+  [ "$(humanize_duration 59)" = "59s" ]
+}
+
+@test "humanize_duration — 60 → 1m 0s" {
+  [ "$(humanize_duration 60)" = "1m 0s" ]
+}
+
+@test "humanize_duration — 61 → 1m 1s" {
+  [ "$(humanize_duration 61)" = "1m 1s" ]
+}
+
+@test "humanize_duration — 612 → 10m 12s" {
+  [ "$(humanize_duration 612)" = "10m 12s" ]
+}
+
+@test "humanize_duration — 3599 → 59m 59s" {
+  [ "$(humanize_duration 3599)" = "59m 59s" ]
+}
+
+@test "humanize_duration — 3600 → 1h 0m" {
+  [ "$(humanize_duration 3600)" = "1h 0m" ]
+}
+
+@test "humanize_duration — 3601 → 1h 0m (seconds dropped)" {
+  [ "$(humanize_duration 3601)" = "1h 0m" ]
+}
+
+@test "humanize_duration — 3660 → 1h 1m" {
+  [ "$(humanize_duration 3660)" = "1h 1m" ]
+}
+
+@test "format_progress_outcome — duration ≥ 60s renders in human form" {
+  result="$(format_progress_outcome "09:22:00" "afk-runner/07" "implement" "in-review" 612)"
+  [ "$result" = "[09:22:00] afk-runner/07 implement → in-review (10m 12s)" ]
+}
+
 @test "format_progress_start — implement stage" {
   result="$(format_progress_start "09:12:45" "afk-runner/06" "implement")"
   [ "$result" = "[09:12:45] afk-runner/06 implement → starting" ]
@@ -2215,7 +2258,7 @@ afk-runner|03|afk-runner/03|done|301|y'
   # Propagation field missing → shows '-' in the propagation column.
   echo "$result" | grep -q '^afk-runner/01 .*in-review.* 42s ' || { echo "row 01 missing"; echo "$result"; false; }
   echo "$result" | grep -q '^afk-runner/02 .*FAIL.* 18s ' || { echo "row 02 missing"; echo "$result"; false; }
-  echo "$result" | grep -q '^afk-runner/03 .*done.* 301s ' || { echo "row 03 missing"; echo "$result"; false; }
+  echo "$result" | grep -q '^afk-runner/03 .*done.* 5m 1s ' || { echo "row 03 missing"; echo "$result"; false; }
   # `feature` and `nn` are not exposed in their own columns.
   ! echo "$result" | head -n 2 | tail -n 1 | grep -qE '^afk-runner +01 ' || { echo "feature/nn leaked into issue/outcome columns"; echo "$result"; false; }
   # Trailing stop-reason line below the table.
