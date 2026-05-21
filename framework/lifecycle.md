@@ -147,7 +147,7 @@ See [`afk-runner.md`](afk-runner.md) for the architecture, binding contract, out
 
 ## Design principles
 
-**Implementation lives in bindings.** Binding docs (`docs/formann/issue-tracker/BINDING.md`, `docs/formann/inbox.md`) are where the system meets a concrete implementation. They define where things live, how references resolve, and what implementation-specific actions like "set up a feature workspace" or "promote an inbox entry" mean mechanically. Each binding covers one lifecycle role: feature work in flight (PRDs + issues + workspace), pre-lifecycle capture (inbox), etc.
+**Implementation lives in bindings.** Binding docs (`docs/formann/issue-tracker/BINDING.md`) are where the system meets a concrete implementation. They define where things live, how references resolve, and what implementation-specific actions like "set up a feature workspace" mean mechanically. Each binding covers one lifecycle role.
 
 **Core and optional bindings.** Some bindings are core — every project has them (the issue tracker, domain). Others are optional add-ons a project adopts when it wants the capability (inbox today; potentially more later). The core pipeline runs without the optional bindings.
 
@@ -163,7 +163,7 @@ See [`afk-runner.md`](afk-runner.md) for the architecture, binding contract, out
 - **`framework/afk-runner.md`** — architecture and process flow of the AFK runner. Companion to `runner/README.md` (which is the operator-facing reference).
 - **`framework/afk-runner-flow.md`** — flowchart-style diagram of `run-the-queue.sh`: inputs, process steps, decision points, outputs.
 - **`docs/formann/issue-tracker/BINDING.md`** — issue-tracker binding (core). Implementation-specific facts for PRDs, issues, and the feature workspace.
-- **`docs/formann/inbox.md`** — inbox binding (optional). Implementation-specific facts for pre-lifecycle capture.
+- **`docs/formann/inbox.md`** — inbox conventions (optional). Pre-lifecycle capture surface.
 - **`docs/formann/triage-states.md`** — triage state vocabulary glossary.
 - **`docs/formann/domain.md`** — domain documentation conventions (`GLOSSARY.md`, `docs/adr/`).
 - **`framework/skills/`** — operational instructions for agents:
