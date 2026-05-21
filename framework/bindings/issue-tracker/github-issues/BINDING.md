@@ -449,10 +449,10 @@ Close the parent issue with `state_reason=completed` and mark it with `formann:a
 
 **Pre-flight — parent lookup.** Resolve the parent issue number via the **Read the feature** verb: `gh issue list --label "formann:feature" --label "formann:slug:<slug>" --state open --json number,title --jq '.'`. If no open parent is found, the feature may already be archived — report the error and stop.
 
-**Pre-flight — non-terminal guard.** The `/triage` skill enforces the non-terminal precheck in step 1 before reaching step 6. The binding re-enforces it for robustness: run `tracker-snapshot <slug>` and check every sub-issue's `status` field. If any sub-issue has a status other than `done` or `wontfix`, refuse with a clear error listing the non-terminal issues:
+**Pre-flight — non-terminal guard.** The `/triage` skill enforces the non-terminal precheck in step 1 before reaching step 6. The binding re-enforces it for robustness: run `tracker-snapshot <slug>` and check every entry in `issues[]` `status` field. If any entry has a status other than `done` or `wontfix`, refuse with a clear error listing the non-terminal entries:
 
 ```
-Error: cannot archive "<slug>" — non-terminal sub-issues remain: #N (in-review), #M (ready-for-agent)
+Error: cannot archive "<slug>" — non-terminal entries remain: #N (in-review), #M (ready-for-agent)
 ```
 
 **Two-step archive:**
