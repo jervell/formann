@@ -529,6 +529,101 @@ The issue does **not** carry `formann:feature` at creation — that label is par
 
 **When slug is omitted:** Steps 1 and 2 are skipped. Step 3 proceeds with labels `formann:status:needs-triage,formann:category:<cat>,formann:type:<type>` only. `/triage` assigns the slug later.
 
+### Add an issue to slug X
+
+Add a new sub-issue under an existing feature's parent. The issue enters at `needs-triage`.
+
+**Contract:** Resolves the slug's `formann:feature` parent, then creates one GitHub sub-issue and links it via `addSubIssue`. Shape-insensitive: works regardless of whether the parent is a pure-container or a work-item parent.
+
+**Inputs:**
+- `slug` (X) — the feature slug (required). Must match exactly one open `formann:feature` parent.
+- `title` — the issue title.
+- `body` — the issue body content (passed via `body-file` on the role surface).
+- `category` — `bug` or `enhancement`.
+- `type` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+**Outputs:** A single GitHub sub-issue with labels `formann:status:needs-triage` + `formann:category:<cat>` + `formann:type:<type>`, linked as a sub-issue of the resolved parent. No `formann:feature` label; no `formann:slug:*` label (slug labels live on the parent only). Issue URL printed to stdout.
+
+**Idempotency:** Not idempotent. Re-running creates a second sub-issue.
+
+**GitHub-issues realization:**
+
+**Step 1 — Resolve the parent.** Run:
+
+```bash
+gh issue list \
+  --label "formann:feature" \
+  --label "formann:slug:<X>" \
+  --state open \
+  --json number,id,title
+```
+
+Cardinality handling mirrors the snapshot's slug-uniqueness contract:
+
+| Count | Behaviour |
+|---|---|
+| 0 | Refuse with a not-found diagnostic naming the slug. No issue is created. |
+| 1 | That issue is the parent. Capture its `number` and `id` (node ID) and proceed to Step 2. |
+| ≥ 2 | Refuse with the slug-collision diagnostic, naming both parents. |
+
+Not-found diagnostic:
+
+```
+Error: slug "<X>" not found on any open formann:feature parent.
+Check the slug spelling, or that the parent is not archived (closed).
+```
+
+Collision diagnostic (reuses the existing **Create a feature** collision wording):
+
+```
+Error: slug "<X>" is already in use by issue #<N> ("<title>").
+Choose a different slug.
+```
+
+When the count is 0 or ≥ 2, exit with a resolve-failure code and do not proceed to Step 2.
+
+**Step 2 — Create the sub-issue and link.** Run:
+
+```bash
+gh issue create \
+  --title "<title>" \
+  --body "$(cat <<'EOF'
+<issue body content>
+EOF
+)" \
+  --label "formann:status:needs-triage,formann:category:<cat>,formann:type:<type>"
+```
+
+Labels applied:
+
+- `formann:status:needs-triage` — every new issue enters the triage flow.
+- `formann:category:<cat>` — `bug` or `enhancement`.
+- `formann:type:<type>` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+The sub-issue does **not** carry `formann:feature` (parent-only) or `formann:slug:*` (slug labels live on the parent only, per ADR-0006 Decision B).
+
+`gh issue create` prints the new issue URL. Extract the issue number from the URL (the trailing integer); this is `<new-N>`.
+
+Then link to the parent via `addSubIssue`:
+
+```bash
+new_node_id=$(gh issue view <new-N> --json id --jq '.id')
+
+gh api graphql \
+  --field query='mutation($parentId:ID!,$subId:ID!) {
+    addSubIssue(input:{issueId:$parentId,subIssueId:$subId}) {
+      issue { number }
+      subIssue { number }
+    }
+  }' \
+  --field parentId="<parent-node-id-from-step-1>" \
+  --field subId="$new_node_id"
+```
+
+`addSubIssue.input.issueId` is the **parent's** node ID (captured in Step 1); `addSubIssue.input.subIssueId` is the **new sub-issue's** node ID. The mutation returns `issue.number` (parent) and `subIssue.number` (new sub-issue); verify both match the expected values.
+
+**Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If the `gh issue create` in Step 2 succeeds but `addSubIssue` fails, the new issue exists on GitHub without a parent link — it is an orphan. No engineered rollback. Recovery: re-run only the `addSubIssue` call with the orphan's existing issue number and the resolved parent's node ID.
+
 ### GitHub web UI — minimum marker
 
 A maintainer creating an issue in the GitHub web UI can make it Formann-eligible by adding a single label:
