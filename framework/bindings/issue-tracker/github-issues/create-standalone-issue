@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+###
+### create-standalone-issue — create a single Formann-eligible GitHub issue
+###                           with no parent (standalone).
+###
+### Usage: create-standalone-issue --title <title> --category <cat> --type <type>
+###                                 [--slug <slug>] [--body-file <path>]
+###
+###   --title <title>       Issue title (required).
+###   --category <cat>      'bug' or 'enhancement' (required).
+###   --type <type>         'afk' or 'hitl' (required).
+###   --slug <slug>         Feature slug (optional). Must be ≤ 37 characters
+###                         and not already label any open issue. When omitted,
+###                         the issue is created without a slug label; /triage
+###                         assigns it later.
+###   --body-file <path>    Path to a file whose contents become the issue body
+###                         (optional; defaults to an empty body).
+###
+### On success, the new issue URL is printed to stdout.
+### On slug-collision or usage error, an error is printed to stderr and the
+### script exits non-zero.
+###
+### Exit codes:
+###   0   Success.
+###   1   Slug-uniqueness collision.
+###   2   Usage error or prerequisite missing.
+###
+### Bash 3.2 compatible.
+###
+
+set -eu
+set -o pipefail
+
+readonly _EXIT_OK=0
+readonly _EXIT_COLLISION=1
+readonly _EXIT_USAGE=2
+
+# ── Prerequisites ─────────────────────────────────────────────────────────────
+if ! command -v gh >/dev/null 2>&1; then
+  echo "create-standalone-issue: 'gh' CLI not found in PATH." >&2
+  exit "$_EXIT_USAGE"
+fi
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+_title=""
+_category=""
+_type=""
+_slug=""
+_body_file=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --title)
+      [ "$#" -ge 2 ] || { echo "create-standalone-issue: --title requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _title="$2"; shift 2 ;;
+    --category)
+      [ "$#" -ge 2 ] || { echo "create-standalone-issue: --category requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _category="$2"; shift 2 ;;
+    --type)
+      [ "$#" -ge 2 ] || { echo "create-standalone-issue: --type requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _type="$2"; shift 2 ;;
+    --slug)
+      [ "$#" -ge 2 ] || { echo "create-standalone-issue: --slug requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _slug="$2"; shift 2 ;;
+    --body-file)
+      [ "$#" -ge 2 ] || { echo "create-standalone-issue: --body-file requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _body_file="$2"; shift 2 ;;
+    *)
+      echo "create-standalone-issue: unknown argument: $1" >&2
+      exit "$_EXIT_USAGE" ;;
+  esac
+done
+
+# ── Validate required arguments ───────────────────────────────────────────────
+if [ -z "$_title" ] || [ -z "$_category" ] || [ -z "$_type" ]; then
+  cat >&2 <<USAGE
+usage: create-standalone-issue --title <title> --category <cat> --type <type>
+                                [--slug <slug>] [--body-file <path>]
+
+  --title     Issue title (required).
+  --category  'bug' or 'enhancement' (required).
+  --type      'afk' or 'hitl' (required).
+  --slug      Feature slug (optional, ≤ 37 characters).
+  --body-file Path to body content file (optional).
+USAGE
+  exit "$_EXIT_USAGE"
+fi
+
+case "$_category" in
+  bug|enhancement) ;;
+  *) echo "create-standalone-issue: --category must be 'bug' or 'enhancement', got: $_category" >&2; exit "$_EXIT_USAGE" ;;
+esac
+
+case "$_type" in
+  afk|hitl) ;;
+  *) echo "create-standalone-issue: --type must be 'afk' or 'hitl', got: $_type" >&2; exit "$_EXIT_USAGE" ;;
+esac
+
+if [ -n "$_body_file" ] && [ ! -e "$_body_file" ]; then
+  echo "create-standalone-issue: body-file not found: $_body_file" >&2
+  exit "$_EXIT_USAGE"
+fi
+
+# ── Slug pre-flights (only when slug is provided) ─────────────────────────────
+if [ -n "$_slug" ]; then
+  # Length check: formann:slug: = 13 chars; GitHub label cap = 50 chars.
+  if [ "${#_slug}" -gt 37 ]; then
+    echo "Error: slug \"$_slug\" is ${#_slug} characters; the github-issues binding limits slugs to 37 characters (github labels are capped at 50; \"formann:slug:\" occupies 13)." >&2
+    exit "$_EXIT_USAGE"
+  fi
+
+  # Uniqueness check (both open and closed issues).
+  _existing="$(gh issue list --label "formann:slug:${_slug}" --state all --json number,title 2>/dev/null)"
+  _count="$(printf '%s' "$_existing" | grep -c '"number"' 2>/dev/null || echo 0)"
+  if [ "$_count" -gt 0 ]; then
+    _num="$(printf '%s' "$_existing" | grep '"number"' | head -1 | grep -o '[0-9]*' | head -1)"
+    _ttl="$(printf '%s' "$_existing" | grep '"title"' | head -1 | sed 's/.*"title": *"//;s/".*//')"
+    echo "Error: slug \"${_slug}\" is already in use by issue #${_num} (\"${_ttl}\")." >&2
+    echo "Choose a different slug." >&2
+    exit "$_EXIT_COLLISION"
+  fi
+
+  # On-demand slug-label creation (idempotent via --force).
+  gh label create "formann:slug:${_slug}" --force
+fi
+
+# ── Build label list ──────────────────────────────────────────────────────────
+_labels="formann:status:needs-triage"
+if [ -n "$_slug" ]; then
+  _labels="${_labels},formann:slug:${_slug}"
+fi
+_labels="${_labels},formann:category:${_category},formann:type:${_type}"
+
+# ── Read body content ─────────────────────────────────────────────────────────
+_body=""
+if [ -n "$_body_file" ]; then
+  _body="$(cat "$_body_file")"
+fi
+
+# ── Create the issue ──────────────────────────────────────────────────────────
+gh issue create \
+  --title "$_title" \
+  --body "$_body" \
+  --label "$_labels"
