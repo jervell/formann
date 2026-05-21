@@ -31,7 +31,7 @@ Read the full content of an issue: its metadata, body sections (title, what to b
 
 Retrieve the parent feature's PRD body.
 
-**Local-markdown realization:** Read the file at `.features/<slug>/PRD.md`. The slug is the feature slug — by convention, identical to the current git branch name. If the file does not exist, the feature is not found; report the error and stop.
+**Local-markdown realization:** Read the file at `.features/<slug>/PRD.md`. The slug is the feature slug — by convention, identical to the current git branch name. If `PRD.md` does not exist, return empty — the feature is a PRD-less standalone; skills calling this verb receive no PRD content and must not treat absence as an error.
 
 ### List issues in a feature
 
@@ -74,6 +74,41 @@ Append a comment to the issue's timeline. Timeline-shaped: append-only, history 
 - Same-day collisions of the same kind get a numeric suffix: `### Implementation (2) — 2026-05-08`, `### Implementation (3) — 2026-05-08`, etc.
 - Sub-blocks (Evidence, Findings, Decisions, Resolved scope, Verification summary) live as **bolded labels** — `**Evidence**`, `**Findings**`, etc. — inside the producing comment subsection. They are never `####` nested headings and never sibling sections of `## Comments`.
 - The body above `## Comments` is read-only after triage. Corrections and follow-ups go in a new comment. The only above-the-fold mutations permitted after triage are frontmatter field writes (Set the state, Set issue metadata) and the Triage Notes section (written and cleared by the Record triage notes verb only).
+
+### Create a standalone issue
+
+Create a new feature directory with a single issue file and no PRD. The issue enters at `needs-triage`.
+
+**Contract:** Creates `.features/<slug>/issues/01-<slug>.md`. No `PRD.md` is created.
+
+**Inputs:**
+- `slug` — the feature slug; must not already exist as a directory under `.features/`.
+- `title` — the issue title.
+- `body` — the issue body (Gist, What to build, Acceptance criteria, Blocked by sections).
+- `category` — `bug` or `enhancement`.
+- `type` — `AFK` or `HITL` (provisional; triage confirms or flips).
+
+**Outputs:** `.features/<slug>/issues/01-<slug>.md` with `status: needs-triage` frontmatter.
+
+**Idempotency:** Not idempotent. If `.features/<slug>/` already exists, the verb fails — a feature with that slug is already present.
+
+**Local-markdown realization:** Create `.features/<slug>/issues/` and write `01-<slug>.md` with `status: needs-triage` frontmatter, the provided title, and body. Do not create `PRD.md`. Commit the new file via a `tracker:` commit.
+
+### Add an issue to slug X
+
+Append a new issue file to an existing feature. The new issue enters at `needs-triage`.
+
+**Contract:** Appends `.features/<X>/issues/<NN>-<X>.md` where `NN` is the next available two-digit number.
+
+**Inputs:**
+- `slug` (X) — the feature slug of the target feature; `.features/<X>/` must already exist.
+- `title`, `body`, `category`, `type` — same fields as **Create a standalone issue**.
+
+**Outputs:** `.features/<X>/issues/<NN>-<X>.md` with `status: needs-triage` frontmatter.
+
+**Idempotency:** Not idempotent. Each call creates a new issue file with the next number.
+
+**Local-markdown realization:** List `.features/<X>/issues/*.md`, take the highest existing `NN`, increment by one, and write `<NN+1>-<X>.md` with `status: needs-triage` frontmatter. If no issues exist yet, start at `01`. Commit the new file via a `tracker:` commit.
 
 #### Canonical example
 
@@ -140,8 +175,9 @@ The implementation is clean. `RateLimitFilter` is well-scoped and the test cover
 ## Conventions
 
 - One feature per directory: `.features/<feature-slug>/`
-- The PRD is `.features/<feature-slug>/PRD.md`
+- The PRD, when present, is `.features/<feature-slug>/PRD.md`
 - Implementation issues are `.features/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`
+- A **standalone** feature has no `PRD.md` — only `.features/<slug>/issues/`. This is a first-class shape, valid for any number of issues. A maintainer can grow a standalone into a multi-issue feature without ever writing a PRD.
 
 ## Issue properties
 

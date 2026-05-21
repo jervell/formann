@@ -9,6 +9,7 @@ Indexed by what you have in front of you:
 | You have...                                     | Run...                                | Result                                       |
 | ----------------------------------------------- | ------------------------------------- | -------------------------------------------- |
 | a thought you can't act on now                  | (capture in the inbox)                | captured for later                           |
+| a small, well-scoped task (no PRD needed)       | (ask the agent to create a standalone) | issue at `needs-triage`, no PRD required    |
 | a fuzzy idea                                    | `/grill-with-docs`                    | shared understanding                         |
 | a grilled understanding                         | `/to-prd`                             | PRD published                                |
 | a PRD                                           | `/to-issues`                          | issues at `needs-triage`                     |
@@ -33,7 +34,7 @@ Two scopes. Project-level artifacts accumulate across features; feature-level ar
 ├── .out-of-scope/             ← rejected feature concepts (project-level)
 └── .features/
     ├── <feature>/             ← active features
-    │   ├── PRD.md             ← spec, no Status
+    │   ├── PRD.md             ← spec (optional — absent for standalones)
     │   └── issues/NN-*.md     ← work units, with Status / Category / Type
     └── .archived/<feature>/   ← archived features (whole dir moved)
 ```
