@@ -1,8 +1,10 @@
-# Inbox: Local Markdown
+# Inbox
 
 The inbox is a pre-lifecycle capture surface for thoughts the maintainer can't act on right now — bugs they noticed, tweaks, half-formed ideas. Entries are notes, not issues. They have no state, no header fields, and don't enter any state machine until they leave the inbox.
 
 The inbox is optional. Projects that don't use one simply have no `.inbox.md` file.
+
+Formalizing the inbox as its own binding — so each tracker binding can define its own capture mechanism — is a separate piece of work and is not covered here.
 
 ## Conventions
 

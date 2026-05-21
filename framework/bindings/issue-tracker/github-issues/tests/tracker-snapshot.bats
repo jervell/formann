@@ -121,6 +121,35 @@ JSON
   assert_output --partial "#11"
 }
 
+# ════════════════════════════════════════════════════════════════════════════════
+# Work-item parent (formann:feature + formann:status:*)
+# ════════════════════════════════════════════════════════════════════════════════
+
+@test "work-item parent with zero sub-issues — parent is the single issues[] entry" {
+  assert_snapshot_matches_golden "work-item-parent-zero-sub-issues" "standalone-feature"
+}
+
+@test "work-item parent with sub-issues — parent first, sub-issues follow in API order" {
+  assert_snapshot_matches_golden "work-item-parent-with-sub-issues" "standalone-with-subs"
+}
+
+@test "--list: mixed repo — pure-container and work-item parent both returned" {
+  export FIXTURE_RESPONSES_DIR="$FIXTURES/list-both-shapes/recorded-responses"
+  run "$TRACKER_SNAPSHOT" --list
+  assert_success
+  diff \
+    <(printf '%s\n' "$output" | jq -S .) \
+    <(jq -S . "$FIXTURES/list-both-shapes/expected.json")
+}
+
+@test "slug-collision between two work-item parents — exits code 4, names both on stderr" {
+  export FIXTURE_RESPONSES_DIR="$FIXTURES/slug-collision-work-item-parents/recorded-responses"
+  run "$TRACKER_SNAPSHOT" "shared-slug"
+  [ "$status" -eq 4 ]
+  assert_output --partial "#8"
+  assert_output --partial "#11"
+}
+
 # ── One GraphQL query per invocation ─────────────────────────────────────────
 @test "one GraphQL query per slug invocation" {
   export FIXTURE_RESPONSES_DIR="$FIXTURES/single-issue-feature/recorded-responses"

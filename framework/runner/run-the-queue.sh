@@ -8,9 +8,8 @@
 #
 # Bare invocation walks every feature returned by `tracker-snapshot --list`
 # and drains the ones it's allowed to touch (per-feature gate decides).
-# Features blocked by per-feature gates (branch-missing, fetch-failed,
-# feature-snapshot-failed, queue-empty) produce a SUMMARY row and the run
-# continues.
+# Features blocked by per-feature gates (fetch-failed, feature-snapshot-failed,
+# queue-empty) produce a SUMMARY row and the run continues.
 #
 # Runs pre-flight invariants, dispatches `/implement <ref>` inside the sandbox
 # container, classifies the outcome by `tracker-snapshot` delta, and on
@@ -213,26 +212,20 @@ is_transport_crash() {
 # verdicts to this function, which decides drain vs skip:<reason>.
 #
 # Verdict priority (top wins; matches the loop's short-circuit order):
-#   branch-missing > fetch-failed > feature-snapshot-failed >
-#   queue-empty > drain.
+#   fetch-failed > feature-snapshot-failed > queue-empty > drain.
 #
 # Signature: evaluate_feature_gate <slug> \
-#                                  [branch_exists] [snapshot_status] \
-#                                  [queue_status] [fetch_status]
+#                                  [snapshot_status] [queue_status] \
+#                                  [fetch_status]
 #
-# Defaults encode the optimistic verdict (branch_exists=yes,
-# snapshot_status=ok, queue_status=nonempty, fetch_status=ok).
+# Defaults encode the optimistic verdict (snapshot_status=ok,
+# queue_status=nonempty, fetch_status=ok).
 evaluate_feature_gate() {
   local slug="$1"
-  local branch_exists="${2:-yes}"
-  local snapshot_status="${3:-ok}"
-  local queue_status="${4:-nonempty}"
-  local fetch_status="${5:-ok}"
+  local snapshot_status="${2:-ok}"
+  local queue_status="${3:-nonempty}"
+  local fetch_status="${4:-ok}"
 
-  if [ "$branch_exists" = "no" ]; then
-    echo "skip:branch-missing"
-    return 0
-  fi
   if [ "$fetch_status" = "failed" ]; then
     echo "skip:fetch-failed"
     return 0
@@ -1062,18 +1055,11 @@ check_discovery() {
   fi
 }
 
-# 1b. Feature eligibility — TARGET_FEATURE must appear in DISCOVERY_JSON and
-#     host's HEAD must not be on TARGET_FEATURE. Both are CLI-input refusals
-#     (the slug came from `--feature` or `--issue`), so they exit 2 with a
-#     `feature-restricted` / `single-dispatch` stop reason rather than going
-#     through `fail_invariant` (which would label them `preflight-abort: …`).
-#
-#     Lives in preflight because `ensure_runner_checkout` runs `git fetch
-#     origin <slug>` in the runner-checkout — which fails for any slug
-#     without a host branch, surfacing `preflight-abort: runner-checkout`
-#     and obscuring the AC-mandated `feature-restricted (refused:
-#     unknown-feature)` for the typical typo case. By gating the user's
-#     slug here, we guarantee the AC-mandated stop reason surfaces first.
+# 1b. Feature eligibility — TARGET_FEATURE must appear in DISCOVERY_JSON.
+#     This is a CLI-input refusal (the slug came from `--feature` or
+#     `--issue`), so it exits 2 with a `feature-restricted` /
+#     `single-dispatch` stop reason rather than going through
+#     `fail_invariant` (which would label it `preflight-abort: …`).
 #
 #     Returns 2 on refusal. Inside `preflight()`, `set -e` from `main()`
 #     propagates the non-zero, the script exits, and the EXIT trap
@@ -1089,23 +1075,6 @@ check_feature_eligibility() {
   if ! jq -e --arg s "$TARGET_FEATURE" 'any(.[]; . == $s)' >/dev/null 2>&1 <<<"$DISCOVERY_JSON"; then
     echo "runner: $prefix refused: feature '$TARGET_FEATURE' not in discovery output" >&2
     RUN_STOP_REASON="$prefix (refused: unknown-feature)"
-    return 2
-  fi
-
-  # Compute branch_exists explicitly so the gate evaluator can surface
-  # `branch-missing` instead of letting an opaque `git fetch origin <slug>`
-  # failure surface as `preflight-abort: runner-checkout` further down.
-  # Mirrors the per-iteration probe in `drain_one_feature`.
-  local branch_exists gate_verdict
-  if git -C "$HOST_REPO" show-ref --quiet --verify "refs/heads/$TARGET_FEATURE"; then
-    branch_exists="yes"
-  else
-    branch_exists="no"
-  fi
-  gate_verdict="$(evaluate_feature_gate "$TARGET_FEATURE" "$branch_exists")"
-  if [ "$gate_verdict" != "drain" ]; then
-    echo "runner: $prefix refused: feature '$TARGET_FEATURE' ${gate_verdict#skip:}" >&2
-    RUN_STOP_REASON="$prefix (refused: ${gate_verdict#skip:})"
     return 2
   fi
 }
@@ -1228,61 +1197,83 @@ ensure_runner_checkout_on_branch() {
   # across. Reading the SHA directly from host avoids an extra round-trip.
   # Use --verify so that a missing ref yields empty stdout (plain rev-parse
   # prints the literal ref string to stdout on failure, poisoning the check).
-  local host_tip parking_tip parking_rel sync_verdict
+  local host_tip parking_tip
   host_tip="$(git -C "$HOST_REPO" rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
   parking_tip="$(git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/$branch" 2>/dev/null || true)"
 
-  if [ -z "$parking_tip" ]; then
-    parking_rel="absent"
-  elif [ "$parking_tip" = "$host_tip" ]; then
-    parking_rel="equal"
-  elif git -C "$HOST_REPO" merge-base --is-ancestor "$parking_tip" "$host_tip" 2>/dev/null; then
-    # parking tip is ancestor of host tip → host is strictly ahead
-    parking_rel="behind"
-  elif git -C "$HOST_REPO" merge-base --is-ancestor "$host_tip" "$parking_tip" 2>/dev/null; then
-    # host tip is ancestor of parking tip → parking ref is strictly ahead
-    parking_rel="ahead"
-  else
-    parking_rel="diverged"
-  fi
-
-  sync_verdict="$(select_sync_base "$parking_rel")"
-
-  if [ "$sync_verdict" = "host-branch" ]; then
-    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin "$branch" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git fetch origin $branch failed" >&2
+  if [ -z "$host_tip" ] && [ -z "$parking_tip" ]; then
+    # Neither the host branch nor a parking ref exists yet — this is the first
+    # dispatch for a slug whose branch was never pre-created on host. Initialize
+    # the runner-checkout's branch from refs/heads/main (hardcoded; dynamic
+    # default-branch detection is out of scope). The first propagation's existing
+    # `<slug>:<slug>` fetch refspec is create-on-missing, so it will create
+    # refs/heads/<slug> on host from the runner's commits.
+    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin main >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git fetch origin main (lazy init) failed" >&2
       return 1
     fi
-    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "origin/$branch" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch failed" >&2
+    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "origin/main" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch origin/main (lazy init) failed" >&2
       return 1
     fi
-    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/$branch" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/$branch failed" >&2
+    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/main" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/main (lazy init) failed" >&2
       return 1
     fi
   else
-    # parking-ref verdict: fetch the parking-ref's objects from host into the
-    # runner-checkout (the runner-checkout's origin fetch won't carry them),
-    # then sync to the parking-ref tip so successive dispatches chain linearly.
-    if ! git -C "$HOST_CHECKOUT" fetch --quiet "$HOST_REPO" \
-        "refs/remotes/runner/$branch:refs/remotes/host-parking/$branch" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: fetch parking-ref tip from host failed" >&2
-      return 1
+    local parking_rel sync_verdict
+    if [ -z "$parking_tip" ]; then
+      parking_rel="absent"
+    elif [ "$parking_tip" = "$host_tip" ]; then
+      parking_rel="equal"
+    elif git -C "$HOST_REPO" merge-base --is-ancestor "$parking_tip" "$host_tip" 2>/dev/null; then
+      # parking tip is ancestor of host tip → host is strictly ahead
+      parking_rel="behind"
+    elif git -C "$HOST_REPO" merge-base --is-ancestor "$host_tip" "$parking_tip" 2>/dev/null; then
+      # host tip is ancestor of parking tip → parking ref is strictly ahead
+      parking_rel="ahead"
+    else
+      parking_rel="diverged"
     fi
-    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "$parking_tip" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch $parking_tip failed" >&2
-      return 1
-    fi
-    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "$parking_tip" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git reset --hard $parking_tip failed" >&2
-      return 1
+
+    sync_verdict="$(select_sync_base "$parking_rel")"
+
+    if [ "$sync_verdict" = "host-branch" ]; then
+      if ! git -C "$HOST_CHECKOUT" fetch --quiet origin "$branch" >&2; then
+        echo "runner: ensure_runner_checkout_on_branch: git fetch origin $branch failed" >&2
+        return 1
+      fi
+      if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "origin/$branch" >&2; then
+        echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch failed" >&2
+        return 1
+      fi
+      if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/$branch" >&2; then
+        echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/$branch failed" >&2
+        return 1
+      fi
+    else
+      # parking-ref verdict: fetch the parking-ref's objects from host into the
+      # runner-checkout (the runner-checkout's origin fetch won't carry them),
+      # then sync to the parking-ref tip so successive dispatches chain linearly.
+      if ! git -C "$HOST_CHECKOUT" fetch --quiet "$HOST_REPO" \
+          "refs/remotes/runner/$branch:refs/remotes/host-parking/$branch" >&2; then
+        echo "runner: ensure_runner_checkout_on_branch: fetch parking-ref tip from host failed" >&2
+        return 1
+      fi
+      if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "$parking_tip" >&2; then
+        echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch $parking_tip failed" >&2
+        return 1
+      fi
+      if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "$parking_tip" >&2; then
+        echo "runner: ensure_runner_checkout_on_branch: git reset --hard $parking_tip failed" >&2
+        return 1
+      fi
     fi
   fi
 
   # `reset --hard` scrubs tracked changes but leaves untracked files
   # alone. The dispatch container can drop CWD-relative artifacts (kernel
-  # core dumps from a crashed in-container process, stray writes from a
+  # core dumps from a crashed in-computer process, stray writes from a
   # confused agent), and any leftover would surface in the implement
   # stage's `git status --porcelain` diagnostic and misattribute prior
   # dispatch leakage to *this* iteration's `/implement`. `-fd` removes
@@ -2266,9 +2257,8 @@ dispatch_one() {
 
 # Single-dispatch entry — refuses any ref the loop's eligibility filter
 # would reject, then delegates to `dispatch_one`. Pre-flight has already
-# run (including `check_feature_eligibility`, which gates `unknown-feature`
-# and `branch-missing`); ARG_ISSUE_REF is set; RUN_DIR was created in
-# main().
+# run (including `check_feature_eligibility`, which gates `unknown-feature`);
+# ARG_ISSUE_REF is set; RUN_DIR was created in main().
 #
 # The runner dispatches "eligible AFK refs only" by contract — both modes
 # share that gate. The loop enforces it via the snapshot's `eligible`
@@ -2278,10 +2268,9 @@ dispatch_one() {
 # missing from feature), sets RUN_STOP_REASON, and returns 2 — the same
 # exit code argparse uses for input-validation rejections.
 run_single() {
-  # Feature-level refusals (unknown-feature, branch-missing) were
-  # already enforced by `check_feature_eligibility` in preflight; only
-  # the per-ref eligibility gate (HITL, wrong status, blockers, missing)
-  # is left to resolve here.
+  # Feature-level refusal (unknown-feature) was already enforced by
+  # `check_feature_eligibility` in preflight; only the per-ref eligibility
+  # gate (HITL, wrong status, blockers, missing) is left to resolve here.
   local snap entry reason detail
   if ! snap="$(take_snapshot "$ISSUE_FEATURE")"; then
     echo "runner: single-dispatch refused: tracker-snapshot failed for feature '$ISSUE_FEATURE'" >&2
@@ -2344,8 +2333,8 @@ run_single() {
 # (no runner-side comment posted on the issue — the failed `/implement`
 # posts its own). RUN_DIR was created in main().
 run_loop() {
-  # Feature-level refusals (unknown-feature, branch-missing) were
-  # already enforced by `check_feature_eligibility` in preflight.
+  # Feature-level refusal (unknown-feature) was already enforced by
+  # `check_feature_eligibility` in preflight.
   local iteration=0
 
   while :; do
@@ -2431,10 +2420,10 @@ run_loop() {
 }
 
 # Drain entry — bare invocation. Walks every feature in discovery order,
-# evaluating the per-feature gate (branch-missing, fetch-failed,
-# feature-snapshot-failed, queue-empty). Features that gate `drain` get
-# the per-issue loop body via `run_loop`. Features that gate `skip:<reason>`
-# produce a SUMMARY row and the run continues.
+# evaluating the per-feature gate (fetch-failed, feature-snapshot-failed,
+# queue-empty). Features that gate `drain` get the per-issue loop body via
+# `run_loop`. Features that gate `skip:<reason>` produce a SUMMARY row and
+# the run continues.
 #
 # Stop reasons (run-level):
 #   - `completed`             — every discovery slug considered.
@@ -2488,26 +2477,10 @@ run_drain() {
 # this feature.
 drain_one_feature() {
   local feature="$1"
-  local branch_exists gate_verdict
-
-  # Cheap structural signal — no I/O beyond a single rev-parse.
-  if git -C "$HOST_REPO" show-ref --quiet --verify "refs/heads/$feature"; then
-    branch_exists="yes"
-  else
-    branch_exists="no"
-  fi
-
-  gate_verdict="$(evaluate_feature_gate "$feature" "$branch_exists" ok nonempty ok)"
-  case "$gate_verdict" in
-    skip:branch-missing)
-      echo "[$(now_clock)] runner: skipping $feature — ${gate_verdict#skip:}"
-      record_feature_outcome "$feature" "$gate_verdict"
-      return 0
-      ;;
-  esac
 
   # Sync the runner-checkout to this feature's branch. fail-soft: a fetch
   # failure for one feature is recorded and the run continues with the next.
+  # Missing host branches are handled lazily by ensure_runner_checkout_on_branch.
   if ! ensure_runner_checkout_on_branch "$feature"; then
     echo "[$(now_clock)] runner: skipping $feature — fetch-failed"
     record_feature_outcome "$feature" "skip:fetch-failed"

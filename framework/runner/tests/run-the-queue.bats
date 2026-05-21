@@ -1709,12 +1709,11 @@ setup_run_single_test() {
 
 # === check_feature_eligibility — CLI-input gate inside preflight ===========
 #
-# `--feature <slug>` / `--issue <feature>/<NN>` get their refusals here
-# (unknown-feature, branch-missing). The gate runs before
-# `ensure_runner_checkout` so an unknown slug surfaces the AC-mandated
-# `feature-restricted (refused: unknown-feature)` / `single-dispatch
-# (refused: unknown-feature)` instead of an opaque `git fetch origin
-# <unknown>` failure. Return 2 propagates via `set -e` in main; the EXIT
+# `--feature <slug>` / `--issue <feature>/<NN>` get their refusal here
+# (unknown-feature only). The gate runs before `ensure_runner_checkout` so
+# an unknown slug surfaces the AC-mandated `feature-restricted (refused:
+# unknown-feature)` / `single-dispatch (refused: unknown-feature)` instead
+# of an opaque failure. Return 2 propagates via `set -e` in main; the EXIT
 # trap then writes SUMMARY.md against RUN_STOP_REASON (not
 # RUN_PREFLIGHT_INVARIANT).
 
@@ -1769,8 +1768,6 @@ setup_eligibility_test() {
 
 @test "check_feature_eligibility — feature in discovery and branch exists → passes silently" {
   setup_eligibility_test
-  # Create the feature branch so it actually exists on host (branch-missing
-  # gate would otherwise refuse).
   git -C "$HOST_REPO" branch my-feature
   RUN_MODE="loop"
   TARGET_FEATURE="my-feature"
@@ -1781,37 +1778,30 @@ setup_eligibility_test() {
   [ ! -s "$ELIG_STDERR" ]
 }
 
-@test "check_feature_eligibility — loop mode: slug in discovery but no host branch → feature-restricted (refused: branch-missing)" {
-  # AC: --feature <slug-in-discovery-but-no-host-branch> exits 2 with
-  # `runner: feature-restricted refused: feature '<slug>' branch-missing`
-  # on stderr and SUMMARY stop reason `feature-restricted (refused:
-  # branch-missing)`. Without computing branch_exists, the gate evaluator's
-  # default (branch_exists=yes) suppresses this signal and the run falls
-  # through to ensure_runner_checkout, surfacing `preflight-abort: runner-checkout`
-  # instead — the exact opaque-failure pattern /01's unknown-feature hoisting
-  # was supposed to close.
+@test "check_feature_eligibility — loop mode: slug in discovery, no host branch → passes silently" {
+  # After lazy-init, branch-missing is no longer a refusal. A slug that is in
+  # discovery but has no refs/heads/<slug> on host should pass the eligibility
+  # gate so the runner-checkout can lazily initialize from main.
   setup_eligibility_test
   # Host stays on main; 'my-feature' branch is intentionally NOT created.
   RUN_MODE="loop"
   TARGET_FEATURE="my-feature"
   DISCOVERY_JSON='["my-feature","other"]'
 
-  check_feature_eligibility 2>"$ELIG_STDERR" || rc=$?
-  [ "${rc:-0}" -eq 2 ]
-  [ "$RUN_STOP_REASON" = "feature-restricted (refused: branch-missing)" ]
-  grep -q "^runner: feature-restricted refused: feature 'my-feature' branch-missing$" "$ELIG_STDERR"
+  check_feature_eligibility 2>"$ELIG_STDERR"
+  [ -z "$RUN_STOP_REASON" ]
+  [ ! -s "$ELIG_STDERR" ]
 }
 
-@test "check_feature_eligibility — single mode: slug in discovery but no host branch → single-dispatch (refused: branch-missing)" {
+@test "check_feature_eligibility — single mode: slug in discovery, no host branch → passes silently" {
   setup_eligibility_test
   RUN_MODE="single"
   TARGET_FEATURE="my-feature"
   DISCOVERY_JSON='["my-feature"]'
 
-  check_feature_eligibility 2>"$ELIG_STDERR" || rc=$?
-  [ "${rc:-0}" -eq 2 ]
-  [ "$RUN_STOP_REASON" = "single-dispatch (refused: branch-missing)" ]
-  grep -q "^runner: single-dispatch refused: feature 'my-feature' branch-missing$" "$ELIG_STDERR"
+  check_feature_eligibility 2>"$ELIG_STDERR"
+  [ -z "$RUN_STOP_REASON" ]
+  [ ! -s "$ELIG_STDERR" ]
 }
 
 @test "preflight — refuses unknown feature before running ensure_runner_checkout" {
@@ -3672,64 +3662,91 @@ SHIM
   [ "$checkout_head" != "$pre_fetch_tip" ]
 }
 
+@test "ensure_runner_checkout_on_branch — lazy init from main when host has no branch ref and no parking ref" {
+  # When neither refs/heads/<branch> nor refs/remotes/runner/<branch> exists on
+  # host, the function must initialize the runner-checkout's branch from main
+  # rather than failing. After the call the runner-checkout must be on the
+  # target branch at the main tip.
+  HOST_REPO="$BATS_TEST_TMPDIR/lazy-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/lazy-checkout"
+  TARGET_FEATURE="new-feature"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "initial main commit"
+
+  # Installer stub (required by setup pattern).
+  mkdir -p "$HOST_REPO/installer"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$HOST_REPO/installer/install.sh"
+  chmod +x "$HOST_REPO/installer/install.sh"
+
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+
+  # Preconditions: no refs/heads/new-feature or parking ref on host.
+  ! git -C "$HOST_REPO" show-ref --quiet --verify "refs/heads/new-feature" 2>/dev/null
+  ! git -C "$HOST_REPO" show-ref --quiet --verify "refs/remotes/runner/new-feature" 2>/dev/null
+
+  local main_tip
+  main_tip="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+
+  ensure_runner_checkout_on_branch "new-feature"
+
+  # Runner-checkout must now be on new-feature at main's tip.
+  local checkout_branch checkout_head
+  checkout_branch="$(git -C "$HOST_CHECKOUT" symbolic-ref --short HEAD)"
+  checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+  [ "$checkout_branch" = "new-feature" ]
+  [ "$checkout_head" = "$main_tip" ]
+}
+
 # === evaluate_feature_gate — skip-reason matrix ============================
 #
-# The gate evaluator's full signal set: branch-missing, fetch-failed,
-# feature-snapshot-failed, queue-empty. The drain loop short-circuits at
-# the first failing gate, but the pure function takes the full bundle so
-# bats can exercise priority order exhaustively.
+# The gate evaluator's full signal set: fetch-failed, feature-snapshot-failed,
+# queue-empty. The drain loop short-circuits at the first failing gate, but
+# the pure function takes the full bundle so bats can exercise priority order
+# exhaustively.
 #
 # Signature: evaluate_feature_gate <slug> \
-#                                  [branch_exists=yes] \
 #                                  [snapshot_status=ok] \
 #                                  [queue_status=nonempty] \
 #                                  [fetch_status=ok]
 #
-# Verdict priority (top wins): branch-missing > fetch-failed >
-#                              feature-snapshot-failed > queue-empty > drain.
+# Verdict priority (top wins): fetch-failed > feature-snapshot-failed >
+#                              queue-empty > drain.
 
 @test "evaluate_feature_gate — returns drain by default" {
   result="$(evaluate_feature_gate "my-feature")"
   [ "$result" = "drain" ]
 }
 
-@test "evaluate_feature_gate — skip:branch-missing when host has no branch ref" {
-  result="$(evaluate_feature_gate "my-feature" no)"
-  [ "$result" = "skip:branch-missing" ]
-}
-
 @test "evaluate_feature_gate — skip:fetch-failed when fetch_status=failed" {
-  result="$(evaluate_feature_gate "my-feature" yes ok nonempty failed)"
+  result="$(evaluate_feature_gate "my-feature" ok nonempty failed)"
   [ "$result" = "skip:fetch-failed" ]
 }
 
 @test "evaluate_feature_gate — skip:feature-snapshot-failed when snapshot_status=failed" {
-  result="$(evaluate_feature_gate "my-feature" yes failed nonempty ok)"
+  result="$(evaluate_feature_gate "my-feature" failed nonempty ok)"
   [ "$result" = "skip:feature-snapshot-failed" ]
 }
 
 @test "evaluate_feature_gate — skip:queue-empty when queue_status=empty" {
-  result="$(evaluate_feature_gate "my-feature" yes ok empty ok)"
+  result="$(evaluate_feature_gate "my-feature" ok empty ok)"
   [ "$result" = "skip:queue-empty" ]
 }
 
-@test "evaluate_feature_gate — branch-missing wins over fetch/snapshot/queue" {
-  result="$(evaluate_feature_gate "my-feature" no failed empty failed)"
-  [ "$result" = "skip:branch-missing" ]
-}
-
 @test "evaluate_feature_gate — fetch-failed wins over feature-snapshot-failed and queue-empty" {
-  result="$(evaluate_feature_gate "my-feature" yes failed empty failed)"
+  result="$(evaluate_feature_gate "my-feature" failed empty failed)"
   [ "$result" = "skip:fetch-failed" ]
 }
 
 @test "evaluate_feature_gate — feature-snapshot-failed wins over queue-empty" {
-  result="$(evaluate_feature_gate "my-feature" yes failed empty ok)"
+  result="$(evaluate_feature_gate "my-feature" failed empty ok)"
   [ "$result" = "skip:feature-snapshot-failed" ]
 }
 
 @test "evaluate_feature_gate — all signals ok returns drain" {
-  result="$(evaluate_feature_gate "my-feature" yes ok nonempty ok)"
+  result="$(evaluate_feature_gate "my-feature" ok nonempty ok)"
   [ "$result" = "drain" ]
 }
 
@@ -3816,7 +3833,7 @@ SHIM
 @test "format_multi_feature_summary_md — heading, run line, stop reason, encounter-order sections" {
   input='F|alpha|drained
 I|alpha|01|alpha/01|done|42|y
-F|beta|skipped:branch-missing
+F|beta|skip:fetch-failed
 F|gamma|drained
 I|gamma|01|gamma/01|in-review|13|'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
@@ -3830,7 +3847,7 @@ I|gamma|01|gamma/01|in-review|13|'
   # Per-feature section headings, in encounter order.
   local alpha_line beta_line gamma_line
   alpha_line="$(printf '%s\n' "$result" | grep -n '^## alpha — drained$' | cut -d: -f1)"
-  beta_line="$(printf '%s\n' "$result" | grep -n '^## beta — skipped: branch-missing$' | cut -d: -f1)"
+  beta_line="$(printf '%s\n' "$result" | grep -n '^## beta — skipped: fetch-failed$' | cut -d: -f1)"
   gamma_line="$(printf '%s\n' "$result" | grep -n '^## gamma — drained$' | cut -d: -f1)"
   [ -n "$alpha_line" ] && [ -n "$beta_line" ] && [ -n "$gamma_line" ]
   [ "$alpha_line" -lt "$beta_line" ]
@@ -3845,11 +3862,11 @@ I|gamma|01|gamma/01|in-review|13|'
 }
 
 @test "format_multi_feature_summary_md — skipped feature emits no issue table" {
-  input='F|beta|skipped:branch-missing'
+  input='F|beta|skip:fetch-failed'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:11:00 ended completed)"
 
-  echo "$result" | grep -q '^## beta — skipped: branch-missing$' || { echo "$result"; false; }
+  echo "$result" | grep -q '^## beta — skipped: fetch-failed$' || { echo "$result"; false; }
   # The skipped section must not produce a per-issue table for that feature.
   ! echo "$result" | grep -q '^| issue ' || { echo "$result"; false; }
 }
@@ -4129,15 +4146,17 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   [ "$(drained_features_count)" = "1" ]
 }
 
-@test "drain_one_feature — records skip:branch-missing when host has no branch ref" {
+@test "drain_one_feature — drains feature with no host branch ref (lazy init)" {
+  # After lazy-init, a feature with no host branch is dispatched normally
+  # rather than skipped. ensure_runner_checkout_on_branch is mocked to succeed
+  # (it handles lazy init internally when needed).
   setup_drain_test
-  # `alpha` is never created on the host repo — show-ref will miss it.
+  # `alpha` is never created on the host repo — lazy init path will handle it.
 
   drain_one_feature "alpha"
 
-  [ "$(drain_outcome_nth 0)" = "alpha|skip:branch-missing" ]
-  [ "$(drained_features_count)" = "0" ]
-  [ ! -s "$DRAIN_MVN_CALLED_FILE" ]
+  [ "$(drain_outcome_nth 0)" = "alpha|drained" ]
+  [ "$(drained_features_count)" = "1" ]
 }
 
 @test "drain_one_feature — records skip:fetch-failed when runner-checkout sync fails" {
@@ -4304,6 +4323,8 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   setup_drain_test
   DISCOVERY_JSON='["alpha","beta","gamma"]'
   # gamma branch missing on host; alpha and beta exist.
+  # After lazy-init, missing host branches no longer produce skip:branch-missing
+  # — gamma is dispatched normally (ensure_runner_checkout_on_branch mocked).
   git -C "$HOST_REPO" branch alpha
   git -C "$HOST_REPO" branch beta
   # beta's snapshot crashes pre-loop → feature-snapshot-failed.
@@ -4315,10 +4336,11 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   [ "$(drain_outcomes_count)" = "3" ]
   [ "$(drain_outcome_nth 0)" = "alpha|drained" ]
   [ "$(drain_outcome_nth 1)" = "beta|feature-snapshot-failed" ]
-  [ "$(drain_outcome_nth 2)" = "gamma|skip:branch-missing" ]
-  # mvn-cache created only for the drained feature.
-  [ "$(wc -l <"$DRAIN_MVN_CALLED_FILE" | tr -d ' ')" = "1" ]
+  [ "$(drain_outcome_nth 2)" = "gamma|drained" ]
+  # mvn-cache created for alpha and gamma (drained features).
+  [ "$(wc -l <"$DRAIN_MVN_CALLED_FILE" | tr -d ' ')" = "2" ]
   grep -Fxq "alpha" "$DRAIN_MVN_CALLED_FILE"
+  grep -Fxq "gamma" "$DRAIN_MVN_CALLED_FILE"
 }
 
 @test "run_drain — interrupted between features stops the outer loop" {
@@ -4530,7 +4552,7 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   RUNNER_INTERRUPTED=0
   RUN_FEATURE_OUTCOMES=(
     "alpha|drained"
-    "beta|skip:branch-missing"
+    "beta|skip:fetch-failed"
     "gamma|drained"
     "delta|feature-snapshot-failed"
   )
@@ -4549,7 +4571,7 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   # Per-feature sections in encounter order — verified by line-number ordering.
   local a b c d
   a="$(grep -n '^## alpha — drained$' "$RUN_DIR/SUMMARY.md" | cut -d: -f1)"
-  b="$(grep -n '^## beta — skipped: branch-missing$' "$RUN_DIR/SUMMARY.md" | cut -d: -f1)"
+  b="$(grep -n '^## beta — skipped: fetch-failed$' "$RUN_DIR/SUMMARY.md" | cut -d: -f1)"
   c="$(grep -n '^## gamma — drained$' "$RUN_DIR/SUMMARY.md" | cut -d: -f1)"
   d="$(grep -n '^## delta — feature-snapshot-failed$' "$RUN_DIR/SUMMARY.md" | cut -d: -f1)"
   [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -n "$d" ]
