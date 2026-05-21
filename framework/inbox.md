@@ -37,7 +37,7 @@ Read `.inbox.md` and the contents of `.inbox/`.
 When the maintainer is ready to act on an entry, route it to the right lifecycle entry point based on its scope:
 
 - **Feature-shaped seed** — multi-issue scope, real architectural unknowns, needs scoping. Run `/grill-with-docs` with the entry as starting context. Once the feature workspace is set up, delete the entry from `.inbox.md` (and remove its body file from `.inbox/` if any).
-- **One-off fix or tweak** — single slice, no PRD warranted. Create a micro-feature directly: `.features/<slug>/issues/01-<slug>.md`, no `PRD.md`. Then delete the entry.
+- **One-off fix or tweak** — single slice, no PRD warranted. Set up a single-issue feature with no PRD, per `docs/formann/issue-tracker/BINDING.md`. Then delete the entry.
 
 The judgment of which path applies belongs to the maintainer. If it's not obvious from the entry, confirm before promoting.
 
