@@ -197,6 +197,10 @@ _slug_query='query($owner: String!, $name: String!, $slugLabel: String!) {
     issues(labels: ["formann:feature", $slugLabel], states: [OPEN], first: 10) {
       nodes {
         number
+        state
+        stateReason
+        body
+        labels(first: 30) { nodes { name } }
         subIssues(first: 100) {
           nodes {
             number
@@ -234,13 +238,26 @@ if [ "$_parent_count" -ge 2 ]; then
   exit "$_EXIT_COLLISION"
 fi
 
-# 1 match — extract sub-issues from the response.
-# The subIssues connection returns items in UI priority order; each position is
-# unique, so the API-returned order is already deterministic. No sort is applied.
+# 1 match — build the stream of issue nodes to process.
+# When the parent carries formann:status:*, it is a work-item and emits as the
+# first entry in issues[]; sub-issues follow in UI priority order (no sort applied).
+_parent_has_status="$(printf '%s' "$_resp" | jq '
+  [.data.repository.issues.nodes[0].labels.nodes[]?.name
+   | select(startswith("formann:status:"))] | length')"
 
-_sub_json="$(printf '%s' "$_resp" | jq -c '.data.repository.issues.nodes[0].subIssues.nodes[]')"
+if [ "$_parent_has_status" -gt 0 ]; then
+  _issue_json="$(printf '%s' "$_resp" | jq -c '
+    .data.repository.issues.nodes[0] as $p |
+    ([{number: $p.number, state: $p.state, stateReason: $p.stateReason,
+       body: $p.body, labels: $p.labels}]
+     + ($p.subIssues.nodes // []))[]')"
+else
+  _issue_json="$(printf '%s' "$_resp" | jq -c \
+    '.data.repository.issues.nodes[0].subIssues.nodes[]')"
+fi
 
-# Phase 1: collect sub-issue metadata into parallel arrays.
+# Phase 1: collect issue metadata into parallel arrays (work-item parent first,
+# if present, then sub-issues).
 # Arrays: _nums, _statuses, _categories, _types, _blocked_flat, _blocked_counts
 _nums=()
 _statuses=()
@@ -251,7 +268,7 @@ _blocked_counts=() # number of blocked_by refs for each issue
 
 _done_nums=""  # space-delimited list of done issue numbers (for eligibility)
 
-if [ -n "$_sub_json" ]; then
+if [ -n "$_issue_json" ]; then
   while IFS= read -r _sub; do
     [ -n "$_sub" ] || continue
 
@@ -300,10 +317,10 @@ if [ -n "$_sub_json" ]; then
     if [ "$_status" = "done" ]; then
       _done_nums="$_done_nums $_num"
     fi
-  done <<< "$_sub_json"
+  done <<< "$_issue_json"
 fi
 
-# Is number $1 in the sub-issue set?
+# Is number $1 in the issues set (sub-issues, or work-item parent)?
 _is_known_num() {
   local _n="$1" _i=0
   while [ "$_i" -lt "${#_nums[@]}" ]; do

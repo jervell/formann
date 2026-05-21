@@ -60,7 +60,7 @@ This returns all open issues labelled with both `formann:feature` and `formann:s
 | 1 | Issue `#N` is the parent. Retrieve its PRD body and labels: `gh issue view <N> --json title,body,labels` |
 | ≥ 2 | Slug collision. Report the error naming both parents with the recovery recipe: "remove the `formann:slug:<slug>` label from one of: #N, #M". |
 
-The 1-match result provides `title` (feature name), `body` (the PRD Markdown), and `labels`.
+The 1-match result provides `title` (feature name), `body`, and `labels`. **When the parent carries no `formann:status:*` label** (pure-container parent), `body` is the PRD Markdown. **When the parent carries `formann:status:*`** (work-item parent), the parent is itself a work item, not a PRD container — this verb returns empty: `body` is the work description and must not be treated as a PRD. Skill prose calling this verb stays unconditional; the empty result propagates naturally.
 
 ### List issues in a feature
 
