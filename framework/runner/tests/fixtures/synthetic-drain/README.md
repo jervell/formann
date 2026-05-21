@@ -22,42 +22,12 @@ so both are eligible from the first iteration.
 
 ## How to drive the demo
 
-The runner expects the host branch to match the feature slug and
-`.features/<slug>/` to exist. Install the fixture, switch branches, run.
+The runner expects `.features/<slug>/` to exist in the working tree so
+`tracker-snapshot --list` discovers the slug. A host branch is no longer
+required — the runner lazily creates it from `main` on first dispatch.
 
 ```sh
-# 1. Switch to a fresh branch named after the feature.
-git checkout -b synthetic-drain
-
-# 2. Copy the fixture into .features/.
-mkdir -p .features/synthetic-drain
-cp -R framework/runner/tests/fixtures/synthetic-drain/PRD.md \
-      .features/synthetic-drain/
-cp -R framework/runner/tests/fixtures/synthetic-drain/issues \
-      .features/synthetic-drain/
-
-# 3. Drop the template tree on this branch so /implement matches one
-#    file, not two. (Template and live issue share the same path shape;
-#    leaving both on the same branch makes /implement's resolution
-#    nondeterministic.)
-if [ -d framework/runner/tests/fixtures/synthetic-drain ]; then
-  git rm -r framework/runner/tests/fixtures/synthetic-drain
-fi
-
-# 4. Commit so the fixture lives at HEAD (the runner reads
-#    .features from the runner-checkout's HEAD, not its working tree).
-git add .features/synthetic-drain
-git commit -m "synthetic-drain: install demo fixture"
-
-# 5. Park host on master (conventional; the runner is branch-state-agnostic
-#    and no longer skips features whose branch is checked out).
-git checkout master
-
-# 6. Re-stage the fixture as an untracked dir in master's working tree
-#    so `tracker-snapshot --list` (which scans the host working tree)
-#    discovers the slug. Without this, `--feature synthetic-drain` is
-#    refused with `unknown-feature` regardless of merge state.
-#    Mirrors multi-feature-drain's setup step 3. Do NOT commit on master.
+# 1. Seed the fixture into .features/ (working tree only; no branch switch needed).
 mkdir -p .features/synthetic-drain
 cp -R framework/runner/tests/fixtures/synthetic-drain/PRD.md \
       .features/synthetic-drain/
@@ -66,14 +36,32 @@ cp -R framework/runner/tests/fixtures/synthetic-drain/issues \
 bash framework/bindings/issue-tracker/local-markdown/tracker-snapshot --list \
   | grep -q synthetic-drain   # sanity-check: slug now in discovery output
 
-# 7. Drain just this feature.
+# 2. Drain just this feature.
 bash framework/runner/run-the-queue.sh --feature synthetic-drain
 ```
 
-The runner should dispatch issue 01, propagate the commit into host's
-`synthetic-drain` ref, then issue 02, then report `queue empty`. Markers
-land at `.features/synthetic-drain/markers/MARKER-{01,02}.txt` on the
+The runner will:
+1. Detect that `refs/heads/synthetic-drain` is absent on host and lazily
+   initialize the runner-checkout's branch from `refs/heads/main`.
+2. Dispatch issue 01 and propagate the commit, creating `refs/heads/synthetic-drain`
+   on host from the runner's commits.
+3. Dispatch issue 02, then report `queue empty`.
+
+Markers land at `.features/synthetic-drain/markers/MARKER-{01,02}.txt` on the
 `synthetic-drain` branch.
+
+### Pre-creating the branch (optional)
+
+You may still create the branch manually before running if you want to start
+from a specific tip rather than `main`:
+
+```sh
+git checkout -b synthetic-drain
+# … commit the fixture onto the branch …
+git checkout master
+```
+
+The runner detects the existing branch and syncs to it as before.
 
 ## Ctrl-C demo
 
