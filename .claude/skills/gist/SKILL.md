@@ -1,6 +1,6 @@
 ---
 name: gist
-description: Produce a short plain-English summary of whatever the user points at — the previous response, the conversation, a specific artifact, or each item in a list.
+description: Produce a short plain-English summary of whatever the user points at.
 argument-hint: "What to gist? (leave empty to gist the previous response)"
 ---
 
