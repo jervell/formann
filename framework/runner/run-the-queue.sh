@@ -1273,7 +1273,7 @@ ensure_runner_checkout_on_branch() {
 
   # `reset --hard` scrubs tracked changes but leaves untracked files
   # alone. The dispatch container can drop CWD-relative artifacts (kernel
-  # core dumps from a crashed in-computer process, stray writes from a
+  # core dumps from a crashed in-container process, stray writes from a
   # confused agent), and any leftover would surface in the implement
   # stage's `git status --porcelain` diagnostic and misattribute prior
   # dispatch leakage to *this* iteration's `/implement`. `-fd` removes
