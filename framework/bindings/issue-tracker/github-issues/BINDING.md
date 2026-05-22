@@ -197,6 +197,55 @@ The content uses GitHub's native `#N` autolink form — not the portable `<featu
 docs/formann/issue-tracker/body-edit <N> "Blocked by" /dev/null
 ```
 
+### Make issue runner-ready
+
+Ensure an issue is discoverable and dispatchable by the runner before transitioning it to `ready-for-agent` or `ready-for-human`. The verb is idempotent — re-running on a fully-ready issue performs no API writes.
+
+**Inputs:**
+- `issue-N` — the GitHub issue number (required).
+- `slug` — the slug to assign (required if the issue carries no `formann:slug:*` label; ignored if one is already present).
+
+**GitHub-issues realization:** Two-step internal sequence.
+
+**Step 1 — Slug ensure.** Read the issue's current labels and node ID:
+
+```bash
+gh issue view <N> --json id,labels
+```
+
+If the issue already carries a `formann:slug:*` label, this step is a no-op. Otherwise a slug must be supplied:
+
+- **Without a slug:** refuse with a "slug required" diagnostic (exit 1). `/triage` must prompt the maintainer for one and re-invoke the verb.
+- **With a slug:** validate length (≤ 37 chars, same check as **Create a feature**), run the slug-uniqueness preflight:
+
+  ```bash
+  gh issue list --label "formann:slug:<slug>" --state all --json number,title
+  ```
+
+  If any match is returned, refuse with the existing collision diagnostic:
+
+  ```
+  Error: slug "<slug>" is already in use by issue #<N> ("<title>").
+  Choose a different slug.
+  ```
+
+  On success: `gh label create "formann:slug:<slug>" --force`, then `gh issue edit <N> --add-label "formann:slug:<slug>"`.
+
+**Step 2 — `formann:feature` ensure.** If the issue already carries `formann:feature`, this step is a no-op. Otherwise, detect whether the issue has a GitHub-side parent using the node ID from step 1:
+
+```bash
+gh api graphql \
+  --field query='query($id: ID!) { node(id: $id) { ... on Issue { parent { id } } } }' \
+  --field id="<node-id>"
+```
+
+- If `parent` is `null` (standalone) → `gh issue edit <N> --add-label "formann:feature"`.
+- If `parent` is non-null (the issue is a sub-issue) → no-op; sub-issues do not carry `formann:feature`.
+
+Both steps are idempotent: re-running on a fully-ready issue (already has both `formann:slug:*` and `formann:feature`) performs no API writes.
+
+The role-surface script is `make-issue-runner-ready`.
+
 ### Publish the agent brief
 
 Write (or replace) the agent brief for this issue. Body-shaped: re-publishing overwrites the prior brief; prior content is not preserved.

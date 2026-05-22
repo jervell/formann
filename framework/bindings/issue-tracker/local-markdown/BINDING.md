@@ -172,6 +172,12 @@ The implementation is clean. `RateLimitFilter` is well-scoped and the test cover
 🟢 Minor: `RateLimitFilter` could declare `@Order` explicitly, but the default ordering is correct for this use case.
 ```
 
+### Make issue runner-ready
+
+Ensure an issue is discoverable and dispatchable by the runner before transitioning it to `ready-for-agent` or `ready-for-human`. The verb is idempotent.
+
+**Local-markdown realization:** No-op. The local-markdown layout already guarantees runner-readiness by construction: the slug is the directory name (structural invariant — every LM issue has a slug), and there is no `formann:feature` analog. No API calls are made; the verb always succeeds.
+
 ## Conventions
 
 - One feature per directory: `.features/<feature-slug>/`
