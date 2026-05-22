@@ -501,7 +501,7 @@ Create a single Formann-eligible GitHub issue with no parent. The issue enters a
 **Contract:** Creates one GitHub issue. No `addSubIssue` link; no `formann:feature` label.
 
 **Inputs:**
-- `slug` — the feature slug (optional). When provided, must be ≤ 37 characters and must not already label any open issue.
+- `slug` — the feature slug (optional). When provided, must be ≤ 37 characters and must not already label any issue (open or closed — re-using an archived slug is also a collision).
 - `title` — the issue title.
 - `body` — the issue body content (passed via `body-file` on the role surface).
 - `category` — `bug` or `enhancement`.
@@ -675,7 +675,7 @@ gh api graphql \
 
 `addSubIssue.input.issueId` is the **parent's** node ID (captured in Step 1); `addSubIssue.input.subIssueId` is the **new sub-issue's** node ID. The mutation returns `issue.number` (parent) and `subIssue.number` (new sub-issue); verify both match the expected values.
 
-**Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If the `gh issue create` in Step 2 succeeds but `addSubIssue` fails, the new issue exists on GitHub without a parent link — it is an orphan. No engineered rollback. Recovery: re-run only the `addSubIssue` call with the orphan's existing issue number and the resolved parent's node ID.
+**Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If the `gh issue create` in Step 2 succeeds but any subsequent call fails — the `gh issue view` lookup that fetches the new issue's node ID, or the `addSubIssue` mutation itself — the new issue exists on GitHub without a parent link, an orphan. The `add-issue-to-slug` script surfaces this as `_EXIT_TRANSIENT` (3) and names the orphan's number in stderr; the resolve-failure exit code (1) is reserved for slug-not-found / slug-collision cases that never created an issue. No engineered rollback. Recovery: re-run only the `addSubIssue` call with the orphan's existing issue number and the resolved parent's node ID.
 
 ### GitHub web UI — minimum marker
 

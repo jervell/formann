@@ -148,16 +148,40 @@ if [ -n "$_body_file" ]; then
   _body="$(cat "$_body_file")"
 fi
 
+# Capture exit code so a transient gh failure surfaces as _EXIT_TRANSIENT
+# rather than being misclassified as _EXIT_RESOLVE_FAILURE (1). The create
+# itself failing creates no issue, so no orphan risk — but the post-create
+# view + addSubIssue calls do leave an orphan if they fail. BINDING.md's
+# "Partial-failure atomicity" note covers the recovery: re-run the
+# addSubIssue mutation against the orphan's number.
+_new_url=""
+_gh_ec=0
 _new_url="$(gh issue create \
   --title "$_title" \
   --body "$_body" \
-  --label "formann:status:needs-triage,formann:category:${_category},formann:type:${_type}")"
+  --label "formann:status:needs-triage,formann:category:${_category},formann:type:${_type}")" || _gh_ec=$?
+if [ "$_gh_ec" -ne 0 ]; then
+  echo "add-issue-to-slug: 'gh issue create' failed (exit ${_gh_ec}); see gh's error above." >&2
+  exit "$_EXIT_TRANSIENT"
+fi
 
 _new_num="$(printf '%s' "$_new_url" | grep -o '[0-9]*$')"
 
-# ── Step 2 (cont.): Link via addSubIssue ──────────────────────────────────────────────
-_new_node_id="$(gh issue view "$_new_num" --json id | jq -r '.id')"
+# ── Step 2 (cont.): Link via addSubIssue ──────────────────────────────────────
+# The new issue already exists on GitHub. Any transient failure below leaves
+# it orphaned (no parent link); diagnostic names the orphan's number so the
+# caller can re-run the addSubIssue mutation directly.
+_new_node_json=""
+_gh_ec=0
+_new_node_json="$(gh issue view "$_new_num" --json id)" || _gh_ec=$?
+if [ "$_gh_ec" -ne 0 ]; then
+  echo "add-issue-to-slug: 'gh issue view' failed (exit ${_gh_ec}); see gh's error above." >&2
+  echo "add-issue-to-slug: issue #${_new_num} was created but is orphaned (no parent link). Recover by re-running the addSubIssue mutation against #${_new_num}." >&2
+  exit "$_EXIT_TRANSIENT"
+fi
+_new_node_id="$(printf '%s' "$_new_node_json" | jq -r '.id')"
 
+_gh_ec=0
 gh api graphql \
   --field query='mutation($parentId:ID!,$subId:ID!) {
     addSubIssue(input:{issueId:$parentId,subIssueId:$subId}) {
@@ -167,6 +191,11 @@ gh api graphql \
   }' \
   --field parentId="$_parent_node_id" \
   --field subId="$_new_node_id" \
-  >/dev/null
+  >/dev/null || _gh_ec=$?
+if [ "$_gh_ec" -ne 0 ]; then
+  echo "add-issue-to-slug: 'gh api graphql addSubIssue' failed (exit ${_gh_ec}); see gh's error above." >&2
+  echo "add-issue-to-slug: issue #${_new_num} was created but is orphaned (no parent link). Recover by re-running the addSubIssue mutation against #${_new_num}." >&2
+  exit "$_EXIT_TRANSIENT"
+fi
 
 printf '%s\n' "$_new_url"

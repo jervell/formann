@@ -17,9 +17,13 @@ setup() {
   # - 'issue list ...'   → serves LIST_FIXTURE (default: one matching parent).
   #                        If LIST_FAIL=<exit>, emits a fake stderr error and
   #                        exits non-zero (simulates auth/network/rate-limit).
-  # - 'issue create ...' → prints a fake URL.
-  # - 'issue view ...'   → returns JSON with a fake node ID (LIST_FIXTURE can override).
+  # - 'issue create ...' → prints a fake URL. If CREATE_FAIL=<exit>, emits a
+  #                        fake stderr error and exits non-zero.
+  # - 'issue view ...'   → returns JSON with a fake node ID. If VIEW_FAIL=<exit>,
+  #                        emits a fake stderr error and exits non-zero.
   # - 'api graphql ...'  → serves GRAPHQL_FIXTURE (default: addSubIssue success).
+  #                        If GRAPHQL_FAIL=<exit>, emits a fake stderr error and
+  #                        exits non-zero.
   cat >"$FAKE_BIN/gh" <<'SHIM'
 #!/usr/bin/env bash
 echo "$*" >> "${CALL_LOG}"
@@ -33,14 +37,26 @@ if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
   exit 0
 fi
 if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
+  if [ -n "${CREATE_FAIL:-}" ]; then
+    echo "gh: simulated upstream failure during issue create (HTTP 503)" >&2
+    exit "${CREATE_FAIL}"
+  fi
   echo "https://github.com/test-owner/test-repo/issues/42"
   exit 0
 fi
 if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
+  if [ -n "${VIEW_FAIL:-}" ]; then
+    echo "gh: simulated upstream failure during issue view (HTTP 502)" >&2
+    exit "${VIEW_FAIL}"
+  fi
   echo '{"id":"I_new_node"}'
   exit 0
 fi
 if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
+  if [ -n "${GRAPHQL_FAIL:-}" ]; then
+    echo "gh: simulated upstream failure during api graphql (HTTP 504)" >&2
+    exit "${GRAPHQL_FAIL}"
+  fi
   echo '{"data":{"addSubIssue":{"issue":{"number":10},"subIssue":{"number":42}}}}'
   exit 0
 fi
@@ -278,6 +294,96 @@ _one_parent_list() {
   [ "$status" -eq 3 ]
   run grep "issue create" "$CALL_LOG"
   assert_failure
+}
+
+# ── Scenario (f): transient gh failure on issue create ───────────────────────
+# The create call itself fails — no issue is born, no orphan risk, but the
+# script must still classify this as transient (3), not resolve-failure (1).
+
+@test "create failure: exits with transient code (3), distinct from resolve-failure (1)" {
+  export CREATE_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+}
+
+@test "create failure: surfaces a script-specific diagnostic naming gh issue create" {
+  export CREATE_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+  assert_output --partial "add-issue-to-slug"
+  assert_output --partial "gh issue create"
+}
+
+@test "create failure: graphql NOT called" {
+  export CREATE_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+  run grep "api graphql" "$CALL_LOG"
+  assert_failure
+}
+
+# ── Scenario (g): transient gh failure on post-create issue view ─────────────
+# Issue is already created on GitHub; the script needs its node ID via
+# 'gh issue view' before linking. A transient failure here leaves an orphan
+# AND must classify as transient (3), not resolve-failure (1), so the caller
+# distinguishes "orphan due to infra hiccup, retry the link" from "slug
+# resolve failed, never created anything".
+
+@test "post-create view failure: exits with transient code (3), distinct from resolve-failure (1)" {
+  export VIEW_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+}
+
+@test "post-create view failure: surfaces a script-specific diagnostic naming gh issue view" {
+  export VIEW_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+  assert_output --partial "add-issue-to-slug"
+  assert_output --partial "gh issue view"
+}
+
+@test "post-create view failure: diagnostic names the orphan issue number" {
+  export VIEW_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+  assert_output --partial "#42"
+  assert_output --partial "orphan"
+}
+
+@test "post-create view failure: graphql NOT called" {
+  export VIEW_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+  run grep "api graphql" "$CALL_LOG"
+  assert_failure
+}
+
+# ── Scenario (h): transient gh failure on addSubIssue mutation ───────────────
+# Issue is already created on GitHub and its node ID has been fetched. The
+# linking mutation fails. Exact same orphan-with-transient-classification
+# contract as scenario (g).
+
+@test "addSubIssue failure: exits with transient code (3), distinct from resolve-failure (1)" {
+  export GRAPHQL_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+}
+
+@test "addSubIssue failure: surfaces a script-specific diagnostic naming addSubIssue" {
+  export GRAPHQL_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+  assert_output --partial "add-issue-to-slug"
+  assert_output --partial "addSubIssue"
+}
+
+@test "addSubIssue failure: diagnostic names the orphan issue number" {
+  export GRAPHQL_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+  assert_output --partial "#42"
+  assert_output --partial "orphan"
 }
 
 # ── Body content via --body-file ──────────────────────────────────────────────

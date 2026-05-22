@@ -47,8 +47,8 @@
 #
 # The script is also sourceable; pure logic (`classify_outcome`,
 # `next_eligible_ref`, `next_eligible_feature`, `classify_gate_outcome`,
-# `evaluate_feature_gate`, `format_multi_feature_summary_md`) is exposed for
-# the bats suite. `main` only runs when the script is executed directly.
+# `format_multi_feature_summary_md`) is exposed for the bats suite. `main`
+# only runs when the script is executed directly.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -204,41 +204,6 @@ is_transport_crash() {
   grep -qE \
     'API Error: 5[0-9][0-9] |API Error: 429 |fetch failed|ECONNRESET|ETIMEDOUT|getaddrinfo' \
     "$log_file"
-}
-
-# Per-feature gate evaluator. Pure function — no I/O beyond stdin/stdout.
-# Sourceable from bats. The outer drain loop calls the side-effecting
-# helpers (fetch, snapshot, queue-shape inspection) and hands their
-# verdicts to this function, which decides drain vs skip:<reason>.
-#
-# Verdict priority (top wins; matches the loop's short-circuit order):
-#   fetch-failed > feature-snapshot-failed > queue-empty > drain.
-#
-# Signature: evaluate_feature_gate <slug> \
-#                                  [snapshot_status] [queue_status] \
-#                                  [fetch_status]
-#
-# Defaults encode the optimistic verdict (snapshot_status=ok,
-# queue_status=nonempty, fetch_status=ok).
-evaluate_feature_gate() {
-  local slug="$1"
-  local snapshot_status="${2:-ok}"
-  local queue_status="${3:-nonempty}"
-  local fetch_status="${4:-ok}"
-
-  if [ "$fetch_status" = "failed" ]; then
-    echo "skip:fetch-failed"
-    return 0
-  fi
-  if [ "$snapshot_status" = "failed" ]; then
-    echo "skip:feature-snapshot-failed"
-    return 0
-  fi
-  if [ "$queue_status" = "empty" ]; then
-    echo "skip:queue-empty"
-    return 0
-  fi
-  echo "drain"
 }
 
 # Pre-dispatch sync-base selector. Pure function — takes a pre-computed

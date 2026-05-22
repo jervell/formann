@@ -752,7 +752,7 @@ setup_loop_test() {
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
   RUNNER_INTERRUPTED=0
   # Provide a minimal HOST_REPO with HEAD on a branch other than the feature
-  # so evaluate_feature_gate returns "drain".
+  # so drain_one_feature's gate cascade picks drain.
   HOST_REPO="$BATS_TEST_TMPDIR/host-repo"
   if [ ! -d "$HOST_REPO" ]; then
     mkdir -p "$HOST_REPO"
@@ -1578,7 +1578,7 @@ setup_run_single_test() {
   : >"$RUNNER_STDERR"
   # DISCOVERY_JSON must contain the test feature so the discovery gate passes.
   # HOST_REPO is left pointing at a non-git dir so symbolic-ref returns empty
-  # and evaluate_feature_gate returns "drain".
+  # and drain_one_feature's gate cascade picks drain.
   DISCOVERY_JSON='["f"]'
   HOST_REPO="$BATS_TEST_TMPDIR"
 }
@@ -3695,56 +3695,6 @@ SHIM
   checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
   [ "$checkout_branch" = "new-feature" ]
   [ "$checkout_head" = "$main_tip" ]
-}
-
-# === evaluate_feature_gate — skip-reason matrix ============================
-#
-# The gate evaluator's full signal set: fetch-failed, feature-snapshot-failed,
-# queue-empty. The drain loop short-circuits at the first failing gate, but
-# the pure function takes the full bundle so bats can exercise priority order
-# exhaustively.
-#
-# Signature: evaluate_feature_gate <slug> \
-#                                  [snapshot_status=ok] \
-#                                  [queue_status=nonempty] \
-#                                  [fetch_status=ok]
-#
-# Verdict priority (top wins): fetch-failed > feature-snapshot-failed >
-#                              queue-empty > drain.
-
-@test "evaluate_feature_gate — returns drain by default" {
-  result="$(evaluate_feature_gate "my-feature")"
-  [ "$result" = "drain" ]
-}
-
-@test "evaluate_feature_gate — skip:fetch-failed when fetch_status=failed" {
-  result="$(evaluate_feature_gate "my-feature" ok nonempty failed)"
-  [ "$result" = "skip:fetch-failed" ]
-}
-
-@test "evaluate_feature_gate — skip:feature-snapshot-failed when snapshot_status=failed" {
-  result="$(evaluate_feature_gate "my-feature" failed nonempty ok)"
-  [ "$result" = "skip:feature-snapshot-failed" ]
-}
-
-@test "evaluate_feature_gate — skip:queue-empty when queue_status=empty" {
-  result="$(evaluate_feature_gate "my-feature" ok empty ok)"
-  [ "$result" = "skip:queue-empty" ]
-}
-
-@test "evaluate_feature_gate — fetch-failed wins over feature-snapshot-failed and queue-empty" {
-  result="$(evaluate_feature_gate "my-feature" failed empty failed)"
-  [ "$result" = "skip:fetch-failed" ]
-}
-
-@test "evaluate_feature_gate — feature-snapshot-failed wins over queue-empty" {
-  result="$(evaluate_feature_gate "my-feature" failed empty ok)"
-  [ "$result" = "skip:feature-snapshot-failed" ]
-}
-
-@test "evaluate_feature_gate — all signals ok returns drain" {
-  result="$(evaluate_feature_gate "my-feature" ok nonempty ok)"
-  [ "$result" = "drain" ]
 }
 
 # === next_eligible_feature — outer-loop selection =========================
