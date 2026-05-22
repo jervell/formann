@@ -21,6 +21,8 @@
 ###   0   Success.
 ###   1   Resolve failure (zero or ≥2 matching formann:feature parents).
 ###   2   Usage error or prerequisite missing.
+###   3   Transient gh failure (network, auth, rate limit). gh's own error
+###       message is passed through to stderr.
 ###
 ### Bash 3.2 compatible.
 ###
@@ -28,9 +30,9 @@
 set -eu
 set -o pipefail
 
-readonly _EXIT_OK=0
 readonly _EXIT_RESOLVE_FAILURE=1
 readonly _EXIT_USAGE=2
+readonly _EXIT_TRANSIENT=3
 
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 if ! command -v gh >/dev/null 2>&1; then
@@ -104,11 +106,21 @@ if [ -n "$_body_file" ] && [ ! -e "$_body_file" ]; then
 fi
 
 # ── Step 1: Resolve the parent ────────────────────────────────────────────────
+# Capture exit code so a network/auth/rate-limit failure (which is a transient
+# infrastructure problem) is surfaced distinctly from a legitimate resolve
+# failure. gh's stderr is intentionally passed through to the user terminal.
+_parent_json=""
+_gh_ec=0
 _parent_json="$(gh issue list \
   --label "formann:feature" \
   --label "formann:slug:${_slug}" \
   --state open \
-  --json number,id,title 2>/dev/null)"
+  --json number,id,title)" || _gh_ec=$?
+
+if [ "$_gh_ec" -ne 0 ]; then
+  echo "add-issue-to-slug: 'gh issue list' failed (exit ${_gh_ec}); see gh's error above." >&2
+  exit "$_EXIT_TRANSIENT"
+fi
 
 _parent_count="$(printf '%s' "$_parent_json" | jq '. | length')"
 
@@ -121,10 +133,9 @@ ERR
 fi
 
 if [ "$_parent_count" -ge 2 ]; then
-  _parent_num="$(printf '%s' "$_parent_json" | jq -r '.[0].number')"
-  _parent_ttl="$(printf '%s' "$_parent_json" | jq -r '.[0].title')"
-  echo "Error: slug \"${_slug}\" is already in use by issue #${_parent_num} (\"${_parent_ttl}\")." >&2
-  echo "Choose a different slug." >&2
+  _parent_refs="$(printf '%s' "$_parent_json" | jq -r '.[].number | "#" + tostring' | tr '\n' ' ' | sed 's/ $//')"
+  echo "Error: slug \"${_slug}\" is in use by multiple parents: ${_parent_refs}." >&2
+  echo "Remove the 'formann:slug:${_slug}' label from one of: ${_parent_refs}." >&2
   exit "$_EXIT_RESOLVE_FAILURE"
 fi
 
@@ -144,7 +155,7 @@ _new_url="$(gh issue create \
 
 _new_num="$(printf '%s' "$_new_url" | grep -o '[0-9]*$')"
 
-# ── Step 2: Link via addSubIssue ──────────────────────────────────────────────
+# ── Step 2 (cont.): Link via addSubIssue ──────────────────────────────────────────────
 _new_node_id="$(gh issue view "$_new_num" --json id | jq -r '.id')"
 
 gh api graphql \

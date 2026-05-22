@@ -10,8 +10,9 @@
 ###   --category <cat>      'bug' or 'enhancement' (required).
 ###   --type <type>         'afk' or 'hitl' (required).
 ###   --slug <slug>         Feature slug (optional). Must be ≤ 37 characters
-###                         and not already label any open issue. When omitted,
-###                         the issue is created without a slug label; /triage
+###                         and not already label any open or closed issue
+###                         (archived slugs are caught too). When omitted, the
+###                         issue is created without a slug label; /triage
 ###                         assigns it later.
 ###   --body-file <path>    Path to a file whose contents become the issue body
 ###                         (optional; defaults to an empty body).
@@ -24,6 +25,8 @@
 ###   0   Success.
 ###   1   Slug-uniqueness collision.
 ###   2   Usage error or prerequisite missing.
+###   3   Transient gh failure (network, auth, rate limit). gh's own error
+###       message is passed through to stderr.
 ###
 ### Bash 3.2 compatible.
 ###
@@ -31,13 +34,17 @@
 set -eu
 set -o pipefail
 
-readonly _EXIT_OK=0
 readonly _EXIT_COLLISION=1
 readonly _EXIT_USAGE=2
+readonly _EXIT_TRANSIENT=3
 
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 if ! command -v gh >/dev/null 2>&1; then
   echo "create-standalone-issue: 'gh' CLI not found in PATH." >&2
+  exit "$_EXIT_USAGE"
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "create-standalone-issue: 'jq' not found in PATH." >&2
   exit "$_EXIT_USAGE"
 fi
 
@@ -110,11 +117,19 @@ if [ -n "$_slug" ]; then
   fi
 
   # Uniqueness check (both open and closed issues).
-  _existing="$(gh issue list --label "formann:slug:${_slug}" --state all --json number,title 2>/dev/null)"
-  _count="$(printf '%s' "$_existing" | grep -c '"number"' 2>/dev/null || echo 0)"
-  if [ "$_count" -gt 0 ]; then
-    _num="$(printf '%s' "$_existing" | grep '"number"' | head -1 | grep -o '[0-9]*' | head -1)"
-    _ttl="$(printf '%s' "$_existing" | grep '"title"' | head -1 | sed 's/.*"title": *"//;s/".*//')"
+  # Capture exit code so a network/auth/rate-limit failure (transient
+  # infrastructure problem) is surfaced distinctly from a legitimate
+  # slug collision. gh's stderr is intentionally passed through to the user.
+  _existing=""
+  _gh_ec=0
+  _existing="$(gh issue list --label "formann:slug:${_slug}" --state all --json number,title)" || _gh_ec=$?
+  if [ "$_gh_ec" -ne 0 ]; then
+    echo "create-standalone-issue: 'gh issue list' failed (exit ${_gh_ec}); see gh's error above." >&2
+    exit "$_EXIT_TRANSIENT"
+  fi
+  if printf '%s' "$_existing" | jq -e 'length > 0' >/dev/null; then
+    _num="$(printf '%s' "$_existing" | jq -r '.[0].number')"
+    _ttl="$(printf '%s' "$_existing" | jq -r '.[0].title')"
     echo "Error: slug \"${_slug}\" is already in use by issue #${_num} (\"${_ttl}\")." >&2
     echo "Choose a different slug." >&2
     exit "$_EXIT_COLLISION"

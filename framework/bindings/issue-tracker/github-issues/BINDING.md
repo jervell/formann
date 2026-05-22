@@ -80,6 +80,10 @@ gh api graphql \
       issues(labels: ["formann:feature", $slugLabel], states: [OPEN], first: 10) {
         nodes {
           number
+          state
+          stateReason
+          body
+          labels(first: 30) { nodes { name } }
           subIssues(first: 100) {
             nodes { number state stateReason body labels(first: 30) { nodes { name } } }
           }
@@ -106,7 +110,7 @@ gh api graphql \
 
 The response nodes are sorted in-script by `.number` ascending via `jq sort_by(.number)` before slug extraction. (`NUMBER` is not a valid `IssueOrderField` enum value in the GitHub GraphQL API; the valid values are `CREATED_AT`, `UPDATED_AT`, and `COMMENTS`. `CREATED_AT` is not a safe substitute because transferred issues preserve their original `createdAt` while being renumbered, so only an explicit `.number` sort guarantees `#N` ASC order under all conditions.)
 
-One GraphQL query per invocation keeps the rate-limit footprint cheap (≈5 points against the 5000-point/hour GraphQL budget). Blockers and eligibility resolve from the in-memory sub-issue set returned by the same query — no follow-up API calls.
+One GraphQL query per invocation keeps the rate-limit footprint cheap (≈5 points against the 5000-point/hour GraphQL budget). Blockers and eligibility resolve from the in-memory issues set returned by the same query — no follow-up API calls.
 
 ### Set the state to `<state>`
 
@@ -622,11 +626,11 @@ Error: slug "<X>" not found on any open formann:feature parent.
 Check the slug spelling, or that the parent is not archived (closed).
 ```
 
-Collision diagnostic (reuses the existing **Create a feature** collision wording):
+Collision diagnostic — names every colliding parent so the maintainer can decide which `formann:slug:<X>` label to strip (mirrors `tracker-snapshot`'s collision wording):
 
 ```
-Error: slug "<X>" is already in use by issue #<N> ("<title>").
-Choose a different slug.
+Error: slug "<X>" is in use by multiple parents: #N #M.
+Remove the 'formann:slug:<X>' label from one of: #N #M.
 ```
 
 When the count is 0 or ≥ 2, exit with a resolve-failure code and do not proceed to Step 2.
@@ -728,7 +732,7 @@ Convention: commits that do work toward an issue reference the issue as `#N` in 
 
 Under the github-issues binding, sub-issue bodies follow the same template as the local-markdown binding, with one per-binding difference: **`## Parent` is omitted**.
 
-Use GitHub's native `#N` autolink form inside `## Blocked by` — not the portable `<feature>/<N>` form. The snapshot's blocker extractor matches `#N` refs against the parent's in-memory sub-issue set.
+Use GitHub's native `#N` autolink form inside `## Blocked by` — not the portable `<feature>/<N>` form. The snapshot's blocker extractor matches `#N` refs against the snapshot's in-memory issues set.
 
 **Rationale for omitting `## Parent`:** Under local-markdown, `## Parent` carries a file path to the PRD (e.g., `.features/<slug>/PRD.md`) — the only in-file pointer to the parent artifact. Under the github-issues binding, GitHub's native sub-issue panel on the parent issue already surfaces the parent → sub-issue relationship visually; and the **Read the feature** verb (`gh issue view <parent-N>`) gives skills programmatic access to the PRD body. The `## Parent` section would be redundant and would drift if the parent issue number changed.
 
@@ -768,6 +772,8 @@ Both invocation forms emit JSON byte-compatible with the local-markdown binding.
 }
 ```
 
+`issues[]` composition depends on the parent's shape. When the parent carries `formann:status:*` (work-item parent), it is emitted as `issues[0]`, followed by its sub-issues. A pure-container parent (no `formann:status:*` label) contributes only its sub-issues, starting at `issues[0]`. The two shapes are covered in [Read the feature](#read-the-feature).
+
 **`tracker-snapshot --list`** emits a JSON array of feature slug strings:
 
 ```json
@@ -776,29 +782,29 @@ Both invocation forms emit JSON byte-compatible with the local-markdown binding.
 
 Field notes:
 
-- `ref` — GitHub's native `#N` (the sub-issue's issue number, with `#` prefix). Differs from local-markdown's `<feature>/NN` form. The top-level `feature` field carries the slug; every snapshot consumer already has the slug in scope.
+- `ref` — GitHub's native `#N` (the entry's issue number, with `#` prefix — a sub-issue's number, or the work-item parent's own number when the parent is emitted as `issues[0]`). Differs from local-markdown's `<feature>/NN` form. The top-level `feature` field carries the slug; every snapshot consumer already has the slug in scope.
 - `nn` — The GitHub issue number as a string, with no `#` prefix. This is the integer half of the runner's CLI ref form `<feature>/<NN>`; the runner uses it to look up entries in the snapshot. Differs from `ref` only by the absent `#`.
 - `status` — Derived from GitHub state + stateReason + `formann:status:*` label. `CLOSED + state_reason=COMPLETED` → `"done"`. `CLOSED + state_reason=NOT_PLANNED` → `"wontfix"`. Open issues: value from the `formann:status:<value>` label; empty string if no such label.
 - `category` — Value from the `formann:category:<value>` label; empty string if absent.
 - `type` — Value from the `formann:type:<value>` label, normalised to uppercase (`afk` → `"AFK"`, `hitl` → `"HITL"`); empty string if absent.
-- `blocked_by` — Array of `#N` refs extracted from the `## Blocked by` section of the sub-issue body. Empty array if the section is absent or contains no `#N` tokens.
-- `eligible` — `true` iff `status == "ready-for-agent"` AND `type == "AFK"` AND every `blocked_by` ref is a known sub-issue of this parent with `status == "done"`. Any unmatched `#N` (not in the parent's sub-issue set) is treated as conservative-false.
+- `blocked_by` — Array of `#N` refs extracted from the `## Blocked by` section of the entry's issue body. Empty array if the section is absent or contains no `#N` tokens.
+- `eligible` — `true` iff `status == "ready-for-agent"` AND `type == "AFK"` AND every `blocked_by` ref is a known entry in this snapshot's issues set with `status == "done"`. Any unmatched `#N` (not in the issues set) is treated as conservative-false.
 
 ### Ordering rules
 
-**`tracker-snapshot <slug>` sub-issue order:**
-Sub-issues are emitted in the order returned by the GraphQL `subIssues` connection, which reflects GitHub's UI priority order (maintainer-adjustable via drag-and-drop). Each sub-issue occupies a unique position, so the API-returned order is already deterministic; no tiebreaker is applied. Dragging a sub-issue to the top of the sub-issue panel makes it the next eligible pick for the AFK runner.
+**`tracker-snapshot <slug>` issue order:**
+A work-item parent (when present) occupies `issues[0]`; sub-issues follow. Sub-issues are emitted in the order returned by the GraphQL `subIssues` connection, which reflects GitHub's UI priority order (maintainer-adjustable via drag-and-drop). Each sub-issue occupies a unique position, so the API-returned order is already deterministic; no tiebreaker is applied. Dragging a sub-issue to the top of the sub-issue panel makes it the next eligible pick for the AFK runner.
 
 **`tracker-snapshot --list` order:**
 Features are returned ordered by parent issue number ascending (`#N` ASC). The GraphQL query carries no `orderBy` clause; the script sorts the returned nodes via `jq sort_by(.number)` before extracting slugs. This is the GitHub-issues binding's list order; local-markdown lists alphabetically. Consumers must not assume cross-binding parity.
 
 ### Blocker resolution rules
 
-Blocker eligibility resolves from the in-memory sub-issue snapshot — no extra API calls. `#N` refs inside `## Blocked by` are matched against the parent's sub-issue set:
+Blocker eligibility resolves from the in-memory issues set — no extra API calls. `#N` refs inside `## Blocked by` are matched against the issues set (sub-issues, plus the work-item parent when present):
 
-- If `N` is in the sub-issue set and `status == "done"` → blocker satisfied.
-- If `N` is in the sub-issue set but not done → blocker unsatisfied; `eligible = false`.
-- If `N` is **not** in the sub-issue set → unresolved external ref; conservative-false (`eligible = false`). This mirrors local-markdown's cross-feature blocker behaviour.
+- If `N` is in the issues set and `status == "done"` → blocker satisfied.
+- If `N` is in the issues set but not done → blocker unsatisfied; `eligible = false`.
+- If `N` is **not** in the issues set → unresolved external ref; conservative-false (`eligible = false`). This mirrors local-markdown's cross-feature blocker behaviour.
 
 ### Slug identity and uniqueness
 

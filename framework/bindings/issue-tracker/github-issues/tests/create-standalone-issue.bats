@@ -15,12 +15,18 @@ setup() {
 
   # gh shim: records every invocation.
   # - 'issue list ...' → serves LIST_FIXTURE (default: empty array = no collision).
+  #                      If LIST_FAIL=<exit>, emits a fake stderr error and
+  #                      exits non-zero (simulates auth/network/rate-limit).
   # - 'label create ...' → succeeds silently.
   # - 'issue create ...' → prints a fake URL.
   cat >"$FAKE_BIN/gh" <<'SHIM'
 #!/usr/bin/env bash
 echo "$*" >> "${CALL_LOG}"
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  if [ -n "${LIST_FAIL:-}" ]; then
+    echo "gh: simulated upstream failure (HTTP 401: bad credentials)" >&2
+    exit "${LIST_FAIL}"
+  fi
   printf '%s\n' "${LIST_FIXTURE:-[]}"
   exit 0
 fi
@@ -123,6 +129,13 @@ SHIM
   assert_output --partial "https://github.com/test-owner/test-repo/issues/42"
 }
 
+@test "with-slug: happy path produces no stderr noise" {
+  export LIST_FIXTURE='[]'
+  run --separate-stderr "$CREATE_STANDALONE" --title "Fix the thing" --category enhancement --type afk --slug my-fix
+  assert_success
+  [ -z "$stderr" ]
+}
+
 @test "with-slug: slug too long (38 chars) exits with usage error" {
   # 38-char slug exceeds the 37-char limit
   long_slug="$(printf 'x%.0s' {1..38})"
@@ -197,13 +210,46 @@ SHIM
   assert_failure
 }
 
+@test "collision: title with JSON-escaped quotes is rendered correctly" {
+  export LIST_FIXTURE='[{"number":5,"title":"Fix: the \"main\" thing"}]'
+  run "$CREATE_STANDALONE" --title "New issue" --category enhancement --type afk --slug taken-slug
+  [ "$status" -eq 1 ]
+  assert_output --partial 'Fix: the "main" thing'
+}
+
+# ── Scenario (d): transient gh failure (network / auth / rate limit) ─────────
+
+@test "gh failure: exits with transient code (3), distinct from collision (1)" {
+  export LIST_FAIL=1
+  run "$CREATE_STANDALONE" --title "New issue" --category enhancement --type afk --slug some-slug
+  [ "$status" -eq 3 ]
+}
+
+@test "gh failure: surfaces a script-specific diagnostic" {
+  export LIST_FAIL=1
+  run "$CREATE_STANDALONE" --title "New issue" --category enhancement --type afk --slug some-slug
+  [ "$status" -eq 3 ]
+  assert_output --partial "create-standalone-issue"
+  assert_output --partial "gh issue list"
+}
+
+@test "gh failure: issue create NOT called" {
+  export LIST_FAIL=1
+  run "$CREATE_STANDALONE" --title "New issue" --category enhancement --type afk --slug some-slug
+  [ "$status" -eq 3 ]
+  run grep "issue create" "$CALL_LOG"
+  assert_failure
+}
+
 # ── Body content via --body-file ──────────────────────────────────────────────
 
 @test "body-file content is passed to gh issue create" {
   body_file="$BATS_TEST_TMPDIR/body.md"
-  printf '%s' "## Gist\nSome content here." >"$body_file"
+  printf '%s' "Sentinel body content for grepping" >"$body_file"
   run "$CREATE_STANDALONE" --title "Fix the thing" --category enhancement --type afk --body-file "$body_file"
   assert_success
+  run grep "issue create" "$CALL_LOG"
+  assert_output --partial "Sentinel body content for grepping"
 }
 
 @test "missing body-file exits with usage error" {

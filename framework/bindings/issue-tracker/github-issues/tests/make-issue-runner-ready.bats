@@ -16,6 +16,8 @@ setup() {
   # gh shim: records every invocation.
   # - 'issue view <N> --json id,labels' → serves ISSUE_VIEW_FIXTURE.
   # - 'issue list ...'                  → serves LIST_FIXTURE (default: empty = no collision).
+  #                                       If LIST_FAIL=<exit>, emits a fake stderr
+  #                                       error and exits non-zero (auth/network/rate-limit).
   # - 'label create ...'                → succeeds silently.
   # - 'issue edit ...'                  → succeeds silently.
   # - 'api graphql ...'                 → serves GRAPHQL_FIXTURE (default: null parent).
@@ -29,6 +31,10 @@ if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
   exit 0
 fi
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  if [ -n "${LIST_FAIL:-}" ]; then
+    echo "gh: simulated upstream failure (HTTP 401: bad credentials)" >&2
+    exit "${LIST_FAIL}"
+  fi
   printf '%s\n' "${LIST_FIXTURE:-[]}"
   exit 0
 fi
@@ -138,6 +144,15 @@ SHIM
   assert_success
 }
 
+@test "standalone-with-slug: happy path produces no stderr noise" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export LIST_FIXTURE='[]'
+  export GRAPHQL_FIXTURE='{"data":{"node":{"parent":null}}}'
+  run --separate-stderr "$MAKE_READY" 42 --slug my-slug
+  assert_success
+  [ -z "$stderr" ]
+}
+
 # ── Scenario (b): slug-less standalone with no slug supplied ──────────────────
 # Issue has no formann:slug:* label and no --slug is provided → refusal, no writes.
 
@@ -216,6 +231,14 @@ SHIM
   assert_failure
 }
 
+@test "collision: title with JSON-escaped quotes is rendered correctly" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export LIST_FIXTURE='[{"number":5,"title":"Fix: the \"main\" thing"}]'
+  run "$MAKE_READY" 42 --slug taken-slug
+  [ "$status" -eq 1 ]
+  assert_output --partial 'Fix: the "main" thing'
+}
+
 # ── Scenario (d): sub-issue (has slug, no feature, has parent) ────────────────
 # Issue has a formann:slug:* label (so slug step is no-op) but no formann:feature.
 # Parent-detection returns a non-null parent → formann:feature NOT applied.
@@ -284,5 +307,41 @@ SHIM
   run "$MAKE_READY" 42
   assert_success
   run grep "api graphql" "$CALL_LOG"
+  assert_failure
+}
+
+# ── Scenario (f): transient gh failure on uniqueness lookup ──────────────────
+
+@test "gh failure: exits with transient code (3), distinct from refusal (1)" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export LIST_FAIL=1
+  run "$MAKE_READY" 42 --slug some-slug
+  [ "$status" -eq 3 ]
+}
+
+@test "gh failure: surfaces a script-specific diagnostic" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export LIST_FAIL=1
+  run "$MAKE_READY" 42 --slug some-slug
+  [ "$status" -eq 3 ]
+  assert_output --partial "make-issue-runner-ready"
+  assert_output --partial "gh issue list"
+}
+
+@test "gh failure: label create NOT called" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export LIST_FAIL=1
+  run "$MAKE_READY" 42 --slug some-slug
+  [ "$status" -eq 3 ]
+  run grep "label create" "$CALL_LOG"
+  assert_failure
+}
+
+@test "gh failure: issue edit NOT called" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export LIST_FAIL=1
+  run "$MAKE_READY" 42 --slug some-slug
+  [ "$status" -eq 3 ]
+  run grep "issue edit" "$CALL_LOG"
   assert_failure
 }

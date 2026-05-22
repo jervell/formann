@@ -15,6 +15,8 @@ setup() {
 
   # gh shim: records every invocation.
   # - 'issue list ...'   → serves LIST_FIXTURE (default: one matching parent).
+  #                        If LIST_FAIL=<exit>, emits a fake stderr error and
+  #                        exits non-zero (simulates auth/network/rate-limit).
   # - 'issue create ...' → prints a fake URL.
   # - 'issue view ...'   → returns JSON with a fake node ID (LIST_FIXTURE can override).
   # - 'api graphql ...'  → serves GRAPHQL_FIXTURE (default: addSubIssue success).
@@ -23,6 +25,10 @@ setup() {
 echo "$*" >> "${CALL_LOG}"
 _default_one_parent='[{"number":10,"id":"I_parent_node","title":"My feature"}]'
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  if [ -n "${LIST_FAIL:-}" ]; then
+    echo "gh: simulated upstream failure (HTTP 401: bad credentials)" >&2
+    exit "${LIST_FAIL}"
+  fi
   printf '%s\n' "${LIST_FIXTURE:-$_default_one_parent}"
   exit 0
 fi
@@ -226,6 +232,14 @@ _one_parent_list() {
   assert_output --partial "dup-slug"
 }
 
+@test "collision: diagnostic names both parents" {
+  export LIST_FIXTURE='[{"number":5,"id":"I_a","title":"First parent"},{"number":7,"id":"I_b","title":"Second parent"}]'
+  run "$ADD_ISSUE" --slug dup-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 1 ]
+  assert_output --partial "#5"
+  assert_output --partial "#7"
+}
+
 @test "collision: issue create NOT called when collision" {
   export LIST_FIXTURE='[{"number":5,"id":"I_a","title":"First parent"},{"number":7,"id":"I_b","title":"Second parent"}]'
   run "$ADD_ISSUE" --slug dup-slug --title "New issue" --category enhancement --type afk
@@ -242,14 +256,40 @@ _one_parent_list() {
   assert_failure
 }
 
+# ── Scenario (e): transient gh failure (network / auth / rate limit) ─────────
+
+@test "gh failure: exits with transient code (3), distinct from resolve-failure (1)" {
+  export LIST_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+}
+
+@test "gh failure: surfaces a script-specific diagnostic" {
+  export LIST_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+  assert_output --partial "add-issue-to-slug"
+  assert_output --partial "gh issue list"
+}
+
+@test "gh failure: issue create NOT called" {
+  export LIST_FAIL=1
+  run "$ADD_ISSUE" --slug some-slug --title "New issue" --category enhancement --type afk
+  [ "$status" -eq 3 ]
+  run grep "issue create" "$CALL_LOG"
+  assert_failure
+}
+
 # ── Body content via --body-file ──────────────────────────────────────────────
 
 @test "body-file content is passed to gh issue create" {
   export LIST_FIXTURE='[{"number":10,"id":"I_node","title":"My feature"}]'
   body_file="$BATS_TEST_TMPDIR/body.md"
-  printf '%s' "## Gist\nSome content here." >"$body_file"
+  printf '%s' "Sentinel body content for grepping" >"$body_file"
   run "$ADD_ISSUE" --slug my-feature --title "New issue" --category enhancement --type afk --body-file "$body_file"
   assert_success
+  run grep "issue create" "$CALL_LOG"
+  assert_output --partial "Sentinel body content for grepping"
 }
 
 @test "missing body-file exits with usage error" {
