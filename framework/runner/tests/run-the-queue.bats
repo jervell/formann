@@ -542,9 +542,7 @@ _setup_retry_test() {
   checkout="$BATS_TEST_TMPDIR/checkout"
   mkdir -p "$host/docs/formann" "$host/installer" "$checkout"
   mkdir -p "$host/.formann/bindings/issue-tracker/github-issues"
-  mkdir -p "$host/.formann/bindings/inbox/local-markdown"
   ln -s "../../.formann/bindings/issue-tracker/github-issues" "$host/docs/formann/issue-tracker"
-  ln -s "../../.formann/bindings/inbox/local-markdown" "$host/docs/formann/inbox"
 
   # Stub the installer: record argv and FORMANN_INSTALL_BINDING_* envs.
   cat >"$host/installer/install.sh" <<'STUB'
@@ -559,7 +557,6 @@ STUB
 
   record="$(cat "$STUB_RECORD")"
   [[ "$record" == *"argv: $checkout"* ]]
-  [[ "$record" == *"FORMANN_INSTALL_BINDING_inbox=local-markdown"* ]]
   [[ "$record" == *"FORMANN_INSTALL_BINDING_issue_tracker=github-issues"* ]]
 }
 
