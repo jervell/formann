@@ -4917,3 +4917,120 @@ setup_runner_remote_test() {
     --include="*.sh" 2>/dev/null | wc -l | tr -d ' ')"
   [ "$count" -eq 0 ]
 }
+
+# === sweep_stale_parking_refs ==============================================
+#
+# Sweeps parking refs under refs/remotes/runner/* whose tip commit is
+# reachable from another ref on host. Safe-by-construction: deletes only
+# refs whose work is provably preserved elsewhere.
+
+_setup_sweep_test() {
+  HOST_REPO="$BATS_TEST_TMPDIR/host"
+  mkdir -p "$HOST_REPO"
+  git -c init.defaultBranch=main init --quiet "$HOST_REPO"
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "root"
+  RUN_SWEPT_REFS=()
+}
+
+@test "sweep_stale_parking_refs — (a) tip reachable from refs/heads/main is deleted" {
+  _setup_sweep_test
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/foo" "$main_sha"
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+
+  # Parking ref is gone.
+  ! git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/foo" >/dev/null 2>&1
+  # Swept refs array populated.
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 1 ]
+  [ "${RUN_SWEPT_REFS[0]}" = "refs/remotes/runner/foo" ]
+  # Log line names the deleted ref and the witnessing ref.
+  grep -q "swept stale parking ref refs/remotes/runner/foo" "$sw_log"
+  grep -q "reachable from refs/heads/main" "$sw_log"
+}
+
+@test "sweep_stale_parking_refs — (b) tip reachable only from parking ref is kept" {
+  _setup_sweep_test
+  # Create an orphaned commit reachable only from the parking ref.
+  local orphan_sha
+  orphan_sha="$(git -C "$HOST_REPO" commit-tree \
+    "$(git -C "$HOST_REPO" rev-parse 'refs/heads/main^{tree}')" \
+    -m "parking-only")"
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/bar" "$orphan_sha"
+
+  sweep_stale_parking_refs >/dev/null 2>&1
+
+  # Parking ref is preserved.
+  git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/bar" >/dev/null 2>&1
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 0 ]
+}
+
+@test "sweep_stale_parking_refs — (c) tip reachable from refs/remotes/origin/* is deleted" {
+  _setup_sweep_test
+  # Create an orphaned commit — not reachable from refs/heads/main.
+  local feat_sha
+  feat_sha="$(git -C "$HOST_REPO" commit-tree \
+    "$(git -C "$HOST_REPO" rev-parse 'refs/heads/main^{tree}')" \
+    -m "feature commit")"
+  # Expose it via origin/feature and a parking ref.
+  git -C "$HOST_REPO" update-ref "refs/remotes/origin/feature" "$feat_sha"
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/feat" "$feat_sha"
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+
+  # Parking ref swept — work preserved via origin/feature.
+  ! git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/feat" >/dev/null 2>&1
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 1 ]
+  grep -q "reachable from refs/remotes/origin/feature" "$sw_log"
+}
+
+@test "sweep_stale_parking_refs — (d) refs/remotes/runner/HEAD is not deleted" {
+  _setup_sweep_test
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  # Simulate HEAD ref git creates for the runner remote (points at main's tip
+  # so it would be swept if not skipped).
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/HEAD" "$main_sha"
+  # Also create a stale parking ref to prove the sweep ran.
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/stale" "$main_sha"
+
+  sweep_stale_parking_refs >/dev/null 2>&1
+
+  # HEAD still exists.
+  git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/HEAD" >/dev/null 2>&1
+  # The stale parking ref was swept.
+  ! git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/stale" >/dev/null 2>&1
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 1 ]
+  [ "${RUN_SWEPT_REFS[0]}" = "refs/remotes/runner/stale" ]
+}
+
+@test "sweep_stale_parking_refs — (e) corrupt tip is skipped with warning, sweep continues, exit success" {
+  _setup_sweep_test
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  # Create a corrupt parking ref (non-existent object SHA).
+  mkdir -p "$HOST_REPO/.git/refs/remotes/runner"
+  printf '%s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" \
+    >"$HOST_REPO/.git/refs/remotes/runner/corrupt"
+  # A valid parking ref that should be swept.
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/stale" "$main_sha"
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  set +e
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+  local rc=$?
+  set -e
+
+  # Exit 0 even with a corrupt ref present.
+  [ "$rc" -eq 0 ]
+  # Warning emitted for the corrupt ref.
+  grep -q "skipping.*corrupt" "$sw_log"
+  # Sweep continued and deleted the valid stale ref.
+  ! git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/stale" >/dev/null 2>&1
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 1 ]
+  [ "${RUN_SWEPT_REFS[0]}" = "refs/remotes/runner/stale" ]
+}

@@ -611,6 +611,20 @@ format_preflight_summary_md() {
   printf 'Pre-flight invariant `%s` failed before the loop began. See `runner.log` for details.\n' "$invariant"
 }
 
+# Emits the "## Swept parking refs" SUMMARY.md section when RUN_SWEPT_REFS
+# is non-empty. Omitted entirely when no parking refs were swept. Appended
+# by finalize_run after the main SUMMARY.md body.
+format_swept_refs_section() {
+  if [ "${#RUN_SWEPT_REFS[@]}" -eq 0 ]; then
+    return 0
+  fi
+  printf '\n## Swept parking refs\n\n'
+  local ref
+  for ref in "${RUN_SWEPT_REFS[@]}"; do
+    printf -- '- `%s`\n' "$ref"
+  done
+}
+
 # Print to stderr with a single-line "runner: <invariant>: <message>" prefix
 # so failures are unambiguous and grep-friendly. Always exits non-zero.
 # Also captures the invariant name into RUN_PREFLIGHT_INVARIANT so the
@@ -687,6 +701,7 @@ RUN_LOG_LAYOUT="flat"
 RUNNER_TEE_PID=""
 RUNNER_LOG_FIFO=""
 RUNNER_LAST_PROPAGATION=""   # 'propagated → host' | 'parked → runner/<branch>' | '' (set by propagate_feature)
+RUN_SWEPT_REFS=()     # parking refs deleted by sweep_stale_parking_refs; populated before dispatch
 DISCOVERY_JSON=""     # populated by check_discovery pre-flight invariant
 
 # Set RUN_TS / RUN_DIR / RUN_START_CLOCK and create the per-run dir under
@@ -831,6 +846,10 @@ finalize_run() {
         print_dispatch_records | format_summary_md \
           "$RUN_FEATURE" "$RUN_TS" "$RUN_START_CLOCK" "$end_clock" \
           "$end_state" "$stop_reason" >"$RUN_DIR/SUMMARY.md"
+      fi
+      # Append swept parking refs section when at least one ref was swept.
+      if [ "${#RUN_SWEPT_REFS[@]}" -gt 0 ]; then
+        format_swept_refs_section >>"$RUN_DIR/SUMMARY.md"
       fi
     fi
   fi
@@ -1867,6 +1886,69 @@ MSG
   fi
 }
 
+# Sweep stale parking refs from the host repo. Called once per run, before
+# any tracker query or dispatch. A parking ref is stale when its tip commit
+# is reachable from at least one other ref on host (excluding the parking ref
+# itself and refs/remotes/runner/HEAD) — git can prove the work is preserved,
+# so deletion is safe.
+#
+# Safety invariant: a ref is deleted only when git proves its tip commit is
+# reachable from another ref. No commit is ever lost.
+#
+# Skips refs/remotes/runner/HEAD (the symbolic ref git creates for the runner
+# remote — never a parking ref).
+# Skips any parking ref whose tip is unreadable (corrupt or missing object):
+# logs a warning to stderr and continues. The sweep must not abort the run.
+#
+# Side effects:
+#   - Deletes swept parking refs from HOST_REPO via git update-ref -d.
+#   - Appends swept ref names to RUN_SWEPT_REFS global array.
+#   - Logs each deletion to stdout (mirrored into runner.log via tee).
+sweep_stale_parking_refs() {
+  local ref tip witness
+  local parking_refs=()
+
+  # Collect all parking refs, excluding HEAD. git for-each-ref lists refs
+  # even when their objects are missing; the rev-parse guard below handles
+  # unresolvable tips by emitting a warning and continuing.
+  # Process substitution avoids a subshell so RUN_SWEPT_REFS persists.
+  while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    [[ "$ref" == "refs/remotes/runner/HEAD" ]] && continue
+    parking_refs+=("$ref")
+  done < <(git -C "$HOST_REPO" for-each-ref --format='%(refname)' \
+    'refs/remotes/runner/' 2>/dev/null)
+
+  [[ "${#parking_refs[@]}" -eq 0 ]] && return 0
+
+  for ref in "${parking_refs[@]}"; do
+    # Resolve the tip commit. --verify returns non-zero for a missing or
+    # corrupt object; ^{commit} dereferences tag objects.
+    tip="$(git -C "$HOST_REPO" rev-parse --verify "${ref}^{commit}" 2>/dev/null)" || {
+      printf 'runner: sweep: skipping %s — tip commit unreadable\n' "$ref" >&2
+      continue
+    }
+
+    # Find any other ref that contains this tip commit. Exclude the parking
+    # ref itself and refs/remotes/runner/HEAD.
+    witness=""
+    while IFS= read -r candidate; do
+      [[ -z "$candidate" ]] && continue
+      [[ "$candidate" == "$ref" ]] && continue
+      [[ "$candidate" == "refs/remotes/runner/HEAD" ]] && continue
+      witness="$candidate"
+      break
+    done < <(git -C "$HOST_REPO" for-each-ref --format='%(refname)' \
+      --contains "$tip" 2>/dev/null)
+
+    if [[ -n "$witness" ]]; then
+      git -C "$HOST_REPO" update-ref -d "$ref"
+      printf 'runner: swept stale parking ref %s (reachable from %s)\n' "$ref" "$witness"
+      RUN_SWEPT_REFS+=("$ref")
+    fi
+  done
+}
+
 # === Top-level dispatch ====================================================
 
 # Copy any core-dump untracked files from the runner-checkout into the run-
@@ -2585,6 +2667,7 @@ main() {
   trap handle_preflight_signal INT TERM
   preflight
   trap handle_signal INT TERM
+  sweep_stale_parking_refs
   case "$RUN_MODE" in
     single) run_single ;;
     loop)   run_loop ;;
