@@ -28,6 +28,14 @@ _Avoid_: "the link", "Formann mount"
 
 ### Lifecycle
 
+**Feature**:
+A slug-named work unit: a slug, a branch, one or more issues, and an optional PRD. Two shapes are equally valid:
+- **PRD-bearing** — `.features/<slug>/PRD.md` plus issues. The standard path through `/grill-with-docs` → `/to-prd` → `/to-issues`.
+- **Standalone** (PRD-less) — `.features/<slug>/issues/` with no `PRD.md`. Created conversationally by asking the agent. Can grow into a multi-issue feature without ever needing a PRD.
+
+The slug is the stable binding-agnostic identifier: it names the feature branch, the local-markdown directory, and the github-issues slug label.
+_Avoid_: "feature dir", "mini-feature", "micro-feature"
+
 **Lifecycle**:
 The pipeline an idea travels through: inbox → PRD → issues → triage → implement → review → done.
 

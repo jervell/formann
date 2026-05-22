@@ -133,6 +133,20 @@ JSON
   assert_snapshot_matches_golden "work-item-parent-with-sub-issues" "standalone-with-subs"
 }
 
+@test "archive guard: non-terminal work-item parent with zero sub-issues — present in issues[] with non-terminal status" {
+  # Models the scenario where the archive non-terminal guard must refuse:
+  # a standalone work-item parent (no sub-issues) whose status is ready-for-agent.
+  # Iterating issues[] (not just sub-issues) catches this entry.
+  assert_snapshot_matches_golden "archive-guard-non-terminal-work-item-parent" "standalone-nonterminal"
+  export FIXTURE_RESPONSES_DIR="$FIXTURES/archive-guard-non-terminal-work-item-parent/recorded-responses"
+  run "$TRACKER_SNAPSHOT" "standalone-nonterminal"
+  status_val="$(printf '%s\n' "$output" | jq -r '.issues[0].status')"
+  count="$(printf '%s\n' "$output" | jq '.issues | length')"
+  [ "$count" = "1" ]
+  [ "$status_val" != "done" ]
+  [ "$status_val" != "wontfix" ]
+}
+
 @test "--list: mixed repo — pure-container and work-item parent both returned" {
   export FIXTURE_RESPONSES_DIR="$FIXTURES/list-both-shapes/recorded-responses"
   run "$TRACKER_SNAPSHOT" --list

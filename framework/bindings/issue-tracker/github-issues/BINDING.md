@@ -441,6 +441,201 @@ The new issue's number should appear in `nodes[*].number`.
 
 **Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If Step 1 succeeds but Step 2 fails, the new issue exists on GitHub without a parent link — it is an orphan. This is a multi-call atomicity risk consistent with the PRD's "documented; the maintainer reconciles" framing. No engineered rollback. Recovery: re-run only Step 2 with the orphan's existing issue number and its parent's number.
 
+### Create a standalone issue
+
+Create a single Formann-eligible GitHub issue with no parent. The issue enters at `needs-triage`.
+
+**Contract:** Creates one GitHub issue. No `addSubIssue` link; no `formann:feature` label.
+
+**Inputs:**
+- `slug` — the feature slug (optional). When provided, must be ≤ 37 characters and must not already label any open issue.
+- `title` — the issue title.
+- `body` — the issue body content (passed via `body-file` on the role surface).
+- `category` — `bug` or `enhancement`.
+- `type` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+**Outputs:** A single GitHub issue with labels `formann:status:needs-triage` + (when slug provided) `formann:slug:<slug>` + `formann:category:<cat>` + `formann:type:<type>`. Issue URL printed to stdout.
+
+**Idempotency:** Not idempotent. Re-running creates a second issue.
+
+**GitHub-issues realization:**
+
+**Pre-flight — slug-length validation (when slug provided).** Same check as **Create a feature**:
+
+```
+if [ ${#slug} -gt 37 ]; then
+  echo "Error: slug \"$slug\" is ${#slug} characters; the github-issues binding limits slugs to 37 characters (github labels are capped at 50; \"formann:slug:\" occupies 13)." >&2
+  exit 1
+fi
+```
+
+**Step 1 — Pre-flight uniqueness check (when slug provided).** Run:
+
+```bash
+gh issue list --label "formann:slug:<slug>" --state all --json number,title
+```
+
+`--state all` returns both open and closed issues, so re-using an archived slug is caught. If any results are returned, the slug is already in use — refuse with the same diagnostic regardless of whether the matched issue is a feature parent or a pre-triage standalone:
+
+```
+Error: slug "<slug>" is already in use by issue #<N> ("<title>").
+Choose a different slug.
+```
+
+When the slug is omitted, skip this step entirely.
+
+**Step 2 — On-demand slug-label creation (when slug provided).** Run:
+
+```bash
+gh label create "formann:slug:<slug>" --force
+```
+
+`--force` makes this idempotent: if the label already exists from a prior aborted attempt, the command succeeds without error. The static label namespace (`formann:feature`, `formann:status:*`, etc.) is assumed pre-created via `bootstrap-labels`.
+
+**Step 3 — Issue creation.** Run:
+
+```bash
+gh issue create \
+  --title "<title>" \
+  --body "$(cat <<'EOF'
+<issue body content>
+EOF
+)" \
+  --label "formann:status:needs-triage,formann:category:<cat>,formann:type:<type>"
+```
+
+When a slug is provided, append `,formann:slug:<slug>` to the `--label` argument:
+
+```bash
+gh issue create \
+  --title "<title>" \
+  --body "$(cat <<'EOF'
+<issue body content>
+EOF
+)" \
+  --label "formann:status:needs-triage,formann:slug:<slug>,formann:category:<cat>,formann:type:<type>"
+```
+
+Labels applied:
+
+- `formann:status:needs-triage` — every new issue enters the triage flow.
+- `formann:slug:<slug>` — only when a slug is provided.
+- `formann:category:<cat>` — `bug` or `enhancement`.
+- `formann:type:<type>` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+The issue does **not** carry `formann:feature` at creation — that label is parent-only.
+
+`gh issue create` prints the new issue URL. The role-surface script (`create-standalone-issue`) prints it to stdout.
+
+**When slug is omitted:** Steps 1 and 2 are skipped. Step 3 proceeds with labels `formann:status:needs-triage,formann:category:<cat>,formann:type:<type>` only. `/triage` assigns the slug later.
+
+### Add an issue to slug X
+
+Add a new sub-issue under an existing feature's parent. The issue enters at `needs-triage`.
+
+**Contract:** Resolves the slug's `formann:feature` parent, then creates one GitHub sub-issue and links it via `addSubIssue`. Shape-insensitive: works regardless of whether the parent is a pure-container or a work-item parent.
+
+**Inputs:**
+- `slug` (X) — the feature slug (required). Must match exactly one open `formann:feature` parent.
+- `title` — the issue title.
+- `body` — the issue body content (passed via `body-file` on the role surface).
+- `category` — `bug` or `enhancement`.
+- `type` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+**Outputs:** A single GitHub sub-issue with labels `formann:status:needs-triage` + `formann:category:<cat>` + `formann:type:<type>`, linked as a sub-issue of the resolved parent. No `formann:feature` label; no `formann:slug:*` label (slug labels live on the parent only). Issue URL printed to stdout.
+
+**Idempotency:** Not idempotent. Re-running creates a second sub-issue.
+
+**GitHub-issues realization:**
+
+**Step 1 — Resolve the parent.** Run:
+
+```bash
+gh issue list \
+  --label "formann:feature" \
+  --label "formann:slug:<X>" \
+  --state open \
+  --json number,id,title
+```
+
+Cardinality handling mirrors the snapshot's slug-uniqueness contract:
+
+| Count | Behaviour |
+|---|---|
+| 0 | Refuse with a not-found diagnostic naming the slug. No issue is created. |
+| 1 | That issue is the parent. Capture its `number` and `id` (node ID) and proceed to Step 2. |
+| ≥ 2 | Refuse with the slug-collision diagnostic, naming both parents. |
+
+Not-found diagnostic:
+
+```
+Error: slug "<X>" not found on any open formann:feature parent.
+Check the slug spelling, or that the parent is not archived (closed).
+```
+
+Collision diagnostic (reuses the existing **Create a feature** collision wording):
+
+```
+Error: slug "<X>" is already in use by issue #<N> ("<title>").
+Choose a different slug.
+```
+
+When the count is 0 or ≥ 2, exit with a resolve-failure code and do not proceed to Step 2.
+
+**Step 2 — Create the sub-issue and link.** Run:
+
+```bash
+gh issue create \
+  --title "<title>" \
+  --body "$(cat <<'EOF'
+<issue body content>
+EOF
+)" \
+  --label "formann:status:needs-triage,formann:category:<cat>,formann:type:<type>"
+```
+
+Labels applied:
+
+- `formann:status:needs-triage` — every new issue enters the triage flow.
+- `formann:category:<cat>` — `bug` or `enhancement`.
+- `formann:type:<type>` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+The sub-issue does **not** carry `formann:feature` (parent-only) or `formann:slug:*` (slug labels live on the parent only, per ADR-0006 Decision B).
+
+`gh issue create` prints the new issue URL. Extract the issue number from the URL (the trailing integer); this is `<new-N>`.
+
+Then link to the parent via `addSubIssue`:
+
+```bash
+new_node_id=$(gh issue view <new-N> --json id --jq '.id')
+
+gh api graphql \
+  --field query='mutation($parentId:ID!,$subId:ID!) {
+    addSubIssue(input:{issueId:$parentId,subIssueId:$subId}) {
+      issue { number }
+      subIssue { number }
+    }
+  }' \
+  --field parentId="<parent-node-id-from-step-1>" \
+  --field subId="$new_node_id"
+```
+
+`addSubIssue.input.issueId` is the **parent's** node ID (captured in Step 1); `addSubIssue.input.subIssueId` is the **new sub-issue's** node ID. The mutation returns `issue.number` (parent) and `subIssue.number` (new sub-issue); verify both match the expected values.
+
+**Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If the `gh issue create` in Step 2 succeeds but `addSubIssue` fails, the new issue exists on GitHub without a parent link — it is an orphan. No engineered rollback. Recovery: re-run only the `addSubIssue` call with the orphan's existing issue number and the resolved parent's node ID.
+
+### GitHub web UI — minimum marker
+
+A maintainer creating an issue in the GitHub web UI can make it Formann-eligible by adding a single label:
+
+```
+formann:status:needs-triage
+```
+
+That is the **only** requirement. Slug, category, and type are all optional at creation; `/triage` assigns them at the `needs-triage → ready-for-agent` transition.
+
+**There is no shortcut from the web UI to `ready-for-agent`.** A hand-typed issue with only `formann:status:needs-triage` must go through `/triage` before the runner will pick it up. The triage step is mandatory — it validates the brief, sets slug, category, and type, and confirms the issue is complete enough to dispatch.
+
 ### Archive a feature
 
 Close the parent issue with `state_reason=completed` and mark it with `formann:archived`. This is the binding's realization of `/triage`'s **Archive a completed feature** step 6 ("Archive the feature. Per the binding's archive convention.").
@@ -449,10 +644,10 @@ Close the parent issue with `state_reason=completed` and mark it with `formann:a
 
 **Pre-flight — parent lookup.** Resolve the parent issue number via the **Read the feature** verb: `gh issue list --label "formann:feature" --label "formann:slug:<slug>" --state open --json number,title --jq '.'`. If no open parent is found, the feature may already be archived — report the error and stop.
 
-**Pre-flight — non-terminal guard.** The `/triage` skill enforces the non-terminal precheck in step 1 before reaching step 6. The binding re-enforces it for robustness: run `tracker-snapshot <slug>` and check every sub-issue's `status` field. If any sub-issue has a status other than `done` or `wontfix`, refuse with a clear error listing the non-terminal issues:
+**Pre-flight — non-terminal guard.** The `/triage` skill enforces the non-terminal precheck in step 1 before reaching step 6. The binding re-enforces it for robustness: run `tracker-snapshot <slug>` and check every entry in `issues[]` `status` field. If any entry has a status other than `done` or `wontfix`, refuse with a clear error listing the non-terminal entries:
 
 ```
-Error: cannot archive "<slug>" — non-terminal sub-issues remain: #N (in-review), #M (ready-for-agent)
+Error: cannot archive "<slug>" — non-terminal entries remain: #N (in-review), #M (ready-for-agent)
 ```
 
 **Two-step archive:**

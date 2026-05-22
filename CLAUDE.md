@@ -46,7 +46,9 @@ This repo uses the Formann agentic methodology.
 
 Issues, PRDs, and triage are described in `docs/formann/issue-tracker/BINDING.md`.
 
-When creating an issue, use the template from `.formann/skills/to-issues/SKILL.md`.
+To create a standalone issue (a single task that doesn't need a PRD), the maintainer asks the agent in natural language — "create a standalone issue for slug X about Y." This invokes the binding's **Create a standalone issue** verb. There is no `/quick-issue` skill; the conversation is the entry point.
+
+When creating an issue as part of a PRD-led feature, use the template from `.formann/skills/to-issues/SKILL.md`.
 
 When creating a PRD, use the template from `.formann/skills/to-prd/SKILL.md`.
 

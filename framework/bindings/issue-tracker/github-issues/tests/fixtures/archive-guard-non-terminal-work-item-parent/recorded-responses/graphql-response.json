@@ -1,0 +1,28 @@
+{
+  "data": {
+    "repository": {
+      "issues": {
+        "nodes": [
+          {
+            "number": 42,
+            "state": "OPEN",
+            "stateReason": null,
+            "body": "## What to build\n\nDo the standalone thing.",
+            "labels": {
+              "nodes": [
+                {"name": "formann:feature"},
+                {"name": "formann:slug:standalone-nonterminal"},
+                {"name": "formann:status:ready-for-agent"},
+                {"name": "formann:category:enhancement"},
+                {"name": "formann:type:afk"}
+              ]
+            },
+            "subIssues": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}
