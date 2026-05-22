@@ -30,10 +30,10 @@ _Avoid_: "the link", "Formann mount"
 
 **Feature**:
 A slug-named work unit: a slug, a branch, one or more issues, and an optional PRD. Two shapes are equally valid:
-- **PRD-bearing** — `.features/<slug>/PRD.md` plus issues. The standard path through `/grill-with-docs` → `/to-prd` → `/to-issues`.
-- **Standalone** (PRD-less) — `.features/<slug>/issues/` with no `PRD.md`. Created conversationally by asking the agent. Can grow into a multi-issue feature without ever needing a PRD.
+- **PRD-bearing** — the feature has a PRD. The standard path through `/grill-with-docs` → `/to-prd` → `/to-issues`.
+- **Standalone** (PRD-less) — no PRD. Created conversationally by asking the agent. Can grow into a multi-issue feature without ever needing a PRD.
 
-The slug is the stable binding-agnostic identifier: it names the feature branch, the local-markdown directory, and the github-issues slug label.
+The slug is the stable identifier across bindings: it names the feature branch and groups the feature's issues under whichever **Binding** the consumer has chosen.
 _Avoid_: "feature dir", "mini-feature", "micro-feature"
 
 **Lifecycle**:
@@ -50,11 +50,11 @@ _Avoid_: Using "agent" to mean "an autonomous run inside the sandbox" — that's
 ### Bindings
 
 **Role**:
-An abstract interface that **Skills** consume. Today: the **issue-tracker role**, defined by seven tracker-operation verbs (publish, fetch, list, get, set-status, archive, comment).
+An abstract interface that **Skills** consume. Today: the **issue-tracker role**, defined by its tracker-operation verbs (see each binding's `BINDING.md` for the canonical list).
 _Avoid_: "interface", "contract"
 
 **Binding**:
-A concrete implementation of a **Role**. Today: the **local-markdown binding** of the **issue-tracker role**. Future: a **GitHub-issues binding**. Each **Consumer** picks one **Binding** per **Role**.
+A concrete implementation of a **Role**. Today: the **local-markdown binding** and the **GitHub-issues binding**, both realizing the **issue-tracker role**. Each **Consumer** picks one **Binding** per **Role**.
 _Avoid_: "implementation", "adapter", "plugin"
 
 **Role surface**:
