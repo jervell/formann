@@ -1,0 +1,32 @@
+{
+  "feature": "standalone-with-subs",
+  "issues": [
+    {
+      "ref": "#27",
+      "nn": "27",
+      "status": "ready-for-agent",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": true
+    },
+    {
+      "ref": "#30",
+      "nn": "30",
+      "status": "ready-for-agent",
+      "category": "enhancement",
+      "type": "AFK",
+      "blocked_by": ["#27"],
+      "eligible": false
+    },
+    {
+      "ref": "#31",
+      "nn": "31",
+      "status": "ready-for-agent",
+      "category": "bug",
+      "type": "AFK",
+      "blocked_by": [],
+      "eligible": true
+    }
+  ]
+}

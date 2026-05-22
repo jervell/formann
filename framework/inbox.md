@@ -1,4 +1,4 @@
-# Inbox: Local Markdown
+# Inbox
 
 The inbox is a pre-lifecycle capture surface for thoughts the maintainer can't act on right now — bugs they noticed, tweaks, half-formed ideas. Entries are notes, not issues. They have no state, no header fields, and don't enter any state machine until they leave the inbox.
 

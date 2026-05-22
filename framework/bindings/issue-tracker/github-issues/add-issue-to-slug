@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+###
+### add-issue-to-slug — add a new sub-issue under an existing feature's parent.
+###
+### Usage: add-issue-to-slug --slug <slug> --title <title> --category <cat> --type <type>
+###                           [--body-file <path>]
+###
+###   --slug <slug>         Feature slug (required). Must match exactly one open
+###                         formann:feature parent.
+###   --title <title>       Issue title (required).
+###   --category <cat>      'bug' or 'enhancement' (required).
+###   --type <type>         'afk' or 'hitl' (required).
+###   --body-file <path>    Path to a file whose contents become the issue body
+###                         (optional; defaults to an empty body).
+###
+### On success, the new issue URL is printed to stdout.
+### On resolve failure (slug not found or collision) or usage error, an error
+### is printed to stderr and the script exits non-zero.
+###
+### Exit codes:
+###   0   Success.
+###   1   Resolve failure (zero or ≥2 matching formann:feature parents).
+###   2   Usage error or prerequisite missing.
+###   3   Transient gh failure (network, auth, rate limit). gh's own error
+###       message is passed through to stderr.
+###
+### Bash 3.2 compatible.
+###
+
+set -eu
+set -o pipefail
+
+readonly _EXIT_RESOLVE_FAILURE=1
+readonly _EXIT_USAGE=2
+readonly _EXIT_TRANSIENT=3
+
+# ── Prerequisites ─────────────────────────────────────────────────────────────
+if ! command -v gh >/dev/null 2>&1; then
+  echo "add-issue-to-slug: 'gh' CLI not found in PATH." >&2
+  exit "$_EXIT_USAGE"
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "add-issue-to-slug: 'jq' not found or not in PATH." >&2
+  exit "$_EXIT_USAGE"
+fi
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+_slug=""
+_title=""
+_category=""
+_type=""
+_body_file=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --slug)
+      [ "$#" -ge 2 ] || { echo "add-issue-to-slug: --slug requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _slug="$2"; shift 2 ;;
+    --title)
+      [ "$#" -ge 2 ] || { echo "add-issue-to-slug: --title requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _title="$2"; shift 2 ;;
+    --category)
+      [ "$#" -ge 2 ] || { echo "add-issue-to-slug: --category requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _category="$2"; shift 2 ;;
+    --type)
+      [ "$#" -ge 2 ] || { echo "add-issue-to-slug: --type requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _type="$2"; shift 2 ;;
+    --body-file)
+      [ "$#" -ge 2 ] || { echo "add-issue-to-slug: --body-file requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _body_file="$2"; shift 2 ;;
+    *)
+      echo "add-issue-to-slug: unknown argument: $1" >&2
+      exit "$_EXIT_USAGE" ;;
+  esac
+done
+
+# ── Validate required arguments ───────────────────────────────────────────────
+if [ -z "$_slug" ] || [ -z "$_title" ] || [ -z "$_category" ] || [ -z "$_type" ]; then
+  cat >&2 <<USAGE
+usage: add-issue-to-slug --slug <slug> --title <title> --category <cat> --type <type>
+                          [--body-file <path>]
+
+  --slug      Feature slug (required).
+  --title     Issue title (required).
+  --category  'bug' or 'enhancement' (required).
+  --type      'afk' or 'hitl' (required).
+  --body-file Path to body content file (optional).
+USAGE
+  exit "$_EXIT_USAGE"
+fi
+
+case "$_category" in
+  bug|enhancement) ;;
+  *) echo "add-issue-to-slug: --category must be 'bug' or 'enhancement', got: $_category" >&2; exit "$_EXIT_USAGE" ;;
+esac
+
+case "$_type" in
+  afk|hitl) ;;
+  *) echo "add-issue-to-slug: --type must be 'afk' or 'hitl', got: $_type" >&2; exit "$_EXIT_USAGE" ;;
+esac
+
+if [ -n "$_body_file" ] && [ ! -e "$_body_file" ]; then
+  echo "add-issue-to-slug: body-file not found: $_body_file" >&2
+  exit "$_EXIT_USAGE"
+fi
+
+# ── Step 1: Resolve the parent ────────────────────────────────────────────────
+# Capture exit code so a network/auth/rate-limit failure (which is a transient
+# infrastructure problem) is surfaced distinctly from a legitimate resolve
+# failure. gh's stderr is intentionally passed through to the user terminal.
+_parent_json=""
+_gh_ec=0
+_parent_json="$(gh issue list \
+  --label "formann:feature" \
+  --label "formann:slug:${_slug}" \
+  --state open \
+  --json number,id,title)" || _gh_ec=$?
+
+if [ "$_gh_ec" -ne 0 ]; then
+  echo "add-issue-to-slug: 'gh issue list' failed (exit ${_gh_ec}); see gh's error above." >&2
+  exit "$_EXIT_TRANSIENT"
+fi
+
+_parent_count="$(printf '%s' "$_parent_json" | jq '. | length')"
+
+if [ "$_parent_count" -eq 0 ]; then
+  cat >&2 <<ERR
+Error: slug "${_slug}" not found on any open formann:feature parent.
+Check the slug spelling, or that the parent is not archived (closed).
+ERR
+  exit "$_EXIT_RESOLVE_FAILURE"
+fi
+
+if [ "$_parent_count" -ge 2 ]; then
+  _parent_refs="$(printf '%s' "$_parent_json" | jq -r '.[].number | "#" + tostring' | tr '\n' ' ' | sed 's/ $//')"
+  echo "Error: slug \"${_slug}\" is in use by multiple parents: ${_parent_refs}." >&2
+  echo "Remove the 'formann:slug:${_slug}' label from one of: ${_parent_refs}." >&2
+  exit "$_EXIT_RESOLVE_FAILURE"
+fi
+
+_parent_num="$(printf '%s' "$_parent_json" | jq -r '.[0].number')"
+_parent_node_id="$(printf '%s' "$_parent_json" | jq -r '.[0].id')"
+
+# ── Step 2: Create the sub-issue ──────────────────────────────────────────────
+_body=""
+if [ -n "$_body_file" ]; then
+  _body="$(cat "$_body_file")"
+fi
+
+# Capture exit code so a transient gh failure surfaces as _EXIT_TRANSIENT
+# rather than being misclassified as _EXIT_RESOLVE_FAILURE (1). The create
+# itself failing creates no issue, so no orphan risk — but the post-create
+# view + addSubIssue calls do leave an orphan if they fail. BINDING.md's
+# "Partial-failure atomicity" note covers the recovery: re-run the
+# addSubIssue mutation against the orphan's number.
+_new_url=""
+_gh_ec=0
+_new_url="$(gh issue create \
+  --title "$_title" \
+  --body "$_body" \
+  --label "formann:status:needs-triage,formann:category:${_category},formann:type:${_type}")" || _gh_ec=$?
+if [ "$_gh_ec" -ne 0 ]; then
+  echo "add-issue-to-slug: 'gh issue create' failed (exit ${_gh_ec}); see gh's error above." >&2
+  exit "$_EXIT_TRANSIENT"
+fi
+
+_new_num="$(printf '%s' "$_new_url" | grep -o '[0-9]*$')"
+
+# ── Step 2 (cont.): Link via addSubIssue ──────────────────────────────────────
+# The new issue already exists on GitHub. Any transient failure below leaves
+# it orphaned (no parent link); diagnostic names the orphan's number so the
+# caller can re-run the addSubIssue mutation directly.
+_new_node_json=""
+_gh_ec=0
+_new_node_json="$(gh issue view "$_new_num" --json id)" || _gh_ec=$?
+if [ "$_gh_ec" -ne 0 ]; then
+  echo "add-issue-to-slug: 'gh issue view' failed (exit ${_gh_ec}); see gh's error above." >&2
+  echo "add-issue-to-slug: issue #${_new_num} was created but is orphaned (no parent link). Recover by re-running the addSubIssue mutation against #${_new_num}." >&2
+  exit "$_EXIT_TRANSIENT"
+fi
+_new_node_id="$(printf '%s' "$_new_node_json" | jq -r '.id')"
+
+_gh_ec=0
+gh api graphql \
+  --field query='mutation($parentId:ID!,$subId:ID!) {
+    addSubIssue(input:{issueId:$parentId,subIssueId:$subId}) {
+      issue { number }
+      subIssue { number }
+    }
+  }' \
+  --field parentId="$_parent_node_id" \
+  --field subId="$_new_node_id" \
+  >/dev/null || _gh_ec=$?
+if [ "$_gh_ec" -ne 0 ]; then
+  echo "add-issue-to-slug: 'gh api graphql addSubIssue' failed (exit ${_gh_ec}); see gh's error above." >&2
+  echo "add-issue-to-slug: issue #${_new_num} was created but is orphaned (no parent link). Recover by re-running the addSubIssue mutation against #${_new_num}." >&2
+  exit "$_EXIT_TRANSIENT"
+fi
+
+printf '%s\n' "$_new_url"

@@ -71,7 +71,7 @@ The orchestrator. A bash script structured as:
 4. **Per-issue dispatch loop** — one iteration per issue inside a drained feature: snapshot, pick, implement, classify, propagate, (optionally) gate, classify again, propagate.
 5. **EXIT trap** — writes `SUMMARY.md`, prints the end-of-run table, releases the pidfile lock.
 
-Pure logic (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_gate_outcome`, `evaluate_feature_gate`, formatters) is sourceable; `main` runs only when the script is executed directly. The `bats` suite under `runner/tests/` exercises that logic with synthetic inputs.
+Pure logic (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_gate_outcome`, formatters) is sourceable; `main` runs only when the script is executed directly. The `bats` suite under `runner/tests/` exercises that logic with synthetic inputs.
 
 ### Sandbox container
 
@@ -174,13 +174,12 @@ In drain mode (bare invocation), the runner sits an additional loop above the pe
 
 1. **Top-of-iteration check** — Ctrl-C arrived? Stop with reason `interrupted`.
 2. **Pick next feature** — `next_eligible_feature` returns the first discovery slug not yet considered in this run, or empty when discovery is exhausted.
-3. **Per-feature gate** — `evaluate_feature_gate` is called with the full bundle of signals computed by side-effecting helpers below; it returns `drain` or `skip:<reason>` (priority order: `branch-missing` → `fetch-failed` → `feature-snapshot-failed` → `queue-empty` → `drain`). The loop short-circuits at the first signal that demands skipping — no point fetching when the branch doesn't exist:
-   - **`skip:branch-missing`** — discovery says the feature exists but host has no ref for it. Incomplete feature setup; runner does not invent a branch.
+3. **Per-feature gate cascade** — `drain_one_feature` runs the side-effecting helpers in short-circuit order and records `drain` or `skip:<reason>` at the first failing step (priority: `fetch-failed` → `feature-snapshot-failed` → `queue-empty` → `drain`). Missing host branches are no longer a gate signal — `ensure_runner_checkout_on_branch` lazily creates the runner-checkout branch from `main` when the host has no ref yet.
    - **`skip:fetch-failed`** — `ensure_runner_checkout_on_branch <feature>` failed to sync the runner-checkout to this feature's tip (git error, transient I/O, permissions). Recorded and run continues.
    - **`feature-snapshot-failed`** — `tracker-snapshot <slug>` exited non-zero or returned unparseable output for this feature. Distinct from the run-level `discovery-failed` (which catches the same issue at run start). One feature's snapshot crash does **not** abort the run — other features still drain.
    - **`skip:queue-empty`** — the feature snapshot has no eligible non-aborted AFK refs. Every snapshot's `eligible: true` ref carries an abort flag, or there are no eligible refs in the first place. The feature shows up in SUMMARY as "considered, nothing to do".
    - **`drain`** — proceeds to the per-issue dispatch loop (next section).
-4. **mvn-cache (lazy)** — the per-feature Docker volume is created the moment a feature gates `drain`, not at run start. Features the runner skips don't materialise a cache volume.
+4. **mvn-cache (lazy)** — the per-feature Docker volume is created after the queue check passes and before per-issue dispatch starts, not at run start. Features the runner skips don't materialise a cache volume. A cache-materialisation failure here records `skip:fetch-failed` (with an `(mvn-cache)` qualifier in the log line) and the run continues.
 5. **Per-issue dispatch** — the per-issue loop body runs against this feature, scoped to its branch in the runner-checkout. A snapshot crash mid-feature surfaces as the feature outcome `feature-snapshot-failed` and the outer loop continues.
 6. **Record feature outcome** — `drained`, `skipped: <reason>`, or `feature-snapshot-failed` is recorded for SUMMARY.md.
 7. **Next iteration** — back to step 1.
@@ -292,7 +291,7 @@ Fail-fast checks run before the loop starts. A failure prints `runner: <invarian
 
 The runner is independent of the host's current branch and working-tree state — no invariant inspects either. Feature validation (unknown slug, branch missing) runs as a CLI-input gate between invariants 1 and 2 (`check_feature_eligibility`, **narrowed modes only**); on refusal the runner exits 2 with a `feature-restricted (refused: <reason>)` / `single-dispatch (refused: <reason>)` stop reason, not a `preflight-abort:`. The gate sits before `runner-checkout` so an unknown slug surfaces the AC-mandated refusal instead of an opaque `git fetch origin <slug>` failure.
 
-Drain mode (bare invocation) skips `check_feature_eligibility`, `runner-checkout`, and `mvn-cache` at pre-flight: there's no single target feature to validate up front, and the runner-checkout / mvn-cache are scoped per-drained-feature inside the outer loop. The per-feature gate evaluator handles the analogous refusals at iteration time (`skip:branch-missing`, `skip:fetch-failed`, etc.). The remaining global invariants (`discovery`, `docker-daemon`, `runner-image`, `gate-prompt`, `sandbox-network`, `oauth-token`, `no-other-runner`) still gate the whole run — they're infrastructure-level concerns, not feature-specific.
+Drain mode (bare invocation) skips `check_feature_eligibility`, `runner-checkout`, and `mvn-cache` at pre-flight: there's no single target feature to validate up front, and the runner-checkout / mvn-cache are scoped per-drained-feature inside the outer loop. `drain_one_feature`'s gate cascade records the analogous skips at iteration time (`skip:fetch-failed`, `feature-snapshot-failed`, `skip:queue-empty`). The remaining global invariants (`discovery`, `docker-daemon`, `runner-image`, `gate-prompt`, `sandbox-network`, `oauth-token`, `no-other-runner`) still gate the whole run — they're infrastructure-level concerns, not feature-specific.
 
 Per-run dir creation, log capture, and trap installation happen earlier in `main()` — before `preflight()` runs. A concurrent invocation therefore does mint a per-run dir before its lock acquisition fails, and that dir gets a `preflight-abort: no-other-runner` SUMMARY.md.
 

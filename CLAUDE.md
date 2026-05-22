@@ -7,6 +7,13 @@ Rules for agents (and humans) working in this repo.
 - **README.md is for humans.** Never mix machine-readable structures (YAML frontmatter, schema tables) into a README. Machine-readable artifacts get their own files. Keeps human-facing prose unobstructed and keeps tooling deterministic.
 
 
+## Editing framework files
+
+The framework source-of-truth in this repo is `framework/<X>`. Edit there, and only there. `.formann/<X>` and `docs/formann/<X>` are views — read-only inside the AFK dispatch container (the `.formann/` bind-mount is `:ro`) and gitignored everywhere (see the managed block in `.gitignore`). Writes to a view either fail outright or land on a gitignored path that never propagates out of the container.
+
+Inside a dispatch, `framework/<X>` (in the runner-checkout) and `.formann/<X>` (bind-mounted live from host) **diverge by design** while the change is unmerged: the runner-checkout has your new content, the bind-mount still serves host's pre-merge state. That divergence is not a bug to fix — it resolves when the commit propagates and the maintainer merges. When self-auditing, read `framework/<X>` to confirm your edit, not the view paths.
+
+
 ## Running bats tests
 
 The verdict is the **exit code**, never stdout. `bats` exits 0 iff every test passed. "The last lines look green" or "mostly passes scrolled by" is not evidence of success.
@@ -39,7 +46,9 @@ This repo uses the Formann agentic methodology.
 
 Issues, PRDs, and triage are described in `docs/formann/issue-tracker/BINDING.md`.
 
-When creating an issue, use the template from `.formann/skills/to-issues/SKILL.md`.
+To create a standalone issue (a single task that doesn't need a PRD), the maintainer asks the agent in natural language — "create a standalone issue for slug X about Y." This invokes the binding's **Create a standalone issue** verb. There is no `/quick-issue` skill; the conversation is the entry point.
+
+When creating an issue as part of a PRD-led feature, use the template from `.formann/skills/to-issues/SKILL.md`.
 
 When creating a PRD, use the template from `.formann/skills/to-prd/SKILL.md`.
 

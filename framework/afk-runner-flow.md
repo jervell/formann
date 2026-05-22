@@ -106,7 +106,7 @@ Rows in evaluation order. `no-other-runner` runs first (lock acquisition gates e
 | 6 | `sandbox-network`          | `afk-runner-sandbox` bridge + iptables RFC1918-deny rules in place.                                | global      |
 | 7 | `oauth-token`              | Keychain returns a non-empty token; held in `TOKEN` for the rest of the run.                       | global      |
 
-The runner is independent of host's HEAD and working tree: no invariant inspects either. Feature validation (unknown slug, branch missing) in narrowed modes runs through `check_feature_eligibility`, a CLI-input gate that sits between invariants 1 and 2. It is **not** an invariant: on refusal it returns 2 with a `feature-restricted` / `single-dispatch (refused: <reason>)` stop reason — not `fail_invariant`, not `preflight-abort:`. Drain mode skips this gate entirely; per-feature eligibility is decided inside the outer loop by `evaluate_feature_gate`.
+The runner is independent of host's HEAD and working tree: no invariant inspects either. Feature validation (unknown slug) in narrowed modes runs through `check_feature_eligibility`, a CLI-input gate that sits between invariants 1 and 2. It is **not** an invariant: on refusal it returns 2 with a `feature-restricted` / `single-dispatch (refused: <reason>)` stop reason — not `fail_invariant`, not `preflight-abort:`. Drain mode skips this gate entirely; per-feature eligibility is decided inside the outer loop by `drain_one_feature`'s cascade.
 
 Global invariant failure → `fail_invariant` → `exit 2`. The EXIT trap (`finalize_run`) then writes a SUMMARY.md whose body names the failing invariant. Per-feature lazy failures (drain mode) record a `skip:<reason>` row in SUMMARY.md and the run continues.
 
@@ -125,14 +125,8 @@ Wraps the per-issue loop and walks every feature in the discovery output.
 │   [feature empty?] ──yes──► RUN_STOP_REASON = "completed"; stop           │
 │         │ no                                                              │
 │         ▼                                                                 │
-│   branch_exists = git show-ref refs/heads/$feature (yes/no)               │
-│   verdict = evaluate_feature_gate(slug, branch_exists, ok, nonempty, ok)  │
-│         │                                                                 │
-│   [verdict = skip:branch-missing?]                                        │
-│         │ yes ──► record_feature_outcome; next feature                    │
-│         │ no                                                              │
-│         ▼                                                                 │
-│   ensure_runner_checkout_on_branch(feature)                               │
+│   ensure_runner_checkout_on_branch(feature)   (lazy: clones from main     │
+│                                                if host has no ref yet)    │
 │         │                                                                 │
 │   [fetch failed?] ──yes──► record skip:fetch-failed; next feature         │
 │         │ no                                                              │

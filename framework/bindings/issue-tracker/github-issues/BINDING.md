@@ -60,7 +60,7 @@ This returns all open issues labelled with both `formann:feature` and `formann:s
 | 1 | Issue `#N` is the parent. Retrieve its PRD body and labels: `gh issue view <N> --json title,body,labels` |
 | ≥ 2 | Slug collision. Report the error naming both parents with the recovery recipe: "remove the `formann:slug:<slug>` label from one of: #N, #M". |
 
-The 1-match result provides `title` (feature name), `body` (the PRD Markdown), and `labels`.
+The 1-match result provides `title` (feature name), `body`, and `labels`. **When the parent carries no `formann:status:*` label** (pure-container parent), `body` is the PRD Markdown. **When the parent carries `formann:status:*`** (work-item parent), the parent is itself a work item, not a PRD container — this verb returns empty: `body` is the work description and must not be treated as a PRD. Skill prose calling this verb stays unconditional; the empty result propagates naturally.
 
 ### List issues in a feature
 
@@ -80,6 +80,10 @@ gh api graphql \
       issues(labels: ["formann:feature", $slugLabel], states: [OPEN], first: 10) {
         nodes {
           number
+          state
+          stateReason
+          body
+          labels(first: 30) { nodes { name } }
           subIssues(first: 100) {
             nodes { number state stateReason body labels(first: 30) { nodes { name } } }
           }
@@ -106,7 +110,7 @@ gh api graphql \
 
 The response nodes are sorted in-script by `.number` ascending via `jq sort_by(.number)` before slug extraction. (`NUMBER` is not a valid `IssueOrderField` enum value in the GitHub GraphQL API; the valid values are `CREATED_AT`, `UPDATED_AT`, and `COMMENTS`. `CREATED_AT` is not a safe substitute because transferred issues preserve their original `createdAt` while being renumbered, so only an explicit `.number` sort guarantees `#N` ASC order under all conditions.)
 
-One GraphQL query per invocation keeps the rate-limit footprint cheap (≈5 points against the 5000-point/hour GraphQL budget). Blockers and eligibility resolve from the in-memory sub-issue set returned by the same query — no follow-up API calls.
+One GraphQL query per invocation keeps the rate-limit footprint cheap (≈5 points against the 5000-point/hour GraphQL budget). Blockers and eligibility resolve from the in-memory issues set returned by the same query — no follow-up API calls.
 
 ### Set the state to `<state>`
 
@@ -196,6 +200,55 @@ The content uses GitHub's native `#N` autolink form — not the portable `<featu
 ```bash
 docs/formann/issue-tracker/body-edit <N> "Blocked by" /dev/null
 ```
+
+### Make issue runner-ready
+
+Ensure an issue is discoverable and dispatchable by the runner before transitioning it to `ready-for-agent` or `ready-for-human`. The verb is idempotent — re-running on a fully-ready issue performs no API writes.
+
+**Inputs:**
+- `issue-N` — the GitHub issue number (required).
+- `slug` — the slug to assign (required if the issue carries no `formann:slug:*` label; ignored if one is already present).
+
+**GitHub-issues realization:** Two-step internal sequence.
+
+**Step 1 — Slug ensure.** Read the issue's current labels and node ID:
+
+```bash
+gh issue view <N> --json id,labels
+```
+
+If the issue already carries a `formann:slug:*` label, this step is a no-op. Otherwise a slug must be supplied:
+
+- **Without a slug:** refuse with a "slug required" diagnostic (exit 1). `/triage` must prompt the maintainer for one and re-invoke the verb.
+- **With a slug:** validate length (≤ 37 chars, same check as **Create a feature**), run the slug-uniqueness preflight:
+
+  ```bash
+  gh issue list --label "formann:slug:<slug>" --state all --json number,title
+  ```
+
+  If any match is returned, refuse with the existing collision diagnostic:
+
+  ```
+  Error: slug "<slug>" is already in use by issue #<N> ("<title>").
+  Choose a different slug.
+  ```
+
+  On success: `gh label create "formann:slug:<slug>" --force`, then `gh issue edit <N> --add-label "formann:slug:<slug>"`.
+
+**Step 2 — `formann:feature` ensure.** If the issue already carries `formann:feature`, this step is a no-op. Otherwise, detect whether the issue has a GitHub-side parent using the node ID from step 1:
+
+```bash
+gh api graphql \
+  --field query='query($id: ID!) { node(id: $id) { ... on Issue { parent { id } } } }' \
+  --field id="<node-id>"
+```
+
+- If `parent` is `null` (standalone) → `gh issue edit <N> --add-label "formann:feature"`.
+- If `parent` is non-null (the issue is a sub-issue) → no-op; sub-issues do not carry `formann:feature`.
+
+Both steps are idempotent: re-running on a fully-ready issue (already has both `formann:slug:*` and `formann:feature`) performs no API writes.
+
+The role-surface script is `make-issue-runner-ready`.
 
 ### Publish the agent brief
 
@@ -441,6 +494,201 @@ The new issue's number should appear in `nodes[*].number`.
 
 **Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If Step 1 succeeds but Step 2 fails, the new issue exists on GitHub without a parent link — it is an orphan. This is a multi-call atomicity risk consistent with the PRD's "documented; the maintainer reconciles" framing. No engineered rollback. Recovery: re-run only Step 2 with the orphan's existing issue number and its parent's number.
 
+### Create a standalone issue
+
+Create a single Formann-eligible GitHub issue with no parent. The issue enters at `needs-triage`.
+
+**Contract:** Creates one GitHub issue. No `addSubIssue` link; no `formann:feature` label.
+
+**Inputs:**
+- `slug` — the feature slug (optional). When provided, must be ≤ 37 characters and must not already label any issue (open or closed — re-using an archived slug is also a collision).
+- `title` — the issue title.
+- `body` — the issue body content (passed via `body-file` on the role surface).
+- `category` — `bug` or `enhancement`.
+- `type` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+**Outputs:** A single GitHub issue with labels `formann:status:needs-triage` + (when slug provided) `formann:slug:<slug>` + `formann:category:<cat>` + `formann:type:<type>`. Issue URL printed to stdout.
+
+**Idempotency:** Not idempotent. Re-running creates a second issue.
+
+**GitHub-issues realization:**
+
+**Pre-flight — slug-length validation (when slug provided).** Same check as **Create a feature**:
+
+```
+if [ ${#slug} -gt 37 ]; then
+  echo "Error: slug \"$slug\" is ${#slug} characters; the github-issues binding limits slugs to 37 characters (github labels are capped at 50; \"formann:slug:\" occupies 13)." >&2
+  exit 1
+fi
+```
+
+**Step 1 — Pre-flight uniqueness check (when slug provided).** Run:
+
+```bash
+gh issue list --label "formann:slug:<slug>" --state all --json number,title
+```
+
+`--state all` returns both open and closed issues, so re-using an archived slug is caught. If any results are returned, the slug is already in use — refuse with the same diagnostic regardless of whether the matched issue is a feature parent or a pre-triage standalone:
+
+```
+Error: slug "<slug>" is already in use by issue #<N> ("<title>").
+Choose a different slug.
+```
+
+When the slug is omitted, skip this step entirely.
+
+**Step 2 — On-demand slug-label creation (when slug provided).** Run:
+
+```bash
+gh label create "formann:slug:<slug>" --force
+```
+
+`--force` makes this idempotent: if the label already exists from a prior aborted attempt, the command succeeds without error. The static label namespace (`formann:feature`, `formann:status:*`, etc.) is assumed pre-created via `bootstrap-labels`.
+
+**Step 3 — Issue creation.** Run:
+
+```bash
+gh issue create \
+  --title "<title>" \
+  --body "$(cat <<'EOF'
+<issue body content>
+EOF
+)" \
+  --label "formann:status:needs-triage,formann:category:<cat>,formann:type:<type>"
+```
+
+When a slug is provided, append `,formann:slug:<slug>` to the `--label` argument:
+
+```bash
+gh issue create \
+  --title "<title>" \
+  --body "$(cat <<'EOF'
+<issue body content>
+EOF
+)" \
+  --label "formann:status:needs-triage,formann:slug:<slug>,formann:category:<cat>,formann:type:<type>"
+```
+
+Labels applied:
+
+- `formann:status:needs-triage` — every new issue enters the triage flow.
+- `formann:slug:<slug>` — only when a slug is provided.
+- `formann:category:<cat>` — `bug` or `enhancement`.
+- `formann:type:<type>` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+The issue does **not** carry `formann:feature` at creation — that label is parent-only.
+
+`gh issue create` prints the new issue URL. The role-surface script (`create-standalone-issue`) prints it to stdout.
+
+**When slug is omitted:** Steps 1 and 2 are skipped. Step 3 proceeds with labels `formann:status:needs-triage,formann:category:<cat>,formann:type:<type>` only. `/triage` assigns the slug later.
+
+### Add an issue to slug X
+
+Add a new sub-issue under an existing feature's parent. The issue enters at `needs-triage`.
+
+**Contract:** Resolves the slug's `formann:feature` parent, then creates one GitHub sub-issue and links it via `addSubIssue`. Shape-insensitive: works regardless of whether the parent is a pure-container or a work-item parent.
+
+**Inputs:**
+- `slug` (X) — the feature slug (required). Must match exactly one open `formann:feature` parent.
+- `title` — the issue title.
+- `body` — the issue body content (passed via `body-file` on the role surface).
+- `category` — `bug` or `enhancement`.
+- `type` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+**Outputs:** A single GitHub sub-issue with labels `formann:status:needs-triage` + `formann:category:<cat>` + `formann:type:<type>`, linked as a sub-issue of the resolved parent. No `formann:feature` label; no `formann:slug:*` label (slug labels live on the parent only). Issue URL printed to stdout.
+
+**Idempotency:** Not idempotent. Re-running creates a second sub-issue.
+
+**GitHub-issues realization:**
+
+**Step 1 — Resolve the parent.** Run:
+
+```bash
+gh issue list \
+  --label "formann:feature" \
+  --label "formann:slug:<X>" \
+  --state open \
+  --json number,id,title
+```
+
+Cardinality handling mirrors the snapshot's slug-uniqueness contract:
+
+| Count | Behaviour |
+|---|---|
+| 0 | Refuse with a not-found diagnostic naming the slug. No issue is created. |
+| 1 | That issue is the parent. Capture its `number` and `id` (node ID) and proceed to Step 2. |
+| ≥ 2 | Refuse with the slug-collision diagnostic, naming both parents. |
+
+Not-found diagnostic:
+
+```
+Error: slug "<X>" not found on any open formann:feature parent.
+Check the slug spelling, or that the parent is not archived (closed).
+```
+
+Collision diagnostic — names every colliding parent so the maintainer can decide which `formann:slug:<X>` label to strip (mirrors `tracker-snapshot`'s collision wording):
+
+```
+Error: slug "<X>" is in use by multiple parents: #N #M.
+Remove the 'formann:slug:<X>' label from one of: #N #M.
+```
+
+When the count is 0 or ≥ 2, exit with a resolve-failure code and do not proceed to Step 2.
+
+**Step 2 — Create the sub-issue and link.** Run:
+
+```bash
+gh issue create \
+  --title "<title>" \
+  --body "$(cat <<'EOF'
+<issue body content>
+EOF
+)" \
+  --label "formann:status:needs-triage,formann:category:<cat>,formann:type:<type>"
+```
+
+Labels applied:
+
+- `formann:status:needs-triage` — every new issue enters the triage flow.
+- `formann:category:<cat>` — `bug` or `enhancement`.
+- `formann:type:<type>` — `afk` or `hitl` (provisional; triage confirms or flips).
+
+The sub-issue does **not** carry `formann:feature` (parent-only) or `formann:slug:*` (slug labels live on the parent only, per ADR-0006 Decision B).
+
+`gh issue create` prints the new issue URL. Extract the issue number from the URL (the trailing integer); this is `<new-N>`.
+
+Then link to the parent via `addSubIssue`:
+
+```bash
+new_node_id=$(gh issue view <new-N> --json id --jq '.id')
+
+gh api graphql \
+  --field query='mutation($parentId:ID!,$subId:ID!) {
+    addSubIssue(input:{issueId:$parentId,subIssueId:$subId}) {
+      issue { number }
+      subIssue { number }
+    }
+  }' \
+  --field parentId="<parent-node-id-from-step-1>" \
+  --field subId="$new_node_id"
+```
+
+`addSubIssue.input.issueId` is the **parent's** node ID (captured in Step 1); `addSubIssue.input.subIssueId` is the **new sub-issue's** node ID. The mutation returns `issue.number` (parent) and `subIssue.number` (new sub-issue); verify both match the expected values.
+
+**Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If the `gh issue create` in Step 2 succeeds but any subsequent call fails — the `gh issue view` lookup that fetches the new issue's node ID, or the `addSubIssue` mutation itself — the new issue exists on GitHub without a parent link, an orphan. The `add-issue-to-slug` script surfaces this as `_EXIT_TRANSIENT` (3) and names the orphan's number in stderr; the resolve-failure exit code (1) is reserved for slug-not-found / slug-collision cases that never created an issue. No engineered rollback. Recovery: re-run only the `addSubIssue` call with the orphan's existing issue number and the resolved parent's node ID.
+
+### GitHub web UI — minimum marker
+
+A maintainer creating an issue in the GitHub web UI can make it Formann-eligible by adding a single label:
+
+```
+formann:status:needs-triage
+```
+
+That is the **only** requirement. Slug, category, and type are all optional at creation; `/triage` assigns them at the `needs-triage → ready-for-agent` transition.
+
+**There is no shortcut from the web UI to `ready-for-agent`.** A hand-typed issue with only `formann:status:needs-triage` must go through `/triage` before the runner will pick it up. The triage step is mandatory — it validates the brief, sets slug, category, and type, and confirms the issue is complete enough to dispatch.
+
 ### Archive a feature
 
 Close the parent issue with `state_reason=completed` and mark it with `formann:archived`. This is the binding's realization of `/triage`'s **Archive a completed feature** step 6 ("Archive the feature. Per the binding's archive convention.").
@@ -449,10 +697,10 @@ Close the parent issue with `state_reason=completed` and mark it with `formann:a
 
 **Pre-flight — parent lookup.** Resolve the parent issue number via the **Read the feature** verb: `gh issue list --label "formann:feature" --label "formann:slug:<slug>" --state open --json number,title --jq '.'`. If no open parent is found, the feature may already be archived — report the error and stop.
 
-**Pre-flight — non-terminal guard.** The `/triage` skill enforces the non-terminal precheck in step 1 before reaching step 6. The binding re-enforces it for robustness: run `tracker-snapshot <slug>` and check every sub-issue's `status` field. If any sub-issue has a status other than `done` or `wontfix`, refuse with a clear error listing the non-terminal issues:
+**Pre-flight — non-terminal guard.** The `/triage` skill enforces the non-terminal precheck in step 1 before reaching step 6. The binding re-enforces it for robustness: run `tracker-snapshot <slug>` and check every entry in `issues[]` `status` field. If any entry has a status other than `done` or `wontfix`, refuse with a clear error listing the non-terminal entries:
 
 ```
-Error: cannot archive "<slug>" — non-terminal sub-issues remain: #N (in-review), #M (ready-for-agent)
+Error: cannot archive "<slug>" — non-terminal entries remain: #N (in-review), #M (ready-for-agent)
 ```
 
 **Two-step archive:**
@@ -484,7 +732,7 @@ Convention: commits that do work toward an issue reference the issue as `#N` in 
 
 Under the github-issues binding, sub-issue bodies follow the same template as the local-markdown binding, with one per-binding difference: **`## Parent` is omitted**.
 
-Use GitHub's native `#N` autolink form inside `## Blocked by` — not the portable `<feature>/<N>` form. The snapshot's blocker extractor matches `#N` refs against the parent's in-memory sub-issue set.
+Use GitHub's native `#N` autolink form inside `## Blocked by` — not the portable `<feature>/<N>` form. The snapshot's blocker extractor matches `#N` refs against the snapshot's in-memory issues set.
 
 **Rationale for omitting `## Parent`:** Under local-markdown, `## Parent` carries a file path to the PRD (e.g., `.features/<slug>/PRD.md`) — the only in-file pointer to the parent artifact. Under the github-issues binding, GitHub's native sub-issue panel on the parent issue already surfaces the parent → sub-issue relationship visually; and the **Read the feature** verb (`gh issue view <parent-N>`) gives skills programmatic access to the PRD body. The `## Parent` section would be redundant and would drift if the parent issue number changed.
 
@@ -524,6 +772,8 @@ Both invocation forms emit JSON byte-compatible with the local-markdown binding.
 }
 ```
 
+`issues[]` composition depends on the parent's shape. When the parent carries `formann:status:*` (work-item parent), it is emitted as `issues[0]`, followed by its sub-issues. A pure-container parent (no `formann:status:*` label) contributes only its sub-issues, starting at `issues[0]`. The two shapes are covered in [Read the feature](#read-the-feature).
+
 **`tracker-snapshot --list`** emits a JSON array of feature slug strings:
 
 ```json
@@ -532,29 +782,29 @@ Both invocation forms emit JSON byte-compatible with the local-markdown binding.
 
 Field notes:
 
-- `ref` — GitHub's native `#N` (the sub-issue's issue number, with `#` prefix). Differs from local-markdown's `<feature>/NN` form. The top-level `feature` field carries the slug; every snapshot consumer already has the slug in scope.
+- `ref` — GitHub's native `#N` (the entry's issue number, with `#` prefix — a sub-issue's number, or the work-item parent's own number when the parent is emitted as `issues[0]`). Differs from local-markdown's `<feature>/NN` form. The top-level `feature` field carries the slug; every snapshot consumer already has the slug in scope.
 - `nn` — The GitHub issue number as a string, with no `#` prefix. This is the integer half of the runner's CLI ref form `<feature>/<NN>`; the runner uses it to look up entries in the snapshot. Differs from `ref` only by the absent `#`.
 - `status` — Derived from GitHub state + stateReason + `formann:status:*` label. `CLOSED + state_reason=COMPLETED` → `"done"`. `CLOSED + state_reason=NOT_PLANNED` → `"wontfix"`. Open issues: value from the `formann:status:<value>` label; empty string if no such label.
 - `category` — Value from the `formann:category:<value>` label; empty string if absent.
 - `type` — Value from the `formann:type:<value>` label, normalised to uppercase (`afk` → `"AFK"`, `hitl` → `"HITL"`); empty string if absent.
-- `blocked_by` — Array of `#N` refs extracted from the `## Blocked by` section of the sub-issue body. Empty array if the section is absent or contains no `#N` tokens.
-- `eligible` — `true` iff `status == "ready-for-agent"` AND `type == "AFK"` AND every `blocked_by` ref is a known sub-issue of this parent with `status == "done"`. Any unmatched `#N` (not in the parent's sub-issue set) is treated as conservative-false.
+- `blocked_by` — Array of `#N` refs extracted from the `## Blocked by` section of the entry's issue body. Empty array if the section is absent or contains no `#N` tokens.
+- `eligible` — `true` iff `status == "ready-for-agent"` AND `type == "AFK"` AND every `blocked_by` ref is a known entry in this snapshot's issues set with `status == "done"`. Any unmatched `#N` (not in the issues set) is treated as conservative-false.
 
 ### Ordering rules
 
-**`tracker-snapshot <slug>` sub-issue order:**
-Sub-issues are emitted in the order returned by the GraphQL `subIssues` connection, which reflects GitHub's UI priority order (maintainer-adjustable via drag-and-drop). Each sub-issue occupies a unique position, so the API-returned order is already deterministic; no tiebreaker is applied. Dragging a sub-issue to the top of the sub-issue panel makes it the next eligible pick for the AFK runner.
+**`tracker-snapshot <slug>` issue order:**
+A work-item parent (when present) occupies `issues[0]`; sub-issues follow. Sub-issues are emitted in the order returned by the GraphQL `subIssues` connection, which reflects GitHub's UI priority order (maintainer-adjustable via drag-and-drop). Each sub-issue occupies a unique position, so the API-returned order is already deterministic; no tiebreaker is applied. Dragging a sub-issue to the top of the sub-issue panel makes it the next eligible pick for the AFK runner.
 
 **`tracker-snapshot --list` order:**
 Features are returned ordered by parent issue number ascending (`#N` ASC). The GraphQL query carries no `orderBy` clause; the script sorts the returned nodes via `jq sort_by(.number)` before extracting slugs. This is the GitHub-issues binding's list order; local-markdown lists alphabetically. Consumers must not assume cross-binding parity.
 
 ### Blocker resolution rules
 
-Blocker eligibility resolves from the in-memory sub-issue snapshot — no extra API calls. `#N` refs inside `## Blocked by` are matched against the parent's sub-issue set:
+Blocker eligibility resolves from the in-memory issues set — no extra API calls. `#N` refs inside `## Blocked by` are matched against the issues set (sub-issues, plus the work-item parent when present):
 
-- If `N` is in the sub-issue set and `status == "done"` → blocker satisfied.
-- If `N` is in the sub-issue set but not done → blocker unsatisfied; `eligible = false`.
-- If `N` is **not** in the sub-issue set → unresolved external ref; conservative-false (`eligible = false`). This mirrors local-markdown's cross-feature blocker behaviour.
+- If `N` is in the issues set and `status == "done"` → blocker satisfied.
+- If `N` is in the issues set but not done → blocker unsatisfied; `eligible = false`.
+- If `N` is **not** in the issues set → unresolved external ref; conservative-false (`eligible = false`). This mirrors local-markdown's cross-feature blocker behaviour.
 
 ### Slug identity and uniqueness
 

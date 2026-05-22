@@ -1,0 +1,33 @@
+{
+  "data": {
+    "repository": {
+      "issues": {
+        "nodes": [
+          {
+            "number": 10,
+            "state": "OPEN",
+            "labels": {
+              "nodes": [
+                {"name": "formann:feature"},
+                {"name": "formann:slug:pure-container"}
+              ]
+            }
+          },
+          {
+            "number": 20,
+            "state": "OPEN",
+            "labels": {
+              "nodes": [
+                {"name": "formann:feature"},
+                {"name": "formann:slug:work-item-parent"},
+                {"name": "formann:status:ready-for-agent"},
+                {"name": "formann:category:enhancement"},
+                {"name": "formann:type:afk"}
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

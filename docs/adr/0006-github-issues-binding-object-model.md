@@ -31,3 +31,14 @@ The feature slug is stored as the label `formann:slug:<slug>` on the parent issu
 - The `formann:slug:<slug>` label namespace is dynamic — a new label is created per feature at `/to-prd` time. The `bootstrap-labels` install script creates only the static namespace; slug labels accumulate incrementally. Label names are bounded by GitHub's 50-char limit (13 chars consumed by `formann:slug:`; 37 available for the slug itself).
 - GitHub enforces no uniqueness constraint on labels. Slug uniqueness is maintained by pre-flight checks at feature creation and cardinality checks at every snapshot read; hand-applied label duplication is detectable but not preventable. BINDING.md documents the recovery recipe.
 - The feature PRD lives in the parent issue's body. The 65,536-char GitHub body limit is the PRD size ceiling; content approaching that ceiling should be moved to a linked design doc.
+
+## Amendment: work-item parent shape (2026-05-21)
+
+A `formann:feature` issue may also be a work item. The signal: the parent carries a `formann:status:*` label (plus the accompanying `formann:category:*` / `formann:type:*` labels). When a parent carries `formann:status:*`, its body is the actionable work description, not a PRD; `tracker-snapshot` emits it as the first entry in `issues[]`, followed by any sub-issues in UI priority order.
+
+This unifies two shapes under one model:
+
+- **Pure-container parent** (existing): `formann:feature` + `formann:slug:*`, no status label. Body is the PRD. Work lives in sub-issues.
+- **Work-item parent** (new): `formann:feature` + `formann:slug:*` + `formann:status:*` + `formann:category:*` + `formann:type:*`. Body is the work description. Zero or more sub-issues accrued as follow-ups.
+
+Decision A (parent-issue modelling shape) is unchanged: a work-item parent is still a GitHub issue, still uses `addSubIssue` for follow-up sub-issues, and provides the same single-round-trip GraphQL snapshot. Decision B (slug-as-label) is unchanged. The slug-collision detection (two `formann:feature` issues sharing a slug label) is unchanged and applies regardless of whether either parent carries a status label.

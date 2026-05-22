@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+###
+### make-issue-runner-ready — ensure a GitHub issue is discoverable and
+###                           dispatchable by the runner before it transitions
+###                           to ready-for-agent or ready-for-human.
+###
+### Usage: make-issue-runner-ready <N> [--slug <slug>]
+###
+###   <N>           GitHub issue number (required).
+###   --slug <slug> Slug to assign to the issue. Required if the issue carries
+###                 no formann:slug:* label. Ignored if one is already present.
+###                 Must be ≤ 37 characters and not already label any issue.
+###
+### On success, the issue is fully runner-ready (idempotent — re-running on an
+### already-ready issue performs no API writes).
+###
+### Exit codes:
+###   0   Success (issue is runner-ready or was already ready).
+###   1   Refuses: slug required but not supplied, or slug-uniqueness collision.
+###   2   Usage error or prerequisite missing.
+###   3   Transient gh failure (network, auth, rate limit). gh's own error
+###       message is passed through to stderr.
+###
+### Bash 3.2 compatible.
+###
+
+set -eu
+set -o pipefail
+
+readonly _EXIT_REFUSES=1
+readonly _EXIT_USAGE=2
+readonly _EXIT_TRANSIENT=3
+
+# ── Prerequisites ─────────────────────────────────────────────────────────────
+if ! command -v gh >/dev/null 2>&1; then
+  echo "make-issue-runner-ready: 'gh' CLI not found in PATH." >&2
+  exit "$_EXIT_USAGE"
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "make-issue-runner-ready: 'jq' not found in PATH." >&2
+  exit "$_EXIT_USAGE"
+fi
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+_issue_num=""
+_slug=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --slug)
+      [ "$#" -ge 2 ] || { echo "make-issue-runner-ready: --slug requires a value" >&2; exit "$_EXIT_USAGE"; }
+      _slug="$2"; shift 2 ;;
+    --*)
+      echo "make-issue-runner-ready: unknown argument: $1" >&2
+      exit "$_EXIT_USAGE" ;;
+    *)
+      if [ -z "$_issue_num" ]; then
+        _issue_num="$1"; shift
+      else
+        echo "make-issue-runner-ready: unexpected argument: $1" >&2
+        exit "$_EXIT_USAGE"
+      fi ;;
+  esac
+done
+
+if [ -z "$_issue_num" ]; then
+  cat >&2 <<USAGE
+usage: make-issue-runner-ready <N> [--slug <slug>]
+
+  <N>           GitHub issue number (required).
+  --slug <slug> Slug to assign (required if issue has no formann:slug:* label).
+USAGE
+  exit "$_EXIT_USAGE"
+fi
+
+# ── Step 0: read issue labels and node ID ─────────────────────────────────────
+# Capture exit code so a transient gh failure surfaces as _EXIT_TRANSIENT
+# rather than being misclassified as _EXIT_REFUSES (1).
+_issue_json=""
+_gh_ec=0
+_issue_json="$(gh issue view "$_issue_num" --json id,labels)" || _gh_ec=$?
+if [ "$_gh_ec" -ne 0 ]; then
+  echo "make-issue-runner-ready: 'gh issue view' failed (exit ${_gh_ec}); see gh's error above." >&2
+  exit "$_EXIT_TRANSIENT"
+fi
+_node_id="$(printf '%s' "$_issue_json" | jq -r '.id')"
+_label_names="$(printf '%s' "$_issue_json" | jq -r '.labels[].name')"
+
+# ── Step 1: slug ensure ───────────────────────────────────────────────────────
+_has_slug=0
+if printf '%s' "$_label_names" | grep -q '^formann:slug:'; then
+  _has_slug=1
+fi
+
+if [ "$_has_slug" -eq 0 ]; then
+  if [ -z "$_slug" ]; then
+    echo "Error: issue #${_issue_num} has no slug. Supply --slug <slug> to assign one." >&2
+    exit "$_EXIT_REFUSES"
+  fi
+
+  # Length check: formann:slug: = 13 chars; GitHub label cap = 50 chars.
+  if [ "${#_slug}" -gt 37 ]; then
+    echo "Error: slug \"$_slug\" is ${#_slug} characters; the github-issues binding limits slugs to 37 characters (github labels are capped at 50; \"formann:slug:\" occupies 13)." >&2
+    exit "$_EXIT_USAGE"
+  fi
+
+  # Uniqueness check (both open and closed issues).
+  # Capture exit code so a network/auth/rate-limit failure (transient
+  # infrastructure problem) is surfaced distinctly from a legitimate
+  # slug collision. gh's stderr is intentionally passed through to the user.
+  _existing=""
+  _gh_ec=0
+  _existing="$(gh issue list --label "formann:slug:${_slug}" --state all --json number,title)" || _gh_ec=$?
+  if [ "$_gh_ec" -ne 0 ]; then
+    echo "make-issue-runner-ready: 'gh issue list' failed (exit ${_gh_ec}); see gh's error above." >&2
+    exit "$_EXIT_TRANSIENT"
+  fi
+  _count="$(printf '%s' "$_existing" | jq 'length')"
+  if [ "$_count" -gt 0 ]; then
+    _num="$(printf '%s' "$_existing" | jq -r '.[0].number')"
+    _ttl="$(printf '%s' "$_existing" | jq -r '.[0].title')"
+    echo "Error: slug \"${_slug}\" is already in use by issue #${_num} (\"${_ttl}\")." >&2
+    echo "Choose a different slug." >&2
+    exit "$_EXIT_REFUSES"
+  fi
+
+  # Create slug label (idempotent via --force) and add to issue.
+  # Capture exit codes so transient gh failures surface as _EXIT_TRANSIENT
+  # rather than being misclassified as _EXIT_REFUSES (1).
+  _gh_ec=0
+  gh label create "formann:slug:${_slug}" --force || _gh_ec=$?
+  if [ "$_gh_ec" -ne 0 ]; then
+    echo "make-issue-runner-ready: 'gh label create' failed (exit ${_gh_ec}); see gh's error above." >&2
+    exit "$_EXIT_TRANSIENT"
+  fi
+  _gh_ec=0
+  gh issue edit "$_issue_num" --add-label "formann:slug:${_slug}" || _gh_ec=$?
+  if [ "$_gh_ec" -ne 0 ]; then
+    echo "make-issue-runner-ready: 'gh issue edit' failed (exit ${_gh_ec}); see gh's error above." >&2
+    exit "$_EXIT_TRANSIENT"
+  fi
+fi
+
+# ── Step 2: formann:feature ensure ───────────────────────────────────────────
+_has_feature=0
+if printf '%s' "$_label_names" | grep -q '^formann:feature$'; then
+  _has_feature=1
+fi
+
+if [ "$_has_feature" -eq 0 ]; then
+  # Detect if this issue has a GitHub-side parent. Capture exit codes so a
+  # transient gh failure surfaces as _EXIT_TRANSIENT rather than being
+  # misclassified as _EXIT_REFUSES (1).
+  _parent_resp=""
+  _gh_ec=0
+  _parent_resp="$(gh api graphql \
+    --field query='query($id: ID!) { node(id: $id) { ... on Issue { parent { id } } } }' \
+    --field id="$_node_id")" || _gh_ec=$?
+  if [ "$_gh_ec" -ne 0 ]; then
+    echo "make-issue-runner-ready: 'gh api graphql' failed (exit ${_gh_ec}); see gh's error above." >&2
+    exit "$_EXIT_TRANSIENT"
+  fi
+  _parent="$(printf '%s' "$_parent_resp" | jq -r '.data.node.parent')"
+
+  if [ "$_parent" = "null" ]; then
+    # Standalone: add formann:feature label.
+    _gh_ec=0
+    gh issue edit "$_issue_num" --add-label "formann:feature" || _gh_ec=$?
+    if [ "$_gh_ec" -ne 0 ]; then
+      echo "make-issue-runner-ready: 'gh issue edit' failed (exit ${_gh_ec}); see gh's error above." >&2
+      exit "$_EXIT_TRANSIENT"
+    fi
+  fi
+  # If parent is non-null (sub-issue), no-op — sub-issues do not carry formann:feature.
+fi

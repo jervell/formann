@@ -9,6 +9,7 @@ Indexed by what you have in front of you:
 | You have...                                     | Run...                                | Result                                       |
 | ----------------------------------------------- | ------------------------------------- | -------------------------------------------- |
 | a thought you can't act on now                  | (capture in the inbox)                | captured for later                           |
+| a small, well-scoped task (no PRD needed)       | (ask the agent to create a standalone) | issue at `needs-triage`, no PRD required    |
 | a fuzzy idea                                    | `/grill-with-docs`                    | shared understanding                         |
 | a grilled understanding                         | `/to-prd`                             | PRD published                                |
 | a PRD                                           | `/to-issues`                          | issues at `needs-triage`                     |
@@ -33,7 +34,7 @@ Two scopes. Project-level artifacts accumulate across features; feature-level ar
 ├── .out-of-scope/             ← rejected feature concepts (project-level)
 └── .features/
     ├── <feature>/             ← active features
-    │   ├── PRD.md             ← spec, no Status
+    │   ├── PRD.md             ← spec (optional — absent for standalones)
     │   └── issues/NN-*.md     ← work units, with Status / Category / Type
     └── .archived/<feature>/   ← archived features (whole dir moved)
 ```
@@ -46,7 +47,7 @@ A pre-lifecycle capture surface for thoughts you can't act on right now — bugs
 
 When an entry matures, it leaves the inbox by entering the lifecycle at the appropriate point: a feature-shaped seed kicks off `/grill-with-docs`; a one-off fix becomes a single-issue micro-feature directly. Entries that won't be done are deleted (trivial) or written to `.out-of-scope/` (meaningful rejection).
 
-Opt-in. Projects that don't want it just don't have an `.inbox.md`. See `docs/formann/inbox.md` for the binding.
+Opt-in. Projects that don't want it just don't have an `.inbox.md`. See `docs/formann/inbox.md` for the conventions.
 
 ## Pipeline
 
@@ -147,9 +148,9 @@ See [`afk-runner.md`](afk-runner.md) for the architecture, binding contract, out
 
 ## Design principles
 
-**Implementation lives in bindings.** Binding docs (`docs/formann/issue-tracker/BINDING.md`, `docs/formann/inbox.md`) are where the system meets a concrete implementation. They define where things live, how references resolve, and what implementation-specific actions like "set up a feature workspace" or "promote an inbox entry" mean mechanically. Each binding covers one lifecycle role: feature work in flight (PRDs + issues + workspace), pre-lifecycle capture (inbox), etc.
+**Implementation lives in bindings.** Binding docs (`docs/formann/issue-tracker/BINDING.md`) are where the system meets a concrete implementation. They define where things live, how references resolve, and what implementation-specific actions like "set up a feature workspace" mean mechanically. Each binding covers one lifecycle role.
 
-**Core and optional bindings.** Some bindings are core — every project has them (the issue tracker, domain). Others are optional add-ons a project adopts when it wants the capability (inbox today; potentially more later). The core pipeline runs without the optional bindings.
+**Core and optional bindings.** Some bindings are core — every project has them (the issue tracker, domain). Others are optional add-ons a project adopts when it wants the capability. The core pipeline runs without the optional bindings.
 
 **Skills speak abstractly.** The producer and consumer skills (`/to-prd`, `/to-issues`, `/triage`, `/implement`) describe what they do in implementation-agnostic terms — "publish the PRD", "create an issue", "set up the feature workspace". The agent connects those abstract instructions to concrete actions via the relevant binding.
 
@@ -163,7 +164,7 @@ See [`afk-runner.md`](afk-runner.md) for the architecture, binding contract, out
 - **`framework/afk-runner.md`** — architecture and process flow of the AFK runner. Companion to `runner/README.md` (which is the operator-facing reference).
 - **`framework/afk-runner-flow.md`** — flowchart-style diagram of `run-the-queue.sh`: inputs, process steps, decision points, outputs.
 - **`docs/formann/issue-tracker/BINDING.md`** — issue-tracker binding (core). Implementation-specific facts for PRDs, issues, and the feature workspace.
-- **`docs/formann/inbox.md`** — inbox binding (optional). Implementation-specific facts for pre-lifecycle capture.
+- **`docs/formann/inbox.md`** — inbox conventions (optional). Pre-lifecycle capture surface.
 - **`docs/formann/triage-states.md`** — triage state vocabulary glossary.
 - **`docs/formann/domain.md`** — domain documentation conventions (`GLOSSARY.md`, `docs/adr/`).
 - **`framework/skills/`** — operational instructions for agents:
