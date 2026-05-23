@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- AFK runner sweeps stale parking refs on startup: any `refs/remotes/runner/<slug>` whose tip is reachable from another host ref is deleted; refs whose tip is only reachable from themselves are kept, so no committed work can be lost.
+- AFK runner sweeps stale parking refs and their runner-checkout source branches on startup. Both sides are only removed when git proves their tips are reachable from another host ref, so no committed work can be lost.
 - `/gist` skill — produce a short plain-English summary of whatever you point it at: the previous response, the conversation, an artifact, or each item in a list. Consumer-side utility skill alongside `/handoff`.
 - Sandbox container image bundles `gh` and `bats`, so agents can drive the GitHub issues binding and run framework test suites without installing them first.
 - Standalone issues — a Formann feature can be a single slug-named issue with no PRD. Create one conversationally ("create a standalone for slug X about Y"), add follow-ups the same way ("add a follow-up under slug X about ..."), or open an issue in the GitHub web UI with `formann:status:needs-triage` — `/triage` assigns the slug and the rest at the `ready-for-agent` transition.

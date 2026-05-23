@@ -4952,7 +4952,7 @@ _setup_sweep_test() {
   grep -q "reachable from refs/heads/main" "$sw_log"
 }
 
-@test "sweep_stale_parking_refs — (b) tip reachable only from parking ref is kept" {
+@test "sweep_stale_parking_refs — (b) tip reachable only from parking ref is kept (source untouched too)" {
   _setup_sweep_test
   # Create an orphaned commit reachable only from the parking ref.
   local orphan_sha
@@ -4961,10 +4961,21 @@ _setup_sweep_test() {
     -m "parking-only")"
   git -C "$HOST_REPO" update-ref "refs/remotes/runner/bar" "$orphan_sha"
 
+  # Runner-checkout has a source branch for this slug. Locks in that when
+  # the parking ref is kept (proof 1 fails), the source-side block is
+  # skipped entirely — no chance of deleting the source.
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT"
+  local checkout_main_sha
+  checkout_main_sha="$(git -C "$HOST_CHECKOUT" rev-parse refs/heads/main)"
+  git -C "$HOST_CHECKOUT" update-ref "refs/heads/bar" "$checkout_main_sha"
+
   sweep_stale_parking_refs >/dev/null 2>&1
 
-  # Parking ref is preserved.
+  # Parking ref preserved on host.
   git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/bar" >/dev/null 2>&1
+  # Source branch preserved on the runner-checkout.
+  git -C "$HOST_CHECKOUT" rev-parse --verify "refs/heads/bar" >/dev/null 2>&1
   [ "${#RUN_SWEPT_REFS[@]}" -eq 0 ]
 }
 
@@ -5033,4 +5044,202 @@ _setup_sweep_test() {
   ! git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/stale" >/dev/null 2>&1
   [ "${#RUN_SWEPT_REFS[@]}" -eq 1 ]
   [ "${RUN_SWEPT_REFS[0]}" = "refs/remotes/runner/stale" ]
+}
+
+# Helper for sweep tests that also exercise the source-side proof on the
+# runner-checkout. HOST_CHECKOUT is cloned from HOST_REPO so the two repos
+# share object history — operations on either side reference the same SHAs,
+# matching the production relationship between the host repo and the
+# runner-checkout. The source branch (if needed) is created by the test
+# itself so each test controls the exact tip relationship.
+_setup_sweep_test_with_checkout() {
+  _setup_sweep_test
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT"
+}
+
+@test "sweep_stale_parking_refs — (f) source branch on runner-checkout is deleted when parking ref is swept" {
+  _setup_sweep_test_with_checkout
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  # Source branch on runner-checkout at the same tip as the parking ref —
+  # the normal post-propagation state for a slug.
+  git -C "$HOST_CHECKOUT" update-ref "refs/heads/foo" "$main_sha"
+  # Host parking ref reachable from refs/heads/main.
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/foo" "$main_sha"
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+
+  # Both refs gone — otherwise the next `git fetch runner` would restore
+  # the host parking ref from the surviving source. `[ -z "$(for-each-ref)" ]`
+  # is the set-e-safe negation: `! cmd` is exempt from set -e and would
+  # silently pass even if the ref still existed.
+  [ -z "$(git -C "$HOST_REPO" for-each-ref --format='%(refname)' refs/remotes/runner/foo)" ]
+  [ -z "$(git -C "$HOST_CHECKOUT" for-each-ref --format='%(refname)' refs/heads/foo)" ]
+  # Both deletions logged.
+  grep -q "swept stale parking ref refs/remotes/runner/foo" "$sw_log"
+  grep -q "swept runner-checkout source refs/heads/foo" "$sw_log"
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 1 ]
+  [ "${RUN_SWEPT_REFS[0]}" = "refs/remotes/runner/foo" ]
+}
+
+@test "sweep_stale_parking_refs — (g) source ahead of parking ref is kept (no unpropagated commits lost)" {
+  _setup_sweep_test_with_checkout
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  # Host parking ref at main's tip — first reachability proof would pass.
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/foo" "$main_sha"
+  # Source branch on runner-checkout points at a commit HOST_REPO does
+  # not have — simulating a prior dispatch whose propagate-step failed
+  # before publishing. The unpropagated commit lives only on the
+  # runner-checkout side.
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    checkout -b foo --quiet
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "unpropagated work"
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+
+  # Both refs preserved — deleting the source would lose the unpropagated
+  # commit; deleting only the host ref would silently reintroduce the
+  # original resurrection bug on the next fetch.
+  git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/foo" >/dev/null 2>&1
+  git -C "$HOST_CHECKOUT" rev-parse --verify "refs/heads/foo" >/dev/null 2>&1
+  # Warning logged.
+  grep -q "keeping refs/remotes/runner/foo.*refs/heads/foo" "$sw_log"
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 0 ]
+}
+
+@test "sweep_stale_parking_refs — (h) corrupt source tip skips sweep with warning" {
+  _setup_sweep_test_with_checkout
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/foo" "$main_sha"
+  # Create a source ref entry whose tip object is missing from the
+  # runner-checkout's object DB.
+  mkdir -p "$HOST_CHECKOUT/.git/refs/heads"
+  printf '%s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" \
+    >"$HOST_CHECKOUT/.git/refs/heads/foo"
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+
+  # Both refs preserved — we can't prove the source's work is preserved
+  # on host when its tip is unreadable, so we don't touch anything.
+  git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/foo" >/dev/null 2>&1
+  [ -f "$HOST_CHECKOUT/.git/refs/heads/foo" ]
+  # Warning logged.
+  grep -q "refs/heads/foo tip unreadable" "$sw_log"
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 0 ]
+}
+
+@test "sweep_stale_parking_refs — (i) source-delete failure leaves host parking ref intact" {
+  _setup_sweep_test_with_checkout
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/foo" "$main_sha"
+  git -C "$HOST_CHECKOUT" update-ref "refs/heads/foo" "$main_sha"
+  # Block update-ref by occupying the lock-file path it would create.
+  # Git's ref-lock mechanism refuses to proceed when <ref>.lock already
+  # exists (simulates a concurrent git operation holding the ref).
+  printf 'sentinel\n' >"$HOST_CHECKOUT/.git/refs/heads/foo.lock"
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  set +e
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+  local rc=$?
+  set -e
+
+  # Sweep does not abort the run.
+  [ "$rc" -eq 0 ]
+  # Host parking ref NOT deleted — proceeding without the source delete
+  # would let the next IDE auto-fetch silently restore it from the
+  # surviving source, reintroducing the original cluttering bug.
+  git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/foo" >/dev/null 2>&1
+  # Source ref preserved (delete failed).
+  git -C "$HOST_CHECKOUT" rev-parse --verify "refs/heads/foo" >/dev/null 2>&1
+  # Warning logged.
+  grep -q "failed to delete runner-checkout refs/heads/foo" "$sw_log"
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 0 ]
+}
+
+@test "sweep_stale_parking_refs — (j) host parking ref deleted when source is absent on runner-checkout" {
+  _setup_sweep_test_with_checkout
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/foo" "$main_sha"
+  # No refs/heads/foo on HOST_CHECKOUT — simulates a slug whose source
+  # branch has already been cleaned manually.
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+
+  # Host parking ref deleted (the only thing there was to delete).
+  [ -z "$(git -C "$HOST_REPO" for-each-ref --format='%(refname)' refs/remotes/runner/foo)" ]
+  # No source-side log line (nothing to delete). `run` + status check
+  # is set-e-safe; a bare `! grep` would be exempt from set -e and
+  # silently pass even if the log line WERE present.
+  run grep -q "swept runner-checkout source" "$sw_log"
+  [ "$status" -ne 0 ]
+  # Host-side log line emitted.
+  grep -q "swept stale parking ref refs/remotes/runner/foo" "$sw_log"
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 1 ]
+  [ "${RUN_SWEPT_REFS[0]}" = "refs/remotes/runner/foo" ]
+}
+
+@test "sweep_stale_parking_refs — (k) source branch that is current HEAD is deleted; runner-checkout stays functional" {
+  _setup_sweep_test_with_checkout
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/foo" "$main_sha"
+  # Source branch is the current HEAD on the runner-checkout — the
+  # steady-state for the slug the runner last dispatched.
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    checkout -b foo --quiet
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+
+  # Both refs gone.
+  [ -z "$(git -C "$HOST_REPO" for-each-ref --format='%(refname)' refs/remotes/runner/foo)" ]
+  [ -z "$(git -C "$HOST_CHECKOUT" for-each-ref --format='%(refname)' refs/heads/foo)" ]
+  # HEAD on the runner-checkout is now unborn (still symbolic-refs the
+  # deleted branch) but the repo remains functional — `git checkout main`
+  # succeeds, which is the recovery path `ensure_runner_checkout_on_branch`
+  # relies on.
+  git -C "$HOST_CHECKOUT" checkout main --quiet
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 1 ]
+  [ "${RUN_SWEPT_REFS[0]}" = "refs/remotes/runner/foo" ]
+}
+
+@test "sweep_stale_parking_refs — (l) source tip in host object DB but no host ref reaches it keeps both refs" {
+  _setup_sweep_test_with_checkout
+  local main_sha
+  main_sha="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/foo" "$main_sha"
+  # Source has a commit beyond HOST_REPO's main.
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    checkout -b foo --quiet
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "unpropagated work"
+  # Bring the source's tip object into HOST_REPO via a temp ref, then drop
+  # the ref. Distinguishes this case from (g) — there the source tip isn't
+  # in HOST_REPO at all; here the object IS in HOST_REPO but unreachable
+  # from any host ref. Both must be classified as "source not preserved on
+  # host" and skip the sweep.
+  git -C "$HOST_REPO" fetch --quiet "$HOST_CHECKOUT" \
+    "refs/heads/foo:refs/tmp/imported"
+  git -C "$HOST_REPO" update-ref -d "refs/tmp/imported"
+
+  local sw_log="$BATS_TEST_TMPDIR/sw.log"
+  sweep_stale_parking_refs >"$sw_log" 2>&1
+
+  # Both refs preserved.
+  git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/foo" >/dev/null 2>&1
+  git -C "$HOST_CHECKOUT" rev-parse --verify "refs/heads/foo" >/dev/null 2>&1
+  # Warning logged.
+  grep -q "keeping refs/remotes/runner/foo.*refs/heads/foo" "$sw_log"
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 0 ]
 }

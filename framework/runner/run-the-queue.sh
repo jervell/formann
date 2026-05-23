@@ -1887,25 +1887,52 @@ MSG
 }
 
 # Sweep stale parking refs from the host repo. Called once per run, before
-# any tracker query or dispatch. A parking ref is stale when its tip commit
-# is reachable from at least one other ref on host (excluding the parking ref
-# itself and refs/remotes/runner/HEAD) — git can prove the work is preserved,
-# so deletion is safe.
+# any tracker query or dispatch. A slug is stale only when TWO reachability
+# proofs hold simultaneously:
 #
-# Safety invariant: a ref is deleted only when git proves its tip commit is
-# reachable from another ref. No commit is ever lost.
+#   (1) The host parking ref's tip commit is reachable from at least one
+#       other host ref (excluding the parking ref itself and
+#       refs/remotes/runner/HEAD). Proves the parking ref's work is
+#       preserved on host.
 #
-# Skips refs/remotes/runner/HEAD (the symbolic ref git creates for the runner
-# remote — never a parking ref).
-# Skips any parking ref whose tip is unreadable (corrupt or missing object):
-# logs a warning to stderr and continues. The sweep must not abort the run.
+#   (2) The runner-checkout's refs/heads/<slug> tip (if the branch is
+#       present) is also reachable from at least one host ref (same
+#       exclusions). Proves the source branch carries no commits the host
+#       doesn't already have. Without this check, a prior dispatch whose
+#       propagate-step failed could leave the source ahead of the parking
+#       ref — deleting the source would lose unpropagated commits.
+#
+# When both proofs hold, the runner-checkout's refs/heads/<slug> is deleted
+# first, then host's refs/remotes/runner/<slug>. Source-first ordering
+# avoids a race where an interleaved `git fetch runner` (IDE auto-fetch,
+# explicit `git fetch --all`, etc.) between the two deletes would restore
+# the host parking ref from the surviving source. If the source-side
+# delete fails (lock contention, permission denied), the host parking ref
+# is NOT deleted either — proceeding alone would silently reintroduce the
+# original cluttering bug on the next fetch.
+#
+# Safety invariant: a ref is deleted only when git proves its tip commit
+# is reachable from another host ref AND the corresponding deletion on
+# the other side succeeded (or wasn't needed). No commit is ever lost.
+#
+# Skips refs/remotes/runner/HEAD (the symbolic ref git creates for the
+# runner remote — never a parking ref).
+# Skips a slug with a warning when the parking ref's tip is unreadable,
+# the source-branch tip on the runner-checkout is unreadable, source
+# reachability proof (2) fails, or the source-side delete fails. The
+# sweep must not abort the run.
+# When HOST_CHECKOUT is unset, the source-side proof is skipped and the
+# host-only delete runs (test-only path for tests that don't model a
+# runner-checkout; production always sets HOST_CHECKOUT).
 #
 # Side effects:
-#   - Deletes swept parking refs from HOST_REPO via git update-ref -d.
-#   - Appends swept ref names to RUN_SWEPT_REFS global array.
+#   - Deletes runner-checkout refs/heads/<slug> via git update-ref -d.
+#   - Deletes host refs/remotes/runner/<slug> via git update-ref -d.
+#   - Appends swept parking ref names to RUN_SWEPT_REFS global array.
 #   - Logs each deletion to stdout (mirrored into runner.log via tee).
+#   - Logs skip-with-warning cases to stderr.
 sweep_stale_parking_refs() {
-  local ref tip witness
+  local ref tip witness slug source_tip source_witness candidate show_rc
   local parking_refs=()
 
   # Collect all parking refs, excluding HEAD. git for-each-ref lists refs
@@ -1922,15 +1949,14 @@ sweep_stale_parking_refs() {
   [[ "${#parking_refs[@]}" -eq 0 ]] && return 0
 
   for ref in "${parking_refs[@]}"; do
-    # Resolve the tip commit. --verify returns non-zero for a missing or
-    # corrupt object; ^{commit} dereferences tag objects.
+    # Resolve the parking-ref tip. --verify returns non-zero for a missing
+    # or corrupt object; ^{commit} dereferences tag objects.
     tip="$(git -C "$HOST_REPO" rev-parse --verify "${ref}^{commit}" 2>/dev/null)" || {
       printf 'runner: sweep: skipping %s — tip commit unreadable\n' "$ref" >&2
       continue
     }
 
-    # Find any other ref that contains this tip commit. Exclude the parking
-    # ref itself and refs/remotes/runner/HEAD.
+    # Proof (1): another host ref must contain the parking-ref tip.
     witness=""
     while IFS= read -r candidate; do
       [[ -z "$candidate" ]] && continue
@@ -1941,12 +1967,93 @@ sweep_stale_parking_refs() {
     done < <(git -C "$HOST_REPO" for-each-ref --format='%(refname)' \
       --contains "$tip" 2>/dev/null)
 
-    if [[ -n "$witness" ]]; then
-      git -C "$HOST_REPO" update-ref -d "$ref"
-      printf 'runner: swept stale parking ref %s (reachable from %s)\n' "$ref" "$witness"
-      RUN_SWEPT_REFS+=("$ref")
+    [[ -z "$witness" ]] && continue
+
+    slug="${ref#refs/remotes/runner/}"
+
+    # Proof (2): if the runner-checkout has a source branch for this slug,
+    # its tip must be reachable from a host ref too. show-ref exits 0 for
+    # a valid ref, 1 for a missing ref, and 128 for a ref entry that exists
+    # but whose tip object is unreadable. We treat 0 and 128 alike ("ref
+    # entry present"); the rev-parse below distinguishes valid from corrupt
+    # and skips the slug with a warning on corrupt. A 1 exit means there's
+    # nothing on the source side — the host-only delete is safe.
+    # When HOST_CHECKOUT is unset (test-only path; production always sets
+    # it), the entire source-side block is skipped.
+    if [[ -n "$HOST_CHECKOUT" ]]; then
+      # `|| show_rc=$?` makes show-ref a tested command (so its non-zero
+      # exit doesn't trip set -e in callers like bats), while still
+      # capturing the exit code. show-ref returns 1 specifically for
+      # "ref absent"; 0 for a valid ref; 128 for "bad ref" (entry exists
+      # but tip object unreadable). Any other rc is unexpected — treat as
+      # "ref might exist" and defer to rev-parse below, which either
+      # succeeds or skips the slug with the corrupt-tip warning. That's
+      # safer than treating unknown rc as "absent" and proceeding to the
+      # host-only delete, which could reintroduce the resurrection bug.
+      show_rc=0
+      git -C "$HOST_CHECKOUT" show-ref --verify --quiet "refs/heads/${slug}" 2>/dev/null \
+        || show_rc=$?
+
+      if [[ "$show_rc" -ne 1 ]]; then
+        source_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify \
+          "refs/heads/${slug}^{commit}" 2>/dev/null)" || {
+          printf 'runner: sweep: skipping %s — runner-checkout refs/heads/%s tip unreadable\n' \
+            "$ref" "$slug" >&2
+          continue
+        }
+
+        source_witness=""
+        while IFS= read -r candidate; do
+          [[ -z "$candidate" ]] && continue
+          [[ "$candidate" == "$ref" ]] && continue
+          [[ "$candidate" == "refs/remotes/runner/HEAD" ]] && continue
+          source_witness="$candidate"
+          break
+        done < <(git -C "$HOST_REPO" for-each-ref --format='%(refname)' \
+          --contains "$source_tip" 2>/dev/null)
+
+        if [[ -z "$source_witness" ]]; then
+          # Source has work not preserved by any host ref — either the
+          # tip's object isn't in HOST_REPO's DB (typical when a prior
+          # dispatch's propagate-step failed before publishing), or it's
+          # in the DB but no host ref reaches it. Sweeping would either
+          # lose the unpropagated commits (delete source) or invisibly
+          # reintroduce the resurrection bug (delete only the host ref,
+          # next fetch restores it from the ahead source). Keep both;
+          # the slug self-cleans on the next successful propagate.
+          printf 'runner: sweep: keeping %s — runner-checkout refs/heads/%s has work not preserved by any host ref\n' \
+            "$ref" "$slug" >&2
+          continue
+        fi
+
+        # Source-first delete. Errors here (lock contention, permissions,
+        # etc.) are NOT swallowed: if the source can't be removed, the host
+        # ref must not be removed either — the next fetch would restore it
+        # from the surviving source and silently reintroduce the original
+        # cluttering bug.
+        if ! git -C "$HOST_CHECKOUT" update-ref -d "refs/heads/${slug}" 2>/dev/null; then
+          printf 'runner: sweep: skipping %s — failed to delete runner-checkout refs/heads/%s\n' \
+            "$ref" "$slug" >&2
+          continue
+        fi
+        printf 'runner: swept runner-checkout source refs/heads/%s (reachable from %s)\n' \
+          "$slug" "$source_witness"
+      fi
     fi
+
+    # Source is absent, was just deleted, or HOST_CHECKOUT is unset.
+    # Remove the host parking ref. update-ref errors surface to stderr.
+    git -C "$HOST_REPO" update-ref -d "$ref"
+    printf 'runner: swept stale parking ref %s (reachable from %s)\n' "$ref" "$witness"
+    RUN_SWEPT_REFS+=("$ref")
   done
+
+  # Skip-with-warning paths above use `continue`, which leaves $? at
+  # whatever the failed git call returned. Without an explicit return, a
+  # single-ref sweep whose only ref hit a skip path would propagate that
+  # non-zero $? to set-e callers — notably the bats harness, which fails
+  # the test on any non-zero exit from a direct function call.
+  return 0
 }
 
 # === Top-level dispatch ====================================================
