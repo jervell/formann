@@ -1063,45 +1063,6 @@ check_feature_eligibility() {
   fi
 }
 
-# Re-apply the host's installer products to the runner-checkout. Walks
-# `<host>/docs/formann/*` for role-binding symlinks, derives a
-# `FORMANN_INSTALL_BINDING_<role>` env-var bypass per role, and invokes
-# `installer/install.sh <checkout>` non-interactively so the checkout
-# ends up with the same binding wiring the host has selected.
-#
-# Why: the host's installer products are gitignored when the installer
-# detects self-install (consumer path is the formann source path), so
-# `docs/formann/issue-tracker` and the framework-doc symlinks never enter
-# git history. A fresh runner-checkout clone therefore lacks them, and
-# the dispatch agent falls back to whichever binding it can find on disk
-# (typically local-markdown) — regardless of what the host has selected.
-# Called from preflight exactly once per run-the-queue.sh invocation,
-# after ensure_runner_checkout_exists guarantees the directory is present.
-#
-# Idempotent: the installer's own contract requires it. The installer's
-# products are gitignored, so the per-iteration `git clean -fd` inside
-# ensure_runner_checkout_on_branch leaves them in place — they persist
-# across the entire pass without a second install call.
-refresh_runner_checkout_install_products() {
-  local host_repo="$1"
-  local checkout="$2"
-  local role_link role impl
-  local env_args=()
-  for role_link in "$host_repo"/docs/formann/*; do
-    [ -L "$role_link" ] || continue
-    role="$(basename "$role_link")"
-    impl="$(basename "$(readlink "$role_link")")"
-    env_args+=("FORMANN_INSTALL_BINDING_${role//-/_}=$impl")
-  done
-  # Drop the installer's stdout — it carries the interactive UX block
-  # ("Paste the following into your CLAUDE.md", etc.) which is irrelevant
-  # during a runner pass. Stderr (real warnings, errors) flows through.
-  if ! env ${env_args[@]+"${env_args[@]}"} "$host_repo/installer/install.sh" "$checkout" >/dev/null; then
-    echo "runner: installer refresh against $checkout failed" >&2
-    return 1
-  fi
-}
-
 # 2a. Runner-checkout directory is present (clones from host if absent).
 #     Branch-agnostic: only the clone lives here; branch-switching is in
 #     ensure_runner_checkout_on_branch below. Called from preflight
@@ -1371,16 +1332,9 @@ preflight() {
   acquire_lock
   check_discovery                        # invariant 1: tracker-snapshot --list
   ensure_runner_remote                   # invariant 1b: runner remote
-  # Checkout-exists and installer-refresh are unconditional for all run
-  # modes — install.sh fires exactly once per pass regardless of how
-  # many features or iterations the pass processes.
   if ! ensure_runner_checkout_exists >&2; then
     fail_invariant "runner-checkout" \
       "ensure_runner_checkout_exists failed (rm -rf $HOST_CHECKOUT and re-run to recover)"
-  fi
-  if ! refresh_runner_checkout_install_products "$HOST_REPO" "$HOST_CHECKOUT"; then
-    fail_invariant "runner-checkout" \
-      "installer refresh against $HOST_CHECKOUT failed"
   fi
   # Single-feature / single-issue modes know their target up front, so the
   # CLI-input gate runs here (returns 2 with a `feature-restricted` /
@@ -1586,6 +1540,7 @@ run_sandbox_container() {
     --network "$NET_NAME" \
     -v "$HOST_CHECKOUT:$RUNNER_CONTAINER_REPO_PATH" \
     -v "$HOST_REPO/.formann:$RUNNER_CONTAINER_REPO_PATH/.formann:ro" \
+    -v "$HOST_REPO/docs/formann:$RUNNER_CONTAINER_REPO_PATH/docs/formann:ro" \
     ${claude_mounts[@]+"${claude_mounts[@]}"} \
     -v "$MVN_VOLUME:$RUNNER_CONTAINER_M2_PATH" \
     --env-file <(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOKEN") \

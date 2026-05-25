@@ -529,72 +529,6 @@ _setup_retry_test() {
   [ -z "$output" ]
 }
 
-# === refresh_runner_checkout_install_products =============================
-#
-# Re-applies the host's installer products to the runner-checkout. Reads
-# role-binding symlinks under `<host>/docs/formann/` and passes the impl
-# back as a `FORMANN_INSTALL_BINDING_<role>=<impl>` env-var bypass to the
-# installer. Tested by stubbing the installer script and inspecting what
-# the helper handed it.
-
-@test "refresh_runner_checkout_install_products — passes per-role binding choice to installer" {
-  host="$BATS_TEST_TMPDIR/host"
-  checkout="$BATS_TEST_TMPDIR/checkout"
-  mkdir -p "$host/docs/formann" "$host/installer" "$checkout"
-  mkdir -p "$host/.formann/bindings/issue-tracker/github-issues"
-  ln -s "../../.formann/bindings/issue-tracker/github-issues" "$host/docs/formann/issue-tracker"
-
-  # Stub the installer: record argv and FORMANN_INSTALL_BINDING_* envs.
-  cat >"$host/installer/install.sh" <<'STUB'
-#!/usr/bin/env bash
-echo "argv: $*" >>"$STUB_RECORD"
-env | grep '^FORMANN_INSTALL_BINDING_' | sort >>"$STUB_RECORD"
-STUB
-  chmod +x "$host/installer/install.sh"
-
-  export STUB_RECORD="$BATS_TEST_TMPDIR/record"
-  refresh_runner_checkout_install_products "$host" "$checkout"
-
-  record="$(cat "$STUB_RECORD")"
-  [[ "$record" == *"argv: $checkout"* ]]
-  [[ "$record" == *"FORMANN_INSTALL_BINDING_issue_tracker=github-issues"* ]]
-}
-
-@test "refresh_runner_checkout_install_products — no host symlinks still invokes installer cleanly" {
-  host="$BATS_TEST_TMPDIR/host"
-  checkout="$BATS_TEST_TMPDIR/checkout"
-  mkdir -p "$host/docs/formann" "$host/installer" "$checkout"
-  cat >"$host/installer/install.sh" <<'STUB'
-#!/usr/bin/env bash
-echo "argv: $*" >>"$STUB_RECORD"
-env | grep -c '^FORMANN_INSTALL_BINDING_' >>"$STUB_RECORD" || true
-STUB
-  chmod +x "$host/installer/install.sh"
-
-  export STUB_RECORD="$BATS_TEST_TMPDIR/record"
-  run refresh_runner_checkout_install_products "$host" "$checkout"
-  [ "$status" -eq 0 ]
-  record="$(cat "$STUB_RECORD")"
-  [[ "$record" == *"argv: $checkout"* ]]
-  # Second line of the record is the FORMANN_* count; expect 0.
-  [[ "$record" == *$'\n'"0" ]]
-}
-
-@test "refresh_runner_checkout_install_products — surfaces a diagnostic when installer exits non-zero" {
-  host="$BATS_TEST_TMPDIR/host"
-  checkout="$BATS_TEST_TMPDIR/checkout"
-  mkdir -p "$host/docs/formann" "$host/installer" "$checkout"
-  cat >"$host/installer/install.sh" <<'STUB'
-#!/usr/bin/env bash
-exit 1
-STUB
-  chmod +x "$host/installer/install.sh"
-
-  run refresh_runner_checkout_install_products "$host" "$checkout"
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"runner: installer refresh against $checkout failed"* ]]
-}
-
 # === acquire_lock ==========================================================
 #
 # Atomic pidfile lock. `mkdir` semantics or noclobber guarantee only one
@@ -886,15 +820,6 @@ setup_ensure_checkout_test() {
   git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m init
 
-  # ensure_runner_checkout_on_branch no longer calls the installer (that moved
-  # to preflight). Stub install.sh to a no-op as a belt-and-suspenders guard.
-  mkdir -p "$HOST_REPO/installer"
-  cat >"$HOST_REPO/installer/install.sh" <<'STUB'
-#!/usr/bin/env bash
-exit 0
-STUB
-  chmod +x "$HOST_REPO/installer/install.sh"
-
   # Pre-clone so ensure_runner_checkout exercises the sync path, not the
   # initial-clone path. The sync is where the regression lived.
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
@@ -966,11 +891,6 @@ STUB
 
   # Parking ref at B (one behind branch tip C).
   git -C "$HOST_REPO" update-ref "refs/remotes/runner/f" "$sha_B"
-
-  # Stub installer.
-  mkdir -p "$HOST_REPO/installer"
-  printf '#!/usr/bin/env bash\nexit 0\n' >"$HOST_REPO/installer/install.sh"
-  chmod +x "$HOST_REPO/installer/install.sh"
 
   # Clone (no checkout yet; ensure_runner_checkout_on_branch handles sync).
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
@@ -1814,7 +1734,6 @@ setup_eligibility_test() {
   acquire_lock() { :; }
   check_discovery() { DISCOVERY_JSON='["other"]'; }
   ensure_runner_checkout_exists() { :; }
-  refresh_runner_checkout_install_products() { :; }
   ensure_runner_remote() { :; }
   ensure_runner_checkout() {
     echo "ensure_runner_checkout invoked before refusal" >"$TEST_CHECKOUT_SENTINEL"
@@ -3548,15 +3467,6 @@ setup_ensure_checkout_parking_test() {
   git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m init
 
-  # ensure_runner_checkout_on_branch's tail step invokes installer/install.sh.
-  # Stub it to a no-op so the test stays focused on git sync semantics.
-  mkdir -p "$HOST_REPO/installer"
-  cat >"$HOST_REPO/installer/install.sh" <<'STUB'
-#!/usr/bin/env bash
-exit 0
-STUB
-  chmod +x "$HOST_REPO/installer/install.sh"
-
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
   git -C "$HOST_CHECKOUT" checkout --quiet -B f origin/f
 }
@@ -3672,11 +3582,6 @@ SHIM
   git -C "$HOST_REPO" init --quiet --initial-branch=main
   git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
     commit --allow-empty --quiet -m "initial main commit"
-
-  # Installer stub (required by setup pattern).
-  mkdir -p "$HOST_REPO/installer"
-  printf '#!/usr/bin/env bash\nexit 0\n' >"$HOST_REPO/installer/install.sh"
-  chmod +x "$HOST_REPO/installer/install.sh"
 
   git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
 
@@ -4321,103 +4226,6 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   [ "$(drain_outcomes_count)" = "0" ]
 }
 
-@test "install.sh invoked exactly once across a drain-mode multi-iteration run" {
-  # Pin the once-per-pass installer invariant: install.sh fires exactly
-  # once per run-the-queue.sh invocation. The test fails if
-  # refresh_runner_checkout_install_products is called from
-  # ensure_runner_checkout_on_branch, drain_one_feature's pre-loop sync,
-  # or run_loop's per-iteration re-sync — each would add an invocation
-  # across the fixture below.
-  #
-  # Fixture: one feature ("alpha"), two eligible issues. The test drives
-  # the real run_loop and the real ensure_runner_checkout_on_branch (backed
-  # by real git repos) so all three branch-sync calls (one pre-loop from
-  # drain_one_feature and two per-iteration from run_loop) are exercised.
-  # The install.sh counter must read exactly 1 at the end.
-  #
-  # jq is required by feature_has_dispatchable_ref (drain gate) and by
-  # run_loop's issue-selection loop. Without it both paths silently return
-  # early so run_loop is never invoked and the installer count of 1 from
-  # the manual preflight call satisfies the assertion vacuously — a
-  # regression restoring the installer to ensure_runner_checkout_on_branch
-  # would go undetected. Skip explicitly rather than passing vacuously.
-  command -v jq >/dev/null || skip "jq required for feature_has_dispatchable_ref and run_loop issue-selection"
-
-  setup_drain_test
-  eval "$DRAIN_REAL_RUN_LOOP"
-
-  DISCOVERY_JSON='["alpha"]'
-
-  # Build a real feature branch so drain_one_feature's gate passes and
-  # ensure_runner_checkout_on_branch has a real branch to sync to.
-  git -C "$HOST_REPO" checkout --quiet -B "alpha"
-  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
-    commit --allow-empty --quiet -m "alpha: first"
-
-  # Stub install.sh to record each invocation. Embed the count-file path
-  # directly (no single-quoted heredoc) so the script can write to it at
-  # runtime without $INSTALL_COUNT_FILE being set in its environment.
-  INSTALL_COUNT_FILE="$BATS_TEST_TMPDIR/install-count"
-  : >"$INSTALL_COUNT_FILE"
-  mkdir -p "$HOST_REPO/docs/formann" "$HOST_REPO/installer"
-  printf '#!/usr/bin/env bash\necho "invoked" >>"%s"\n' \
-    "$INSTALL_COUNT_FILE" >"$HOST_REPO/installer/install.sh"
-  chmod +x "$HOST_REPO/installer/install.sh"
-  # Restore the real ensure_runner_checkout_on_branch (captured by
-  # setup_drain_test before its mock overwrote it) so the branch-sync
-  # path exercises the production code, which must not call install.sh.
-  eval "$DRAIN_REAL_ENSURE_RUNNER_CHECKOUT_ON_BRANCH"
-
-  # Pre-clone the checkout — preflight calls ensure_runner_checkout_exists
-  # before any per-feature work.
-  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
-  ensure_runner_checkout_exists
-
-  # Preflight also calls refresh_runner_checkout_install_products exactly
-  # once. This is the single install.sh invocation for the whole pass.
-  refresh_runner_checkout_install_products "$HOST_REPO" "$HOST_CHECKOUT"
-
-  # Two-issue queue: produces two per-iteration ensure_runner_checkout
-  # calls inside run_loop plus one pre-loop call in drain_one_feature.
-  # Override take_snapshot to present the 2-issue queue and drain it.
-  ALPHA_DRAINED_FILE="$BATS_TEST_TMPDIR/alpha-drained"
-  : >"$ALPHA_DRAINED_FILE"
-  take_snapshot() {
-    local lines
-    lines="$(wc -l <"$ALPHA_DRAINED_FILE" | tr -d ' ')"
-    case "$lines" in
-      0) printf '{"feature":"alpha","issues":[{"ref":"alpha/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true},{"ref":"alpha/02","nn":"02","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' ;;
-      1) printf '{"feature":"alpha","issues":[{"ref":"alpha/02","nn":"02","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}' ;;
-      *) printf '{"feature":"alpha","issues":[]}' ;;
-    esac
-  }
-  dispatch_one() {
-    local feature="$1" nn="$2"
-    echo "$feature/$nn" >>"$ALPHA_DRAINED_FILE"
-    return 0
-  }
-  propagate_feature() { :; }
-
-  RUN_MODE="drain"
-  run_drain
-
-  [ "$RUN_STOP_REASON" = "completed" ]
-
-  # Both issues must have been dispatched — confirms run_loop ran, which
-  # means the per-iteration branch-sync path was exercised. Without this
-  # assertion a regression restoring the installer to
-  # ensure_runner_checkout_on_branch could go undetected if run_loop were
-  # somehow skipped and the count still read 1 from the preflight call alone.
-  local dispatched
-  dispatched="$(wc -l <"$ALPHA_DRAINED_FILE" | tr -d ' ')"
-  [ "$dispatched" = "2" ]
-
-  # Exactly one install.sh invocation for the entire pass — not three.
-  local count
-  count="$(wc -l <"$INSTALL_COUNT_FILE" | tr -d ' ')"
-  [ "$count" = "1" ]
-}
-
 @test "run_drain — feature-snapshot-failed continues the run (does not abort)" {
   # AC: "A feature whose `tracker-snapshot <slug>` crashes mid-run produces
   # a SUMMARY row `feature-snapshot-failed` and the run continues. Other
@@ -4586,6 +4394,35 @@ EOF
   # The mount value `<host-repo>/.formann:/repo/.formann:ro` must appear as a
   # standalone arg on the `docker run` line (i.e. the value following a `-v`).
   grep -qFx -- "$HOST_REPO/.formann:/repo/.formann:ro" "$args_file"
+}
+
+# Pin the docs/formann bind-mount: the dispatch container reads the consumer's
+# binding-view directory directly from the host, paralleling the .formann mount.
+# Without it, the container falls back to a stale or missing docs/formann tree
+# in the runner-checkout after git clean scrubs the gitignored installer products.
+@test "run_sandbox_container — bind-mounts docs/formann into /repo so binding views are live from host" {
+  HOST_REPO="$BATS_TEST_TMPDIR/host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR/runner-state"
+  MVN_VOLUME="test-mvn"
+  NET_NAME="test-net"
+  RUNNER_IMAGE_NAME="test-image"
+  TOKEN="test-token"
+  RUNNER_INTERRUPTED=0
+  IN_FLIGHT_CID_FILE=""
+  mkdir -p "$HOST_REPO" "$HOST_CHECKOUT" "$HOST_RUNNER_STATE"
+
+  local args_file="$BATS_TEST_TMPDIR/docker-args"
+  docker() {
+    printf '%s\n' "$@" > "$args_file"
+    return 0
+  }
+
+  run_sandbox_container "$BATS_TEST_TMPDIR/log" claude -p "/implement f/01"
+
+  # The mount value `<host-repo>/docs/formann:/repo/docs/formann:ro` must appear
+  # as a standalone arg on the `docker run` line (i.e. the value following a `-v`).
+  grep -qFx -- "$HOST_REPO/docs/formann:/repo/docs/formann:ro" "$args_file"
 }
 
 # Helper: minimal `run_sandbox_container` test scaffolding. Sets the globals
