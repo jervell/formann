@@ -1067,7 +1067,7 @@ check_feature_eligibility() {
 #     Branch-agnostic: only the clone lives here; branch-switching is in
 #     ensure_runner_checkout_on_branch below. Called from preflight
 #     unconditionally so the clone fires at most once per pass, before any
-#     branch-sync or installer refresh.
+#     branch-sync.
 #
 # PRD deviation: §Git and propagation specifies `git clone --reference`
 # for cheap shared-object-store clones. Empirically, that approach is
@@ -1502,6 +1502,14 @@ run_sandbox_container() {
   # dangling symlink inside the container and claude reports `Unknown
   # command: /implement` on dispatch. `:ro` because the framework is
   # shared host state — a container should not write to it.
+  #
+  # `docs/formann` is the consumer-side view onto framework state — a
+  # directory of installer-produced relative symlinks pointing into
+  # `.formann` (e.g., `issue-tracker -> ../../.formann/bindings/issue-tracker/<impl>`)
+  # that encode the binding choices made at install time. Gitignored in the
+  # consumer repo, so the runner-checkout doesn't carry it; mounting from
+  # host means the container reads the live binding view rather than a
+  # stale or absent copy. `:ro` for the same reason as `.formann`.
   #
   # `.claude/{skills,agents,rules}` are overlaid on top of the
   # runner-checkout for the same reason in the inverse direction: for

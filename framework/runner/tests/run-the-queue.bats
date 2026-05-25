@@ -3904,15 +3904,6 @@ setup_drain_test() {
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
   mkdir -p "$HOST_ABORT_DIR"
 
-  # Capture the production ensure_runner_checkout_on_branch before the
-  # test mock overwrites it. Tests that need to exercise the real
-  # branch-sync path (e.g., to assert install.sh is not called from
-  # inside it) restore it via
-  # `eval "$DRAIN_REAL_ENSURE_RUNNER_CHECKOUT_ON_BRANCH"`. `unset -f`
-  # does not work here — it deletes the function entirely rather than
-  # falling back to a prior definition.
-  DRAIN_REAL_ENSURE_RUNNER_CHECKOUT_ON_BRANCH="$(declare -f ensure_runner_checkout_on_branch)"
-
   # Mocks — all controllable via the scratch files above.
   ensure_runner_checkout_on_branch() {
     local branch="$1"
