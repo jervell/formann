@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The github-issues binding stores blocker relationships as GitHub's native issue dependencies. Blockers now appear in GitHub's sidebar instead of in a `## Blocked by` body section; local-markdown is unaffected.
 
 ### Fixed
+- AFK runner no longer marks a clean review as `gate-failed` under the github-issues binding. The binding closes the just-reviewed issue on a clean verdict, dropping it from the post-gate snapshot; the classifier now treats that absence as the binding-native `done` signal.
 - AFK runner no longer silently loses agent commits when a dispatch ends in a mid-dispatch snapshot failure or a gate-failed / review-aborted verdict — the commit is parked to the host parking ref before the runner bails out, and a lazy-init guard refuses to overwrite a runner-checkout branch with unpublished commits if propagation is ever bypassed.
 - Runner captures core-dump files left in untracked subdirectories of the runner-checkout (previously only root-level cores).
 - Runner recovers from a dirty runner-checkout working tree before syncing the branch, instead of refusing the checkout. The leaked changes are logged to stderr before being scrubbed.
