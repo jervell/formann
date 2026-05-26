@@ -22,6 +22,7 @@ set -eu
 set -o pipefail
 
 readonly _MAX_RETRIES=3
+readonly _EXIT_REFUSES=1
 readonly _EXIT_USAGE=2
 readonly _EXIT_TRANSIENT=3
 
@@ -103,7 +104,7 @@ _state_resp="$(_graphql \
 _target_id="$(printf '%s' "$_state_resp" | jq -r '.data.repository.issue.id')"
 if [ -z "$_target_id" ] || [ "$_target_id" = "null" ]; then
   echo "set-blockers: issue #${_target} not found" >&2
-  exit 1
+  exit "$_EXIT_REFUSES"
 fi
 
 # Current blockers: parallel arrays of issue number (string) and node ID.
@@ -183,7 +184,7 @@ for _num in "${_to_add[@]+"${_to_add[@]}"}"; do
   _blocker_id="$(printf '%s' "$_blocker_resp" | jq -r '.data.repository.issue.id')"
   if [ -z "$_blocker_id" ] || [ "$_blocker_id" = "null" ]; then
     echo "set-blockers: blocker issue #${_num} not found" >&2
-    exit 1
+    exit "$_EXIT_REFUSES"
   fi
   _graphql \
     -f query='mutation($issueId: ID!, $blockingIssueId: ID!) {

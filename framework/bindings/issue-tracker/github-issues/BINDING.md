@@ -888,6 +888,7 @@ The runner's sandbox network (`afk-runner-sandbox`) restricts RFC1918 outbound b
 | Limit | Value | Failure mode | Workaround |
 |---|---|---|---|
 | Sub-issues per parent | 100 | `gh api graphql` returns an error when the 101st sub-issue is linked | Split the feature into sibling features before reaching the cap; do not extend via nesting |
+| Blockers per issue | 50 (per relationship type) | `addBlockedBy` mutation rejected once the cap is reached; `set-blockers` and `tracker-snapshot` query the connection with `first: 50` | Irrelevant under Formann's vertical-slice topology; if blocker fan-in approaches the cap, redesign the slice to reduce it |
 | Sub-issue nesting levels | 8 | GitHub silently drops the link beyond 8 levels | Irrelevant in practice — Formann uses 1 level (feature → slices) |
 | Label name length | 50 chars | `gh label create` fails with HTTP 422; `gh issue create --label` fails with HTTP 422 | `/to-prd` validates slug length ≤ 37 characters at the pick step before any API call (see [Create a feature](#create-a-feature)); `formann:slug:` occupies 13 of the 50 characters |
 | Issue body length | 65,536 chars | `gh issue create` / `gh issue edit` truncates or fails with HTTP 422 | Split large PRD content into a comment thread or a linked design doc |
