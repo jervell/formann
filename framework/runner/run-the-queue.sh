@@ -137,10 +137,12 @@ next_eligible_ref() {
 # Output (stdout): exactly one of `clean`, `blocked`, `gate-failed`, or
 # `review-aborted`.
 #
-#   clean          — exit 0 AND post.status == done.
+#   clean          — exit 0 AND (post.status == done, OR ref absent from
+#                    snapshot — the github-issues binding closes on done, so
+#                    absence is the binding-native signal for done).
 #   blocked        — exit 0 AND post.status == in-review (unchanged from pre).
-#   gate-failed    — nonzero exit (no transport crash), missing-from-snapshot,
-#                    or exit-0 with an off-mission post-status.
+#   gate-failed    — nonzero exit (no transport crash), or exit-0 with an
+#                    off-mission post-status.
 #   review-aborted — nonzero exit AND transport-crash == true.
 #
 # Pure logic — no I/O beyond stdin/stdout. Sourceable from bats.
@@ -168,7 +170,7 @@ classify_gate_outcome() {
     '(.issues[] | select(.ref == $r) | .status) // empty' <<<"$post_json")"
 
   case "$post_status" in
-    done)      echo "clean" ;;
+    done|"")   echo "clean" ;;
     in-review) echo "blocked" ;;
     *)         echo "gate-failed" ;;
   esac

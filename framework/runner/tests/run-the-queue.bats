@@ -135,11 +135,17 @@ snapshot_one() {
   [ "$result" = "gate-failed" ]
 }
 
-@test "classify_gate_outcome — exit 0 + missing post entry is gate-failed" {
+@test "classify_gate_outcome — exit 0 + ref absent from post snapshot is clean (github-issues binding: done closes issue)" {
+  # pre=in-review, exit 0, ref gone from snapshot → binding-native done → clean.
   pre="$(snapshot_one f/01 in-review)"
   post='{"feature":"f","issues":[]}'
   result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
-  [ "$result" = "gate-failed" ]
+  [ "$result" = "clean" ]
+
+  # pre=done, exit 0, ref gone from snapshot → also clean.
+  pre="$(snapshot_one f/01 done)"
+  result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
+  [ "$result" = "clean" ]
 }
 
 @test "classify_gate_outcome — only the named ref is consulted" {
