@@ -3967,6 +3967,50 @@ SHIM
   echo "$output" | grep -q "refs/remotes/origin/HEAD"
 }
 
+@test "ensure_runner_checkout_on_branch — lazy-init guard refuses when checkout branch is ahead of origin/main" {
+  # Anomaly: runner-checkout has a local branch with unpublished commits but
+  # no host branch and no parking ref exist. A plain lazy-init reset would
+  # silently destroy those commits. The guard must detect this, log a
+  # diagnostic, write an abort flag, and return non-zero without touching the
+  # branch ref.
+  HOST_REPO="$BATS_TEST_TMPDIR/guard-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/guard-checkout"
+  HOST_ABORT_DIR="$BATS_TEST_TMPDIR/guard-aborted"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "base: initial main commit"
+
+  # Clone host to runner-checkout (establishes refs/remotes/origin/main).
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+
+  # Create local branch f in the runner-checkout with one commit beyond main.
+  git -C "$HOST_CHECKOUT" checkout --quiet -b f
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "unpublished work on f"
+  local ahead_sha
+  ahead_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  # Preconditions: no host branch and no parking ref for f.
+  ! git -C "$HOST_REPO" show-ref --quiet --verify "refs/heads/f" 2>/dev/null
+  ! git -C "$HOST_REPO" show-ref --quiet --verify "refs/remotes/runner/f" 2>/dev/null
+
+  run ensure_runner_checkout_on_branch "f"
+
+  # Guard must refuse.
+  [ "$status" -ne 0 ]
+
+  # The unpublished commit must still be reachable from refs/heads/f.
+  local surviving_sha
+  surviving_sha="$(git -C "$HOST_CHECKOUT" rev-parse refs/heads/f)"
+  [ "$surviving_sha" = "$ahead_sha" ]
+
+  # An abort flag must be written for forensic recovery.
+  [ -f "$HOST_ABORT_DIR/f/lazy-init-guard" ]
+  grep -q '^type: technical$' "$HOST_ABORT_DIR/f/lazy-init-guard"
+}
+
 # === next_eligible_feature — outer-loop selection =========================
 #
 # Analogue of next_eligible_ref but at the feature level. Picks the next
