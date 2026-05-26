@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runner pins the sandbox git commit identity to `Claude <claude@anthropic.com>` so agent commits land with a deterministic author regardless of host git config. Override with `RUNNER_GIT_USER_NAME` / `RUNNER_GIT_USER_EMAIL`.
 - `Feature` broadened to any slug-named work unit — PRD-bearing and standalone (PRD-less) features are both first-class.
 - `/triage` prompts for a slug and applies `formann:feature` (github-issues binding) before transitioning an issue to `ready-for-agent` or `ready-for-human`, so issues opened in the GitHub web UI become runner-ready.
+- The github-issues binding stores blocker relationships as GitHub's native issue dependencies. Blockers now appear in GitHub's sidebar instead of in a `## Blocked by` body section; local-markdown is unaffected.
 
 ### Fixed
 - Runner captures core-dump files left in untracked subdirectories of the runner-checkout (previously only root-level cores).
