@@ -2129,16 +2129,38 @@ dispatch_one() {
     impl_transport_crash=true
   fi
 
+  # Compute the commit-delta gate before any failure exit: the
+  # post-implement snapshot-failure branch below needs it to park the
+  # work to the parking ref before bailing, so the next iteration's
+  # lazy-init doesn't wipe an unpublished commit.
+  local impl_has_runner_commits=0
+  if [ -n "$pre_implement_head" ] && [ -n "$post_implement_head" ] \
+      && [ "$pre_implement_head" != "$post_implement_head" ]; then
+    impl_has_runner_commits=1
+  fi
+
   # Snapshot failure takes precedence over the transport-crash signal: if the
   # post-implement snapshot fails, we cannot determine the issue's state, so we
   # record FAIL and stop. No abort flag is written — the stop-reason already
   # signals a system-level problem to the operator, and re-running the same
-  # issue against a broken snapshot would be pointless.
+  # issue against a broken snapshot would be pointless. Park any committed
+  # work to the parking ref first so the next iteration's lazy-init doesn't
+  # silently wipe it — whether the snapshot is readable is independent of
+  # whether the commit needs to reach host.
   if ! post_implement_json="$(take_snapshot "$feature")"; then
     local snap_fail_at snap_duration
     snap_fail_at=$(date +%s)
     snap_duration=$(( snap_fail_at - started_at ))
     echo "runner: dispatch_one: tracker-snapshot failed (post-implement stage) for ref '$ref'" >&2
+    if [ "$impl_has_runner_commits" -eq 1 ]; then
+      if ! propagate_feature "$feature"; then
+        local halt_duration
+        halt_duration=$(( $(date +%s) - started_at ))
+        RUN_STOP_REASON="propagation-error"
+        record_dispatch "$feature" "$nn" "$ref" "FAIL" "$halt_duration" "" "$impl_attempts"
+        return 1
+      fi
+    fi
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:post-implement"
     record_dispatch "$feature" "$nn" "$ref" "FAIL" "$snap_duration" "" "$impl_attempts"
     return 1
@@ -2146,12 +2168,6 @@ dispatch_one() {
 
   local classifier_verdict
   classifier_verdict="$(classify_outcome "$pre_json" "$post_implement_json" "$ref" "$impl_transport_crash")"
-
-  local impl_has_runner_commits=0
-  if [ -n "$pre_implement_head" ] && [ -n "$post_implement_head" ] \
-      && [ "$pre_implement_head" != "$post_implement_head" ]; then
-    impl_has_runner_commits=1
-  fi
 
   # Diagnostic only — the classifier above already reads committed state,
   # so its verdict matches what would propagate. Surfacing the dirty file
@@ -2292,12 +2308,24 @@ dispatch_one() {
 
   # As on the implement path: snapshot failure takes precedence over the
   # transport-crash signal captured in gate_transport_crash. No abort flag.
+  # Park any committed gate work to the parking ref before bailing — same
+  # rationale as the post-implement snapshot-failure path above.
   if ! post_gate_json="$(take_snapshot "$feature")"; then
     local snap_fail_at snap_gate_duration snap_iter_duration
     snap_fail_at=$(date +%s)
     snap_gate_duration=$(( snap_fail_at - gate_started_at ))
     snap_iter_duration=$(( impl_duration + snap_gate_duration ))
     echo "runner: dispatch_one: tracker-snapshot failed (post-gate stage) for ref '$ref'" >&2
+    if [ "$gate_has_runner_commits" -eq 1 ]; then
+      if ! propagate_feature "$feature"; then
+        local gate_halt_duration iter_halt_duration
+        gate_halt_duration=$(( $(date +%s) - gate_started_at ))
+        iter_halt_duration=$(( impl_duration + gate_halt_duration ))
+        RUN_STOP_REASON="propagation-error"
+        record_dispatch "$feature" "$nn" "$ref" "FAIL" "$iter_halt_duration" "y" "$gate_attempts"
+        return 1
+      fi
+    fi
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:post-gate"
     record_dispatch "$feature" "$nn" "$ref" "FAIL" "$snap_iter_duration" "y" "$gate_attempts"
     return 1
@@ -2337,6 +2365,23 @@ dispatch_one() {
     local gate_flag_type="technical"
     [ "$gate_verdict" = "review-aborted" ] && gate_flag_type="transport"
     write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file" "$gate_flag_type"
+    # Park any committed gate work to the parking ref before bailing. Under
+    # local-markdown the gate prompt commits a `tracker:` row on every gate
+    # outcome (including gate-failed and review-aborted), so HEAD has
+    # advanced and the work must reach the host parking ref. Under
+    # github-issues the gate's tracker mutations are API calls producing no
+    # commit; `gate_has_runner_commits` stays 0 and this branch is a no-op.
+    if [ "$gate_has_runner_commits" -eq 1 ]; then
+      if ! propagate_feature "$feature"; then
+        local gate_halt_duration iter_halt_duration
+        gate_halt_duration=$(( $(date +%s) - gate_started_at ))
+        iter_halt_duration=$(( impl_duration + gate_halt_duration ))
+        format_progress_outcome "$(now_clock)" "$ref" "review" "halt → $combined_label" "$gate_halt_duration"
+        record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_halt_duration" "y" "$gate_attempts"
+        RUN_STOP_REASON="propagation-error"
+        return 1
+      fi
+    fi
     record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_duration" "y" "$gate_attempts"
     return 1
   fi

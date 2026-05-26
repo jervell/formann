@@ -1414,6 +1414,14 @@ EOF
     return 1
   }
 
+  # The default run_dispatch_container commits, so dispatch_one parks the
+  # work to the parking ref before bailing. Mock propagate_feature to
+  # return success — the snapshot-failure stop reason still wins.
+  propagate_feature() {
+    RUNNER_LAST_PROPAGATION="propagated → host"
+    return 0
+  }
+
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
   local rc=$?
@@ -1423,6 +1431,10 @@ EOF
   [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-implement" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
+  # The record's trailing propagation column is filled from the mock's
+  # RUNNER_LAST_PROPAGATION value — the FAIL row reflects that the
+  # commit reached the parking ref.
+  [[ "${RUN_DISPATCHES[0]}" == *"|propagated → host" ]]
 }
 
 @test "dispatch_one — post-gate snapshot failure sets named stop reason and records iteration" {
@@ -1471,6 +1483,280 @@ EOF
   [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-gate" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
+}
+
+# === dispatch_one — failure-path propagation ==============================
+#
+# Regression: dispatch_one had three early-return paths between the
+# implement commit and propagate_feature that bypassed propagation:
+#   1. post-implement snapshot failure
+#   2. post-gate snapshot failure
+#   3. gate-failed / review-aborted verdict
+# When the dispatched container committed work to the runner-checkout,
+# these paths returned FAIL without ever calling propagate_feature — and
+# the next dispatch's lazy-init reset the runner-checkout to host's tip,
+# silently wiping the commit. The fix replicates the success-path
+# `if [ "$_has_runner_commits" -eq 1 ]; then propagate_feature ...; fi`
+# guard on each failure-exit path.
+
+@test "dispatch_one — post-implement snapshot failure with commits propagates before bailing" {
+  # AC: When the dispatched container committed and the post-implement
+  # snapshot fails, propagate_feature runs before FAIL is returned.
+  setup_dispatch_one_test
+  RUN_DISPATCHES=()
+  RUN_STOP_REASON=""
+
+  SNAP_CALL_FILE="$BATS_TEST_TMPDIR/snap-calls"
+  echo 0 >"$SNAP_CALL_FILE"
+  take_snapshot() {
+    local n
+    n="$(cat "$SNAP_CALL_FILE")"
+    echo $((n + 1)) >"$SNAP_CALL_FILE"
+    if [ "$n" -eq 0 ]; then
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+      return 0
+    fi
+    return 1
+  }
+
+  # Capture each propagate_feature call and the runner-checkout HEAD at
+  # call time, so we can prove the commit was still reachable when
+  # propagation ran.
+  TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
+  TEST_PROPAGATE_HEAD="$BATS_TEST_TMPDIR/prop-head"
+  : >"$TEST_PROPAGATE_CALLS"
+  propagate_feature() {
+    echo "$1" >>"$TEST_PROPAGATE_CALLS"
+    git -C "$HOST_CHECKOUT" rev-parse HEAD >"$TEST_PROPAGATE_HEAD"
+    RUNNER_LAST_PROPAGATION="propagated → host"
+    return 0
+  }
+
+  local pre_sha
+  pre_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 1 ]
+  [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-implement" ]
+  # Propagation was called exactly once, with the feature name as $1.
+  [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
+  [ "$(cat "$TEST_PROPAGATE_CALLS")" = "f" ]
+  # The runner-checkout HEAD at propagation time was the post-dispatch
+  # tip — i.e. the commit was reachable, not wiped.
+  local prop_head post_sha
+  prop_head="$(cat "$TEST_PROPAGATE_HEAD")"
+  post_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+  [ "$prop_head" = "$post_sha" ]
+  [ "$prop_head" != "$pre_sha" ]
+}
+
+@test "dispatch_one — post-implement snapshot failure with commits sets propagation-error when propagation fails" {
+  # AC: When propagation itself fails on the failure-exit path, the
+  # existing parking-ref-publish-failure handling fires
+  # (RUN_STOP_REASON="propagation-error"), matching the success-path
+  # behavior. The propagation error takes precedence over the
+  # snapshot-failure stop reason because work-loss is the more critical
+  # signal.
+  setup_dispatch_one_test
+  RUN_DISPATCHES=()
+  RUN_STOP_REASON=""
+
+  SNAP_CALL_FILE="$BATS_TEST_TMPDIR/snap-calls"
+  echo 0 >"$SNAP_CALL_FILE"
+  take_snapshot() {
+    local n
+    n="$(cat "$SNAP_CALL_FILE")"
+    echo $((n + 1)) >"$SNAP_CALL_FILE"
+    if [ "$n" -eq 0 ]; then
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+      return 0
+    fi
+    return 1
+  }
+
+  propagate_feature() {
+    echo "runner: simulated propagation error" >&2
+    RUNNER_LAST_PROPAGATION=""
+    return 1
+  }
+
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 1 ]
+  [ "$RUN_STOP_REASON" = "propagation-error" ]
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+}
+
+@test "dispatch_one — post-implement snapshot failure without commits skips propagation" {
+  # AC (no regression): when the dispatched container did not commit,
+  # the failure path still returns FAIL without calling propagate_feature.
+  setup_dispatch_one_test
+  RUN_DISPATCHES=()
+  RUN_STOP_REASON=""
+
+  # Override the default committing container with a no-commit one.
+  run_dispatch_container() {
+    return 0
+  }
+
+  SNAP_CALL_FILE="$BATS_TEST_TMPDIR/snap-calls"
+  echo 0 >"$SNAP_CALL_FILE"
+  take_snapshot() {
+    local n
+    n="$(cat "$SNAP_CALL_FILE")"
+    echo $((n + 1)) >"$SNAP_CALL_FILE"
+    if [ "$n" -eq 0 ]; then
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+      return 0
+    fi
+    return 1
+  }
+
+  TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
+  : >"$TEST_PROPAGATE_CALLS"
+  propagate_feature() {
+    echo "called" >>"$TEST_PROPAGATE_CALLS"
+    return 0
+  }
+
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 1 ]
+  [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-implement" ]
+  # Propagation was NOT called — there were no commits to publish.
+  [ ! -s "$TEST_PROPAGATE_CALLS" ]
+}
+
+@test "dispatch_one — post-gate snapshot failure with gate commits propagates before bailing" {
+  # AC: When the gate container committed and the post-gate snapshot
+  # fails, propagate_feature runs (twice: once on the success-path
+  # post-implement step, once on the post-gate failure step) before
+  # FAIL is returned.
+  setup_dispatch_one_test
+  install_afk_snapshots done
+  RUN_DISPATCHES=()
+  RUN_STOP_REASON=""
+  RUNNER_INTERRUPTED=0
+
+  # Override the snapshot mock to fail on the post-gate (3rd) call only.
+  SNAP_CALL_FILE="$BATS_TEST_TMPDIR/snap-calls"
+  echo 0 >"$SNAP_CALL_FILE"
+  take_snapshot() {
+    local n
+    n="$(cat "$SNAP_CALL_FILE")"
+    echo $((n + 1)) >"$SNAP_CALL_FILE"
+    case "$n" in
+      0)
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+        ;;
+      1)
+        printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+  classify_outcome() { echo "success"; }
+
+  TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
+  TEST_PROPAGATE_HEAD="$BATS_TEST_TMPDIR/prop-head"
+  : >"$TEST_PROPAGATE_CALLS"
+  propagate_feature() {
+    echo "$1" >>"$TEST_PROPAGATE_CALLS"
+    git -C "$HOST_CHECKOUT" rev-parse HEAD >"$TEST_PROPAGATE_HEAD"
+    RUNNER_LAST_PROPAGATION="propagated → host"
+    return 0
+  }
+
+  # local-markdown-shaped gate: commits a `tracker:` row, so the post-gate
+  # HEAD delta is non-empty and gate-stage propagation must fire even
+  # though the snapshot fails right after.
+  run_gate_container() {
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → done"
+    return 0
+  }
+
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 1 ]
+  [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-gate" ]
+  # Propagation was called twice (post-implement + post-gate-fail).
+  [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
+  # The last propagation captured the post-gate tip — the gate commit is
+  # reachable from the parking ref.
+  local prop_head post_sha
+  prop_head="$(cat "$TEST_PROPAGATE_HEAD")"
+  post_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+  [ "$prop_head" = "$post_sha" ]
+  # The FAIL row records the propagation indicator, not `-`.
+  [[ "${RUN_DISPATCHES[0]}" == *"|propagated → host" ]]
+}
+
+@test "dispatch_one — gate-failed verdict with gate commits propagates before bailing" {
+  # AC: When the gate container committed and the verdict is gate-failed
+  # (nonzero exit, non-transport log), propagate_feature runs on the
+  # gate-stage failure path before the gate-failed record is written.
+  # Under local-markdown the gate prompt commits a `tracker:` row on
+  # every gate outcome — including gate-failed — so this is the active
+  # data-loss path for that binding.
+  setup_dispatch_one_test
+  install_afk_snapshots in-review
+  RUN_DISPATCHES=()
+  RUN_STOP_REASON=""
+  RUNNER_INTERRUPTED=0
+
+  TEST_PROPAGATE_CALLS="$BATS_TEST_TMPDIR/prop-calls"
+  TEST_PROPAGATE_HEAD="$BATS_TEST_TMPDIR/prop-head"
+  : >"$TEST_PROPAGATE_CALLS"
+  propagate_feature() {
+    echo "$1" >>"$TEST_PROPAGATE_CALLS"
+    git -C "$HOST_CHECKOUT" rev-parse HEAD >"$TEST_PROPAGATE_HEAD"
+    RUNNER_LAST_PROPAGATION="propagated → host"
+    return 0
+  }
+
+  # Gate commits AND exits nonzero with a non-transport-crash log
+  # (`Killed` — typical OOM kill output). The classifier sees exit_code
+  # != 0 and not-a-transport-crash → verdict = gate-failed.
+  run_gate_container() {
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → blocked (gate notes)"
+    echo "Killed" >"$2"
+    return 137
+  }
+
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  # Two propagations: post-implement (success path) and post-gate-failed
+  # (new failure-path propagation).
+  [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
+  # Final propagate_feature captured the gate's commit tip.
+  local prop_head post_sha
+  prop_head="$(cat "$TEST_PROPAGATE_HEAD")"
+  post_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+  [ "$prop_head" = "$post_sha" ]
+  # Dispatch record carries the gate-failed label and the propagation
+  # indicator in the trailing column.
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"*"|propagated → host" ]]
 }
 
 # === run_single — refusal cases ===========================================
