@@ -195,6 +195,8 @@ docs/formann/issue-tracker/set-blockers <N>
 
 `set-blockers` reads the issue's current `blockedBy` connection, diffs against the requested set, fires one `removeBlockedBy` mutation per removal and one `addBlockedBy` mutation per addition. With no refs, all current blockers are removed.
 
+**Partial-failure atomicity.** `set-blockers` makes the initial read, each removal, each blocker-id resolve, and each addition as independent API calls; GitHub provides no transaction primitive. If any call fails after retries, the script exits `_EXIT_TRANSIENT` (3) with the target's `blockedBy` set partially mutated — some removals or additions applied, others not. No engineered rollback. Recovery: re-run `set-blockers` with the same target and ref list — the verb is declarative, so the next run computes a fresh diff against the now-partial state and reconciles to the requested set.
+
 ### Make issue runner-ready
 
 Ensure an issue is discoverable and dispatchable by the runner before transitioning it to `ready-for-agent` or `ready-for-human`. The verb is idempotent — re-running on a fully-ready issue performs no API writes.

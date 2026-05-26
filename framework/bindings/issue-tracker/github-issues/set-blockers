@@ -46,6 +46,23 @@ for _a; do
   _requested[${#_requested[@]}]="${_a#\#}"
 done
 
+# Refuse duplicate refs in argv. The verb is declarative — repeating the same
+# blocker is unambiguous bad input, not idempotent intent. Surfacing it as a
+# usage error is more honest than letting the second addBlockedBy fail at the
+# API and bubble up as _EXIT_TRANSIENT.
+_i=0
+while [ "$_i" -lt "${#_requested[@]}" ]; do
+  _j=$((_i + 1))
+  while [ "$_j" -lt "${#_requested[@]}" ]; do
+    if [ "${_requested[$_i]}" = "${_requested[$_j]}" ]; then
+      echo "set-blockers: duplicate blocker ref #${_requested[$_i]} in argv" >&2
+      exit "$_EXIT_USAGE"
+    fi
+    _j=$((_j + 1))
+  done
+  _i=$((_i + 1))
+done
+
 # ── Owner/repo detection ──────────────────────────────────────────────────────
 if [ -n "${GH_TRACKER_REPO:-}" ]; then
   _gh_owner="${GH_TRACKER_REPO%%/*}"

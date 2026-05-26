@@ -137,3 +137,9 @@ graphql_call_count() {
   assert_failure
   assert_output --partial "usage: set-blockers"
 }
+
+@test "duplicate ref in argv exits non-zero with usage message" {
+  run "$SET_BLOCKERS" 10 '#5' '#5'
+  assert_failure
+  assert_output --partial "duplicate blocker ref"
+}
