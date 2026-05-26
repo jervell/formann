@@ -77,10 +77,10 @@ setup() {
 EOF
 
   # Initial scaffold commit on `main`. The runner's lazy-init code uses
-  # `refs/heads/main` (hardcoded — see run-the-queue.sh
-  # `ensure_runner_checkout_on_branch`); not used in these scenarios
-  # because `smoke` is pre-created, but matches a real consumer's
-  # default branch.
+  # refs/remotes/origin/HEAD to discover the default branch (see
+  # `ensure_runner_checkout_on_branch` in run-the-queue.sh); not used in
+  # these scenarios because `smoke` is pre-created, but matches a real
+  # consumer's default branch so `git clone` can discover it.
   git -C "$WORKSPACE" init -q
   git -C "$WORKSPACE" symbolic-ref HEAD refs/heads/main
   git -C "$WORKSPACE" -c user.email=smoke@test -c user.name=smoke add -A

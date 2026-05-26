@@ -1114,6 +1114,37 @@ ensure_runner_checkout_on_branch() {
     return 1
   fi
 
+  # Detect and recover from unborn-HEAD state. This state arises when
+  # sweep_stale_parking_refs deletes the source branch that HEAD still
+  # symbolic-refs. git rev-parse --verify --quiet HEAD exits non-zero and
+  # produces no stdout when HEAD points at a missing ref. The dirty-WT scrub
+  # below uses `git reset --hard HEAD`, which fails in this state, so we must
+  # restore a valid HEAD first.
+  if ! git -C "$HOST_CHECKOUT" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+    local default_branch
+    default_branch="$(git -C "$HOST_CHECKOUT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+    if [ -z "$default_branch" ]; then
+      git -C "$HOST_CHECKOUT" remote set-head origin --auto >/dev/null 2>&1 || true
+      default_branch="$(git -C "$HOST_CHECKOUT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+    fi
+    if [ -z "$default_branch" ]; then
+      echo "runner: ensure_runner_checkout_on_branch: refs/remotes/origin/HEAD missing after 'git remote set-head origin --auto' — set it manually with 'git -C $HOST_CHECKOUT remote set-head origin --auto'" >&2
+      return 1
+    fi
+    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git fetch origin (unborn-HEAD recovery) failed" >&2
+      return 1
+    fi
+    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$default_branch" "origin/HEAD" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $default_branch origin/HEAD (unborn-HEAD recovery) failed" >&2
+      return 1
+    fi
+    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/HEAD" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/HEAD (unborn-HEAD recovery) failed" >&2
+      return 1
+    fi
+  fi
+
   # Scrub stray WT changes in the runner-checkout before attempting any
   # ref-changing operation. The runner-checkout is runtime state — no human
   # authors changes there — so any non-empty `git status` reflects either a
@@ -1147,22 +1178,29 @@ ensure_runner_checkout_on_branch() {
   parking_tip="$(git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/$branch" 2>/dev/null || true)"
 
   if [ -z "$host_tip" ] && [ -z "$parking_tip" ]; then
-    # Neither the host branch nor a parking ref exists yet — this is the first
-    # dispatch for a slug whose branch was never pre-created on host. Initialize
-    # the runner-checkout's branch from refs/heads/main (hardcoded; dynamic
-    # default-branch detection is out of scope). The first propagation's existing
-    # `<slug>:<slug>` fetch refspec is create-on-missing, so it will create
-    # refs/heads/<slug> on host from the runner's commits.
-    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin main >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git fetch origin main (lazy init) failed" >&2
+    # Neither the host branch nor a parking ref exists yet — first dispatch for
+    # a slug whose branch was never pre-created on host. Initialize the
+    # runner-checkout's branch from the remote's default branch, discovered via
+    # refs/remotes/origin/HEAD (set automatically by `git clone` at checkout-
+    # creation time). The first propagation's `<slug>:<slug>` refspec is
+    # create-on-missing and will create refs/heads/<slug> on host.
+    if ! git -C "$HOST_CHECKOUT" symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+      git -C "$HOST_CHECKOUT" remote set-head origin --auto >/dev/null 2>&1 || true
+    fi
+    if ! git -C "$HOST_CHECKOUT" symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+      echo "runner: ensure_runner_checkout_on_branch: refs/remotes/origin/HEAD missing after 'git remote set-head origin --auto' — set it manually with 'git -C $HOST_CHECKOUT remote set-head origin --auto'" >&2
       return 1
     fi
-    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "origin/main" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch origin/main (lazy init) failed" >&2
+    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git fetch origin (lazy init) failed" >&2
       return 1
     fi
-    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/main" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/main (lazy init) failed" >&2
+    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "origin/HEAD" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch origin/HEAD (lazy init) failed" >&2
+      return 1
+    fi
+    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/HEAD" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/HEAD (lazy init) failed" >&2
       return 1
     fi
   else

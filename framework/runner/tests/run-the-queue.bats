@@ -3888,6 +3888,85 @@ SHIM
   [ "$checkout_head" = "$main_tip" ]
 }
 
+# === ensure_runner_checkout_on_branch — unborn-HEAD recovery ==============
+
+@test "ensure_runner_checkout_on_branch — unborn HEAD with intact origin/HEAD: recovers and syncs to target branch" {
+  # When the runner-checkout HEAD symbolic-refs a deleted branch (unborn state,
+  # as left by sweep_stale_parking_refs) and the WT has stray files that would
+  # cause `git reset --hard HEAD` to fail, the function must detect unborn HEAD
+  # before the dirty-WT scrub, recover, and then sync normally to the target.
+  HOST_REPO="$BATS_TEST_TMPDIR/unborn-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/unborn-checkout"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "initial"
+  git -C "$HOST_REPO" checkout --quiet -b feature
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "feature commit"
+  local feature_tip
+  feature_tip="$(git -C "$HOST_REPO" rev-parse refs/heads/feature)"
+  git -C "$HOST_REPO" checkout --quiet main
+
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+  git -C "$HOST_CHECKOUT" checkout --quiet -b feature "origin/feature"
+
+  # Simulate unborn HEAD: HEAD still points at refs/heads/feature but the
+  # branch ref is deleted — the state left by sweep_stale_parking_refs.
+  git -C "$HOST_CHECKOUT" symbolic-ref HEAD refs/heads/feature
+  git -C "$HOST_CHECKOUT" update-ref -d refs/heads/feature
+
+  # Leave a stray file in the WT to exercise the dirty-WT scrub. With unborn
+  # HEAD, `git reset --hard HEAD` fails — the fix detects this and recovers
+  # before the scrub runs.
+  echo "stray" > "$HOST_CHECKOUT/stray.txt"
+
+  # Precondition: HEAD is unborn and WT is dirty.
+  run git -C "$HOST_CHECKOUT" rev-parse --verify --quiet HEAD
+  [ "$status" -ne 0 ]
+
+  ensure_runner_checkout_on_branch "feature"
+
+  local checkout_branch checkout_head
+  checkout_branch="$(git -C "$HOST_CHECKOUT" symbolic-ref --short HEAD)"
+  checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+  [ "$checkout_branch" = "feature" ]
+  [ "$checkout_head" = "$feature_tip" ]
+}
+
+@test "ensure_runner_checkout_on_branch — unborn HEAD with missing refs/remotes/origin/HEAD: returns 1 with diagnostic" {
+  # When the runner-checkout is in unborn-HEAD state and refs/remotes/origin/HEAD
+  # is absent (and set-head --auto cannot restore it), the function must return 1
+  # and emit a diagnostic naming the missing ref. No infinite loop.
+  HOST_REPO="$BATS_TEST_TMPDIR/unborn-nohead-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/unborn-nohead-checkout"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "initial"
+
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+
+  # Force unborn HEAD.
+  git -C "$HOST_CHECKOUT" symbolic-ref HEAD refs/heads/main
+  git -C "$HOST_CHECKOUT" update-ref -d refs/heads/main 2>/dev/null || true
+
+  # Remove refs/remotes/origin/HEAD so detection fails. Use symbolic-ref --delete
+  # because update-ref -d silently no-ops on symrefs in some git versions.
+  git -C "$HOST_CHECKOUT" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || \
+    git -C "$HOST_CHECKOUT" update-ref -d refs/remotes/origin/HEAD 2>/dev/null || true
+
+  # Point origin at a nonexistent path so set-head --auto cannot reach the
+  # remote and therefore cannot restore refs/remotes/origin/HEAD.
+  git -C "$HOST_CHECKOUT" remote set-url origin "$BATS_TEST_TMPDIR/nonexistent"
+
+  run ensure_runner_checkout_on_branch "main"
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "refs/remotes/origin/HEAD"
+}
+
 # === next_eligible_feature — outer-loop selection =========================
 #
 # Analogue of next_eligible_ref but at the feature level. Picks the next

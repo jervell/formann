@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/gist` skill — produce a short plain-English summary of whatever you point it at: the previous response, the conversation, an artifact, or each item in a list. Consumer-side utility skill alongside `/handoff`.
 - Sandbox container image bundles `gh` and `bats`, so agents can drive the GitHub issues binding and run framework test suites without installing them first.
 - Standalone issues — a Formann feature can be a single slug-named issue with no PRD. Create one conversationally ("create a standalone for slug X about Y"), add follow-ups the same way ("add a follow-up under slug X about ..."), or open an issue in the GitHub web UI with `formann:status:needs-triage` — `/triage` assigns the slug and the rest at the `ready-for-agent` transition.
-- AFK runner lazily creates `refs/heads/<slug>` from `main` on first dispatch when the host has no branch for the slug, instead of skipping with `branch-missing`. `/to-prd` still creates branches eagerly for PRD-led features.
+- AFK runner lazily creates `refs/heads/<slug>` from the host's default branch on first dispatch when the host has no branch for the slug, instead of skipping with `branch-missing`. `/to-prd` still creates branches eagerly for PRD-led features.
 
 ### Changed
 - Runner renders dispatch durations as `Xs` / `Xm Ys` / `Xh Ym` across the mid-run progress line, the terminal stop table, and SUMMARY.md. On-disk records still use integer seconds.
@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runner captures core-dump files left in untracked subdirectories of the runner-checkout (previously only root-level cores).
 - Runner recovers from a dirty runner-checkout working tree before syncing the branch, instead of refusing the checkout. The leaked changes are logged to stderr before being scrubbed.
 - AFK runner no longer aborts with a spurious "slug collision" error on the github-issues binding when two or more Formann features are open concurrently.
+- AFK runner no longer silently skips every dispatch after a parking-ref sweep leaves the runner-checkout in an unborn-HEAD state — the checkout self-heals before sync.
 
 ## [0.1.0] - 2026-05-20
 
