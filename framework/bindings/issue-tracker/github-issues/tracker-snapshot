@@ -184,7 +184,7 @@ _slug_label="formann:slug:${_slug}"
 
 _slug_query='query($owner: String!, $name: String!, $slugLabel: String!) {
   repository(owner: $owner, name: $name) {
-    issues(labels: ["formann:feature", $slugLabel], states: [OPEN], first: 10) {
+    issues(labels: [$slugLabel], states: [OPEN], first: 10) {
       nodes {
         number
         state
