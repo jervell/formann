@@ -185,6 +185,13 @@ Append a new issue file to an existing feature. The new issue enters at `needs-t
 - Implementation issues are `.features/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`
 - A **standalone** feature has no `PRD.md` — only `.features/<slug>/issues/`. This is a first-class shape, valid for any number of issues. A maintainer can grow a standalone into a multi-issue feature without ever writing a PRD.
 
+## Issue template
+
+Local-markdown extends the body template defined in the `to-issues` skill with two additional sections:
+
+- **`## Parent`** — file reference to the parent artifact (typically `.features/<slug>/PRD.md`). Omit for PRD-less standalones.
+- **`## Blocked by`** — canonical issue refs (`<feature>/NN`), one per bulleted line. "None — can start immediately" when empty. Backs the **Set issue metadata** verb's blocked-by realization; parsed by `tracker-snapshot`.
+
 ## Issue properties
 
 Each triaged issue has three properties: a **state**, a **category**, and a **type**. They're stored as YAML frontmatter at the top of the file — a `---`-delimited block with one `key: value` line per property:

@@ -39,7 +39,7 @@ Returns a JSON object with the issue's full content: `title` (string), `body` (t
 
 ### Read the feature
 
-Retrieve the parent feature's PRD body and labels. Under this binding, sub-issue bodies omit `## Parent` (see [Issue template](#issue-template)); the parent is located via label query, not by parsing the sub-issue body.
+Retrieve the parent feature's PRD body and labels. The parent is located via label query, not by parsing the sub-issue body.
 
 **GitHub-issues realization:** Derive the feature slug from the current git branch name (by convention, the feature branch is named with the feature slug). Run:
 
@@ -429,7 +429,7 @@ Create a new sub-issue and attach it to the feature's parent issue. This is `/to
 
 **GitHub-issues realization:**
 
-**Step 1 — Create the sub-issue.** Write the issue body following the [GH binding's issue template](#issue-template) (no `## Parent` section), then run:
+**Step 1 — Create the sub-issue.** Write the issue body following the [issue template](#issue-template), then run:
 
 ```bash
 gh issue create \
@@ -724,15 +724,11 @@ Convention: commits that do work toward an issue reference the issue as `#N` in 
 
 ## Issue template
 
-Under the github-issues binding, sub-issue bodies follow the same template as the local-markdown binding, with two per-binding differences: **`## Parent` is omitted** and **`## Blocked by` is omitted**.
+Sub-issues use the body template defined in the `to-issues` skill with no additions. Parent, blocker, and comment relationships are stored natively:
 
-Blockers are stored as native GitHub issue dependencies, managed via the [Set issue metadata](#set-issue-metadata) verb's **Blocked-by** realization (`set-blockers`). The snapshot reads them from the `blockedBy` connection, not from the body.
-
-**Rationale for omitting `## Parent`:** Under local-markdown, `## Parent` carries a file path to the PRD (e.g., `.features/<slug>/PRD.md`) — the only in-file pointer to the parent artifact. Under the github-issues binding, GitHub's native sub-issue panel on the parent issue already surfaces the parent → sub-issue relationship visually; and the **Read the feature** verb (`gh issue view <parent-N>`) gives skills programmatic access to the PRD body. The `## Parent` section would be redundant and would drift if the parent issue number changed.
-
-**Rationale for omitting `## Blocked by`:** Blockers are stored as native GitHub issue dependencies (the `Issue.blockedBy` connection), not as body text. Keeping them in the body would create a secondary store that could diverge from the native state. The `set-blockers` script manages them declaratively; `tracker-snapshot` reads them from the API connection.
-
-Other bindings (local-markdown) keep their own `## Parent` and `## Blocked by` conventions; these omissions apply only to the github-issues binding.
+- **Parent** — GitHub's native sub-issue link, established by `addSubIssue`. Resolved by **Read the feature** via label query.
+- **Blockers** — GitHub's native dependencies (the `Issue.blockedBy` connection), managed via the [Set issue metadata](#set-issue-metadata) verb's `set-blockers` script. Read by `tracker-snapshot` from the connection.
+- **Comments** — GitHub's native comment timeline, written via the [Comment with `<kind>`](#comment-with-kind) verb.
 
 ## Snapshot contract
 

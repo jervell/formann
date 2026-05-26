@@ -54,7 +54,7 @@ For each approved slice, write and publish a new issue per `docs/formann/issue-t
 - category: `bug` or `enhancement`
 - type: `AFK` or `HITL` (provisional; triage will confirm or flip it)
 
-Publish issues in dependency order (blockers first) so you can reference real issue identifiers when invoking **Set issue metadata** for each issue's blockers.
+Publish issues in dependency order (blockers first) so you can reference real issue identifiers when setting each issue's blockers.
 
 ### Writing the Gist
 
@@ -76,10 +76,6 @@ Worked example, same bug, two writeups:
 
 1–3 plain-English sentences. See "Writing the Gist" above.
 
-## Parent
-
-A reference to whatever this issue is a slice of — the source PRD, or a parent issue. Omit only when the issue has no spawning artifact.
-
 ## What to build
 
 A concise description of this vertical slice. Describe the end-to-end behavior, not layer-by-layer implementation.
@@ -90,12 +86,8 @@ A concise description of this vertical slice. Describe the end-to-end behavior, 
 - [ ] Criterion 2
 - [ ] Criterion 3
 
-## Blocked by
-
-- A reference to the blocking ticket (if any)
-
-Or "None - can start immediately" if no blockers.
-
 </issue-body-template>
+
+The active binding may require additional body sections; see its **Issue template** section in `docs/formann/issue-tracker/BINDING.md`.
 
 Do NOT mutate any parent issue.
