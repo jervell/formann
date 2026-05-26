@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Emit the GitHub token as a KEY=value line for the runner's sandbox env.
+# Emit KEY=value lines for the runner's sandbox env:
+#   GH_TOKEN=<token>         — GitHub personal-access token (from macOS Keychain)
+#   GH_REPO=<owner>/<repo>   — GitHub repo, derived from the host repo's origin remote
 #
 # Usage (invoked by the runner's collect_binding_env hook):
 #   sandbox-env
 #
 # Output:
-#   stdout — GH_TOKEN=<token>
+#   stdout — GH_TOKEN=<token> followed by GH_REPO=owner/repo
 #   stderr — diagnostics on failure. The token is NEVER written to stderr.
 #
 # Exit codes:
-#   0 — GH_TOKEN=<token> printed
-#   1 — Keychain entry missing or unreadable; a how-to-populate hint is
-#       printed to stderr.
+#   0 — both lines printed
+#   1 — Keychain entry missing/unreadable, no origin remote, or non-github.com origin
 #   2 — environment problem (OS unsupported, 'security' binary absent).
 #
 # Keychain coordinates (macOS):
@@ -60,6 +61,40 @@ MSG
   fi
 
   printf 'GH_TOKEN=%s\n' "$token"
+
+  # Derive GH_REPO from the host repo's origin remote (resolved via CWD).
+  _repo_root=""
+  if ! _repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    echo "sandbox-env: not inside a git repository; cannot derive GH_REPO" >&2
+    exit 1
+  fi
+
+  _origin_url=""
+  if ! _origin_url="$(git -C "$_repo_root" remote get-url origin 2>/dev/null)"; then
+    echo "sandbox-env: host repository has no 'origin' remote; cannot derive GH_REPO" >&2
+    exit 1
+  fi
+
+  _gh_host=""
+  _owner_repo=""
+
+  if [[ "$_origin_url" =~ ^git@([^:]+):(.+)$ ]]; then
+    _gh_host="${BASH_REMATCH[1]}"
+    _owner_repo="${BASH_REMATCH[2]%.git}"
+  elif [[ "$_origin_url" =~ ^https://([^@/]+@)?([^/]+)/(.+)$ ]]; then
+    _gh_host="${BASH_REMATCH[2]}"
+    _owner_repo="${BASH_REMATCH[3]%.git}"
+  else
+    echo "sandbox-env: origin remote '$_origin_url' is not a recognised SSH or HTTPS URL" >&2
+    exit 1
+  fi
+
+  if [[ "$_gh_host" != "github.com" ]]; then
+    echo "sandbox-env: origin remote hostname '$_gh_host' is not 'github.com'; only github.com is supported" >&2
+    exit 1
+  fi
+
+  printf 'GH_REPO=%s\n' "$_owner_repo"
 
 else
   cat >&2 <<MSG
