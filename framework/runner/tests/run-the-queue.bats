@@ -3941,6 +3941,61 @@ SHIM
   [ "$checkout_head" = "$feature_tip" ]
 }
 
+@test "ensure_runner_checkout_on_branch — unborn HEAD with staged conflict against origin/HEAD: recovers and syncs to target branch" {
+  # Regression for the routine post-PR-merge cleanup path. The previous
+  # recovery used `git checkout -B <default> origin/HEAD`, which refuses on
+  # an index/WT whose tracked files conflict with origin/HEAD's tree. That
+  # is the dominant real-world state: sweep_stale_parking_refs deleted the
+  # branch HEAD pointed at (→ unborn HEAD), and the merged dispatch's
+  # staged changes to tracked files (CHANGELOG.md, .inbox.md, …) sit in
+  # the index — superseded by the squash-merged versions on origin/HEAD,
+  # but the checkout porcelain doesn't know that and bails. Recovery must
+  # use plumbing (update-ref + symbolic-ref) that never touches the WT;
+  # the dirty-WT scrub below then clears the conflicting index against
+  # the now-valid HEAD.
+  HOST_REPO="$BATS_TEST_TMPDIR/unborn-conflict-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/unborn-conflict-checkout"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  echo "main-content" > "$HOST_REPO/CHANGELOG.md"
+  git -C "$HOST_REPO" add CHANGELOG.md
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --quiet -m "initial"
+  git -C "$HOST_REPO" checkout --quiet -b feature
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "feature commit"
+  local feature_tip
+  feature_tip="$(git -C "$HOST_REPO" rev-parse refs/heads/feature)"
+  git -C "$HOST_REPO" checkout --quiet main
+
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+  git -C "$HOST_CHECKOUT" checkout --quiet -b feature "origin/feature"
+
+  # Stage a conflicting modification to CHANGELOG.md (differs from
+  # origin/HEAD's version), then drop the branch ref so HEAD is unborn.
+  echo "stale-dispatch-content" > "$HOST_CHECKOUT/CHANGELOG.md"
+  git -C "$HOST_CHECKOUT" add CHANGELOG.md
+  git -C "$HOST_CHECKOUT" symbolic-ref HEAD refs/heads/feature
+  git -C "$HOST_CHECKOUT" update-ref -d refs/heads/feature
+
+  # Precondition: HEAD is unborn and the index has a staged conflict.
+  run git -C "$HOST_CHECKOUT" rev-parse --verify --quiet HEAD
+  [ "$status" -ne 0 ]
+  run git -C "$HOST_CHECKOUT" status --porcelain
+  [ -n "$output" ]
+
+  ensure_runner_checkout_on_branch "feature"
+
+  local checkout_branch checkout_head changelog
+  checkout_branch="$(git -C "$HOST_CHECKOUT" symbolic-ref --short HEAD)"
+  checkout_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+  changelog="$(cat "$HOST_CHECKOUT/CHANGELOG.md")"
+  [ "$checkout_branch" = "feature" ]
+  [ "$checkout_head" = "$feature_tip" ]
+  [ "$changelog" = "main-content" ]
+}
+
 @test "ensure_runner_checkout_on_branch — unborn HEAD with missing refs/remotes/origin/HEAD: returns 1 with diagnostic" {
   # When the runner-checkout is in unborn-HEAD state and refs/remotes/origin/HEAD
   # is absent (and set-head --auto cannot restore it), the function must return 1

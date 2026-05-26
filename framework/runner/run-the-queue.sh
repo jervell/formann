@@ -1118,10 +1118,19 @@ ensure_runner_checkout_on_branch() {
 
   # Detect and recover from unborn-HEAD state. This state arises when
   # sweep_stale_parking_refs deletes the source branch that HEAD still
-  # symbolic-refs. git rev-parse --verify --quiet HEAD exits non-zero and
-  # produces no stdout when HEAD points at a missing ref. The dirty-WT scrub
-  # below uses `git reset --hard HEAD`, which fails in this state, so we must
-  # restore a valid HEAD first.
+  # symbolic-refs (the routine post-PR-merge cleanup path). git rev-parse
+  # --verify --quiet HEAD exits non-zero and produces no stdout when HEAD
+  # points at a missing ref. The dirty-WT scrub below uses `git reset --hard
+  # HEAD`, which fails in this state, so we must restore a valid HEAD first.
+  #
+  # Use plumbing (update-ref + symbolic-ref) rather than `git checkout -B`:
+  # the checkout porcelain refuses on a dirty WT whose tracked files conflict
+  # with the new tip, which is exactly the state we land in after a merged
+  # dispatch (the dispatch's staged CHANGELOG.md, .inbox.md, etc. still sit
+  # in the WT — superseded by the squash-merged versions on origin, but the
+  # checkout porcelain doesn't know that). The plumbing ops never touch the
+  # WT, so they can't refuse; the dirty-WT scrub below then resets the WT
+  # against the now-valid HEAD.
   if ! git -C "$HOST_CHECKOUT" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
     local default_branch
     default_branch="$(git -C "$HOST_CHECKOUT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
@@ -1137,12 +1146,12 @@ ensure_runner_checkout_on_branch() {
       echo "runner: ensure_runner_checkout_on_branch: git fetch origin (unborn-HEAD recovery) failed" >&2
       return 1
     fi
-    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$default_branch" "origin/HEAD" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $default_branch origin/HEAD (unborn-HEAD recovery) failed" >&2
+    if ! git -C "$HOST_CHECKOUT" update-ref "refs/heads/$default_branch" "refs/remotes/origin/HEAD" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git update-ref refs/heads/$default_branch origin/HEAD (unborn-HEAD recovery) failed" >&2
       return 1
     fi
-    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/HEAD" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/HEAD (unborn-HEAD recovery) failed" >&2
+    if ! git -C "$HOST_CHECKOUT" symbolic-ref HEAD "refs/heads/$default_branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git symbolic-ref HEAD refs/heads/$default_branch (unborn-HEAD recovery) failed" >&2
       return 1
     fi
   fi
