@@ -1183,14 +1183,16 @@ ensure_runner_checkout_on_branch() {
     # the checkout -B below would silently destroy that work. Detect this before
     # the destructive step and halt, leaving the branch ref intact so the
     # maintainer can recover the commit from the runner-checkout's reflog.
-    local local_branch_tip main_tip
+    # Resolves the remote default through refs/remotes/origin/HEAD (set by
+    # `git clone`) so the guard tracks whichever branch the remote treats as
+    # default rather than hardcoding `main`.
+    local local_branch_tip default_tip
     local_branch_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
-    main_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "refs/remotes/origin/main" 2>/dev/null || true)"
-    if [ -n "$local_branch_tip" ] && [ -n "$main_tip" ] \
-        && [ "$local_branch_tip" != "$main_tip" ] \
-        && git -C "$HOST_CHECKOUT" merge-base --is-ancestor "$main_tip" "$local_branch_tip" 2>/dev/null; then
-      echo "runner: ensure_runner_checkout_on_branch: lazy-init guard — refs/heads/$branch ($local_branch_tip) is ahead of origin/main with no host branch and no parking ref; aborting to preserve commits" >&2
-      write_abort_flag "$branch" "lazy-init-guard" "implement" "1" ""
+    default_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "refs/remotes/origin/HEAD" 2>/dev/null || true)"
+    if [ -n "$local_branch_tip" ] && [ -n "$default_tip" ] \
+        && [ "$local_branch_tip" != "$default_tip" ] \
+        && git -C "$HOST_CHECKOUT" merge-base --is-ancestor "$default_tip" "$local_branch_tip" 2>/dev/null; then
+      echo "runner: ensure_runner_checkout_on_branch: lazy-init guard — refs/heads/$branch ($local_branch_tip) is ahead of origin's default branch with no host branch and no parking ref; aborting to preserve commits" >&2
       return 1
     fi
     # Neither the host branch nor a parking ref exists yet — first dispatch for
