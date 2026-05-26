@@ -77,7 +77,7 @@ gh api graphql \
   -F slugLabel="formann:slug:<slug>" \
   -f query='query($owner: String!, $name: String!, $slugLabel: String!) {
     repository(owner: $owner, name: $name) {
-      issues(labels: ["formann:feature", $slugLabel], states: [OPEN], first: 10) {
+      issues(labels: [$slugLabel], states: [OPEN], first: 10) {
         nodes {
           number
           state
