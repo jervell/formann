@@ -11,39 +11,39 @@
                   "number": 10,
                   "state": "CLOSED",
                   "stateReason": "COMPLETED",
-                  "body": "## What to build\n\nFoundation work.\n\n## Blocked by\n\nNone — can start immediately.",
                   "labels": {
                     "nodes": [
                       {"name": "formann:category:enhancement"},
                       {"name": "formann:type:afk"}
                     ]
-                  }
+                  },
+                  "blockedBy": {"nodes": []}
                 },
                 {
                   "number": 7,
                   "state": "OPEN",
                   "stateReason": null,
-                  "body": "## What to build\n\nBuilds on foundation.\n\n## Blocked by\n\n- #10",
                   "labels": {
                     "nodes": [
                       {"name": "formann:status:ready-for-agent"},
                       {"name": "formann:category:enhancement"},
                       {"name": "formann:type:afk"}
                     ]
-                  }
+                  },
+                  "blockedBy": {"nodes": [{"number": 10}]}
                 },
                 {
                   "number": 15,
                   "state": "OPEN",
                   "stateReason": null,
-                  "body": "## What to build\n\nIndependent work.\n\n## Blocked by\n\nNone — can start immediately.",
                   "labels": {
                     "nodes": [
                       {"name": "formann:status:ready-for-agent"},
                       {"name": "formann:category:bug"},
                       {"name": "formann:type:afk"}
                     ]
-                  }
+                  },
+                  "blockedBy": {"nodes": []}
                 }
               ]
             }

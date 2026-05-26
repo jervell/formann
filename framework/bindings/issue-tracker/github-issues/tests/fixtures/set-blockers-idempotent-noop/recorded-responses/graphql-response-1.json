@@ -1,0 +1,10 @@
+{
+  "data": {
+    "repository": {
+      "issue": {
+        "id": "NODE_10",
+        "blockedBy": {"nodes": [{"number": 5, "id": "NODE_5"}]}
+      }
+    }
+  }
+}

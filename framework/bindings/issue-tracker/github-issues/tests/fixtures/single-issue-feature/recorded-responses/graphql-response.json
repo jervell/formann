@@ -11,14 +11,14 @@
                   "number": 42,
                   "state": "OPEN",
                   "stateReason": null,
-                  "body": "## What to build\n\nDo the thing.\n\n## Blocked by\n\nNone — can start immediately.",
                   "labels": {
                     "nodes": [
                       {"name": "formann:status:ready-for-agent"},
                       {"name": "formann:category:enhancement"},
                       {"name": "formann:type:afk"}
                     ]
-                  }
+                  },
+                  "blockedBy": {"nodes": []}
                 }
               ]
             }

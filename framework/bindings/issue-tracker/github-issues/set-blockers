@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+###
+### set-blockers — Declaratively set a GitHub issue's native blockedBy dependencies.
+###
+### Usage: set-blockers <N> [<ref>...]
+###
+###   <N>    — Target issue number (integer, or #N form).
+###   <ref>  — Zero or more blockers in #M or M form.
+###            With no refs, all current blockers are removed.
+###
+### Makes issue N's native blockedBy dependencies exactly the supplied set.
+### Reads current state, computes the diff, then fires one removeBlockedBy
+### mutation per removal and one addBlockedBy mutation per addition.
+### Empty argv clears all blockers.
+###
+### Override the GitHub repo for tests via GH_TRACKER_REPO (owner/repo format).
+###
+### Bash 3.2 compatible (macOS default): no associative arrays.
+###
+
+set -eu
+set -o pipefail
+
+readonly _MAX_RETRIES=3
+readonly _EXIT_USAGE=2
+readonly _EXIT_TRANSIENT=3
+
+# ── Prerequisites ──────────────────────────────────────────────────────────────
+if ! command -v jq &>/dev/null; then
+  echo "set-blockers: 'jq' not found or not in PATH." >&2
+  exit "$_EXIT_USAGE"
+fi
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: set-blockers <N> [<ref>...]" >&2
+  exit "$_EXIT_USAGE"
+fi
+
+# ── Parse args ─────────────────────────────────────────────────────────────────
+_target="${1#\#}"  # strip leading # if present
+shift
+
+_requested=()
+for _a; do
+  _requested[${#_requested[@]}]="${_a#\#}"
+done
+
+# ── Owner/repo detection ──────────────────────────────────────────────────────
+if [ -n "${GH_TRACKER_REPO:-}" ]; then
+  _gh_owner="${GH_TRACKER_REPO%%/*}"
+  _gh_name="${GH_TRACKER_REPO##*/}"
+else
+  _remote_url=""
+  _remote_url="$(git remote get-url origin 2>/dev/null)" || true
+  if [ -z "$_remote_url" ]; then
+    echo "set-blockers: no git remote 'origin'; set GH_TRACKER_REPO=owner/repo" >&2
+    exit "$_EXIT_USAGE"
+  fi
+  _owner_repo="$(printf '%s' "$_remote_url" | \
+    sed -E 's|^https?://[^/]*github\.com/||;s|^git@[^:]*github\.com:||;s|\.git$||')"
+  if [ -z "$_owner_repo" ] || ! printf '%s' "$_owner_repo" | grep -q '/'; then
+    echo "set-blockers: cannot parse GitHub owner/repo from '$_remote_url'" >&2
+    exit "$_EXIT_USAGE"
+  fi
+  _gh_owner="${_owner_repo%%/*}"
+  _gh_name="${_owner_repo##*/}"
+fi
+
+# ── GraphQL call with retry ───────────────────────────────────────────────────
+_graphql() {
+  local _att=0 _dl=1 _ec _out
+  while [ "$_att" -lt "$_MAX_RETRIES" ]; do
+    _ec=0
+    _out="$(gh api graphql "$@")" || _ec=$?
+    if [ "$_ec" -eq 0 ]; then
+      printf '%s' "$_out"
+      return 0
+    fi
+    _att=$((_att + 1))
+    if [ "$_att" -lt "$_MAX_RETRIES" ]; then
+      sleep "$_dl"
+      _dl=$((_dl * 2))
+    fi
+  done
+  echo "set-blockers: API request failed after $_MAX_RETRIES attempts" >&2
+  exit "$_EXIT_TRANSIENT"
+}
+
+# ── Step 1: Read current state (target node ID + current blockedBy) ────────────
+_state_resp="$(_graphql \
+  -F owner="$_gh_owner" \
+  -F name="$_gh_name" \
+  -F number="$_target" \
+  -f query='query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        id
+        blockedBy(first: 50) { nodes { number id } }
+      }
+    }
+  }')"
+
+_target_id="$(printf '%s' "$_state_resp" | jq -r '.data.repository.issue.id')"
+if [ -z "$_target_id" ] || [ "$_target_id" = "null" ]; then
+  echo "set-blockers: issue #${_target} not found" >&2
+  exit 1
+fi
+
+# Current blockers: parallel arrays of issue number (string) and node ID.
+_cur_nums=()
+_cur_ids=()
+_cur_lines="$(printf '%s' "$_state_resp" | \
+  jq -r '.data.repository.issue.blockedBy.nodes[]? | (.number|tostring) + "\t" + .id')"
+if [ -n "$_cur_lines" ]; then
+  while IFS=$'\t' read -r _cn _ci; do
+    [ -n "$_cn" ] || continue
+    _cur_nums[${#_cur_nums[@]}]="$_cn"
+    _cur_ids[${#_cur_ids[@]}]="$_ci"
+  done <<< "$_cur_lines"
+fi
+
+# ── Step 2: Compute diff ──────────────────────────────────────────────────────
+# Additions: requested - current
+_to_add=()
+for _req in "${_requested[@]+"${_requested[@]}"}"; do
+  _found=0
+  for _cn in "${_cur_nums[@]+"${_cur_nums[@]}"}"; do
+    if [ "$_cn" = "$_req" ]; then _found=1; break; fi
+  done
+  if [ "$_found" -eq 0 ]; then
+    _to_add[${#_to_add[@]}]="$_req"
+  fi
+done
+
+# Removals: current - requested
+_to_remove_nums=()
+_to_remove_ids=()
+_i=0
+while [ "$_i" -lt "${#_cur_nums[@]}" ]; do
+  _cn="${_cur_nums[$_i]}"
+  _ci="${_cur_ids[$_i]}"
+  _found=0
+  for _req in "${_requested[@]+"${_requested[@]}"}"; do
+    if [ "$_req" = "$_cn" ]; then _found=1; break; fi
+  done
+  if [ "$_found" -eq 0 ]; then
+    _to_remove_nums[${#_to_remove_nums[@]}]="$_cn"
+    _to_remove_ids[${#_to_remove_ids[@]}]="$_ci"
+  fi
+  _i=$((_i + 1))
+done
+
+# ── Step 3: Apply mutations ───────────────────────────────────────────────────
+# Removals first (node IDs already known from the initial state read).
+_j=0
+while [ "$_j" -lt "${#_to_remove_ids[@]}" ]; do
+  _ri="${_to_remove_ids[$_j]}"
+  _rn="${_to_remove_nums[$_j]}"
+  _graphql \
+    -f query='mutation($issueId: ID!, $blockedById: ID!) {
+      removeBlockedBy(input: {issueId: $issueId, blockedById: $blockedById}) {
+        issue { number }
+        blockedByIssue { number }
+      }
+    }' \
+    --field issueId="$_target_id" \
+    --field blockedById="$_ri" >/dev/null
+  echo "set-blockers: removed blocker #${_rn}" >&2
+  _j=$((_j + 1))
+done
+
+# Additions (resolve each ref's node ID, then mutate).
+for _num in "${_to_add[@]+"${_to_add[@]}"}"; do
+  _blocker_resp="$(_graphql \
+    -F owner="$_gh_owner" \
+    -F name="$_gh_name" \
+    -F number="$_num" \
+    -f query='query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) { id }
+      }
+    }')"
+  _blocker_id="$(printf '%s' "$_blocker_resp" | jq -r '.data.repository.issue.id')"
+  if [ -z "$_blocker_id" ] || [ "$_blocker_id" = "null" ]; then
+    echo "set-blockers: blocker issue #${_num} not found" >&2
+    exit 1
+  fi
+  _graphql \
+    -f query='mutation($issueId: ID!, $blockedById: ID!) {
+      addBlockedBy(input: {issueId: $issueId, blockedById: $blockedById}) {
+        issue { number }
+        blockedByIssue { number }
+      }
+    }' \
+    --field issueId="$_target_id" \
+    --field blockedById="$_blocker_id" >/dev/null
+  echo "set-blockers: added blocker #${_num}" >&2
+done

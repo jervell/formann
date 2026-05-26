@@ -7,7 +7,6 @@
             "number": 42,
             "state": "OPEN",
             "stateReason": null,
-            "body": "## What to build\n\nDo the standalone thing.",
             "labels": {
               "nodes": [
                 {"name": "formann:feature"},
@@ -17,6 +16,7 @@
                 {"name": "formann:type:afk"}
               ]
             },
+            "blockedBy": {"nodes": []},
             "subIssues": {
               "nodes": []
             }

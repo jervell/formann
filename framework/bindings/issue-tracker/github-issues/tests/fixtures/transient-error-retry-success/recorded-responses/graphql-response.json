@@ -11,14 +11,14 @@
                   "number": 51,
                   "state": "OPEN",
                   "stateReason": null,
-                  "body": "## What to build\n\nRetry test issue.\n\n## Blocked by\n\nNone.",
                   "labels": {
                     "nodes": [
                       {"name": "formann:status:ready-for-agent"},
                       {"name": "formann:category:enhancement"},
                       {"name": "formann:type:afk"}
                     ]
-                  }
+                  },
+                  "blockedBy": {"nodes": []}
                 }
               ]
             }

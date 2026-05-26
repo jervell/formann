@@ -82,10 +82,10 @@ gh api graphql \
           number
           state
           stateReason
-          body
           labels(first: 30) { nodes { name } }
+          blockedBy(first: 50) { nodes { number } }
           subIssues(first: 100) {
-            nodes { number state stateReason body labels(first: 30) { nodes { name } } }
+            nodes { number state stateReason labels(first: 30) { nodes { name } } blockedBy(first: 50) { nodes { number } } }
           }
         }
       }
@@ -183,23 +183,17 @@ gh issue edit <N> \
 
 `gh issue edit` accepts multiple `--remove-label` and `--add-label` flags in one invocation, making the swap a single API call. If no existing `formann:category:*` (or `formann:type:*`) label is present, the `--remove-label` flag is a no-op.
 
-**Blocked-by (body-section write):** Rewrite the `## Blocked by` section via `body-edit`. The script takes a path on disk; materialize the new section content in a temp file and pass the path:
+**Blocked-by (native dependency write):** Set native `blockedBy` dependencies via `set-blockers`. The script takes the target issue number followed by zero or more blocker refs (`#M` or plain `M` form):
 
 ```bash
-tmpfile=$(mktemp)
-cat >"$tmpfile" <<'EOF'
-- #5
-- #8
-EOF
-docs/formann/issue-tracker/body-edit <N> "Blocked by" "$tmpfile"
-rm -f "$tmpfile"
+# Set blockers to exactly #5 and #8
+docs/formann/issue-tracker/set-blockers <N> '#5' '#8'
+
+# Clear all blockers
+docs/formann/issue-tracker/set-blockers <N>
 ```
 
-The content uses GitHub's native `#N` autolink form — not the portable `<feature>/<N>` form. `body-edit` replaces the entire `## Blocked by` section; surrounding sections are preserved verbatim. To clear all blockers, pass `/dev/null`:
-
-```bash
-docs/formann/issue-tracker/body-edit <N> "Blocked by" /dev/null
-```
+`set-blockers` reads the issue's current `blockedBy` connection, diffs against the requested set, fires one `removeBlockedBy` mutation per removal and one `addBlockedBy` mutation per addition. With no refs, all current blockers are removed.
 
 ### Make issue runner-ready
 
@@ -730,13 +724,15 @@ Convention: commits that do work toward an issue reference the issue as `#N` in 
 
 ## Issue template
 
-Under the github-issues binding, sub-issue bodies follow the same template as the local-markdown binding, with one per-binding difference: **`## Parent` is omitted**.
+Under the github-issues binding, sub-issue bodies follow the same template as the local-markdown binding, with two per-binding differences: **`## Parent` is omitted** and **`## Blocked by` is omitted**.
 
-Use GitHub's native `#N` autolink form inside `## Blocked by` — not the portable `<feature>/<N>` form. The snapshot's blocker extractor matches `#N` refs against the snapshot's in-memory issues set.
+Blockers are stored as native GitHub issue dependencies, managed via the [Set issue metadata](#set-issue-metadata) verb's **Blocked-by** realization (`set-blockers`). The snapshot reads them from the `blockedBy` connection, not from the body.
 
 **Rationale for omitting `## Parent`:** Under local-markdown, `## Parent` carries a file path to the PRD (e.g., `.features/<slug>/PRD.md`) — the only in-file pointer to the parent artifact. Under the github-issues binding, GitHub's native sub-issue panel on the parent issue already surfaces the parent → sub-issue relationship visually; and the **Read the feature** verb (`gh issue view <parent-N>`) gives skills programmatic access to the PRD body. The `## Parent` section would be redundant and would drift if the parent issue number changed.
 
-Other bindings (local-markdown) keep their own `## Parent` convention; this omission applies only to the github-issues binding.
+**Rationale for omitting `## Blocked by`:** Blockers are stored as native GitHub issue dependencies (the `Issue.blockedBy` connection), not as body text. Keeping them in the body would create a secondary store that could diverge from the native state. The `set-blockers` script manages them declaratively; `tracker-snapshot` reads them from the API connection.
+
+Other bindings (local-markdown) keep their own `## Parent` and `## Blocked by` conventions; these omissions apply only to the github-issues binding.
 
 ## Snapshot contract
 
@@ -787,7 +783,7 @@ Field notes:
 - `status` — Derived from GitHub state + stateReason + `formann:status:*` label. `CLOSED + state_reason=COMPLETED` → `"done"`. `CLOSED + state_reason=NOT_PLANNED` → `"wontfix"`. Open issues: value from the `formann:status:<value>` label; empty string if no such label.
 - `category` — Value from the `formann:category:<value>` label; empty string if absent.
 - `type` — Value from the `formann:type:<value>` label, normalised to uppercase (`afk` → `"AFK"`, `hitl` → `"HITL"`); empty string if absent.
-- `blocked_by` — Array of `#N` refs extracted from the `## Blocked by` section of the entry's issue body. Empty array if the section is absent or contains no `#N` tokens.
+- `blocked_by` — Array of `#N` refs derived from the entry's native `blockedBy` connection. Empty array if there are no native blockers.
 - `eligible` — `true` iff `status == "ready-for-agent"` AND `type == "AFK"` AND every `blocked_by` ref is a known entry in this snapshot's issues set with `status == "done"`. Any unmatched `#N` (not in the issues set) is treated as conservative-false.
 
 ### Ordering rules
@@ -800,7 +796,7 @@ Features are returned ordered by parent issue number ascending (`#N` ASC). The G
 
 ### Blocker resolution rules
 
-Blocker eligibility resolves from the in-memory issues set — no extra API calls. `#N` refs inside `## Blocked by` are matched against the issues set (sub-issues, plus the work-item parent when present):
+Blocker eligibility resolves from the in-memory issues set — no extra API calls. `#N` refs from the native `blockedBy` connection are matched against the issues set (sub-issues, plus the work-item parent when present):
 
 - If `N` is in the issues set and `status == "done"` → blocker satisfied.
 - If `N` is in the issues set but not done → blocker unsatisfied; `eligible = false`.
@@ -902,20 +898,22 @@ The runner's sandbox network (`afk-runner-sandbox`) restricts RFC1918 outbound b
 
 ## GitHub Enterprise (GHE) prerequisite
 
-This binding requires GitHub's **sub-issues** feature. Sub-issues went GA on github.com in 2025 and ship there unconditionally; on GitHub Enterprise Server, the feature must be present and enabled in the GHE version your Consumer points at.
+This binding requires GitHub's **sub-issues** and **native issue dependencies** features. Both went GA on github.com in 2025 and ship there unconditionally; on GitHub Enterprise Server, both features must be present and enabled in the GHE version your Consumer points at.
 
 **What the binding uses:**
 
 - The `addSubIssue` GraphQL mutation for parent → sub-issue linking (see [Create an issue](#create-an-issue)).
 - The `subIssues` connection on the parent Issue node for snapshot reads and dispatch ordering (see [Snapshot contract](#snapshot-contract)).
+- The `addBlockedBy` and `removeBlockedBy` GraphQL mutations for declarative blocker management (see [Set issue metadata](#set-issue-metadata)).
+- The `Issue.blockedBy` connection for snapshot reads of native dependencies (see [Snapshot contract](#snapshot-contract)).
 
 **Check before adoption.** From any clone authenticated against the GHE host:
 
 ```bash
 gh api graphql -f query='{ __type(name: "Issue") { fields { name } } }' \
-  | jq '.data.__type.fields[] | select(.name == "subIssues")'
+  | jq '.data.__type.fields[] | select(.name == "subIssues" or .name == "blockedBy")'
 ```
 
-A non-empty object means the GHE version supports sub-issues. An empty result means the feature isn't available; this binding cannot be hosted there.
+Two non-empty objects mean the GHE version supports both features. Missing either means this binding cannot be hosted there.
 
-**If your GHE lacks sub-issues:** stay on the `local-markdown` binding. Supporting older GHE versions would require a different parent-link mechanism (label-only, body-marker, milestones) and is deliberately out of scope (see the PRD's Out of Scope section).
+**If your GHE lacks sub-issues or blockedBy:** stay on the `local-markdown` binding. Supporting older GHE versions would require a different parent-link mechanism (label-only, body-marker, milestones) and is deliberately out of scope (see the PRD's Out of Scope section).

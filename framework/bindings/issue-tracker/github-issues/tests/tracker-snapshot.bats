@@ -311,8 +311,8 @@ JSON
                   "number": 2,
                   "state": "CLOSED",
                   "stateReason": "COMPLETED",
-                  "body": "## Blocked by\n\nNone.",
-                  "labels": {"nodes": [{"name": "formann:category:enhancement"}, {"name": "formann:type:afk"}]}
+                  "labels": {"nodes": [{"name": "formann:category:enhancement"}, {"name": "formann:type:afk"}]},
+                  "blockedBy": {"nodes": []}
                 }
               ]
             }

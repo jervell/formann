@@ -7,7 +7,6 @@
             "number": 8,
             "state": "OPEN",
             "stateReason": null,
-            "body": "## What to build\n\nFirst work item.\n\n## Blocked by\n\nNone — can start immediately.",
             "labels": {
               "nodes": [
                 {"name": "formann:feature"},
@@ -17,13 +16,13 @@
                 {"name": "formann:type:afk"}
               ]
             },
+            "blockedBy": {"nodes": []},
             "subIssues": {"nodes": []}
           },
           {
             "number": 11,
             "state": "OPEN",
             "stateReason": null,
-            "body": "## What to build\n\nSecond work item.\n\n## Blocked by\n\nNone — can start immediately.",
             "labels": {
               "nodes": [
                 {"name": "formann:feature"},
@@ -33,6 +32,7 @@
                 {"name": "formann:type:hitl"}
               ]
             },
+            "blockedBy": {"nodes": []},
             "subIssues": {"nodes": []}
           }
         ]

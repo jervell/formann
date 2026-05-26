@@ -54,7 +54,7 @@ For each approved slice, write and publish a new issue per `docs/formann/issue-t
 - category: `bug` or `enhancement`
 - type: `AFK` or `HITL` (provisional; triage will confirm or flip it)
 
-Publish issues in dependency order (blockers first) so you can reference real issue identifiers in the "Blocked by" field.
+Publish issues in dependency order (blockers first) so you can reference real issue identifiers when invoking **Set issue metadata** for each issue's blockers.
 
 ### Writing the Gist
 

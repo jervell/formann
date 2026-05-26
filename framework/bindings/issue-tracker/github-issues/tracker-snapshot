@@ -85,16 +85,6 @@ _graphql() {
   exit "$_EXIT_TRANSIENT"
 }
 
-# ── Extract ## Blocked by refs from body text ─────────────────────────────────
-# Args: $1 = issue body text
-# Stdout: one `#N` token per line, in source order (empty if none)
-_extract_blocker_refs() {
-  printf '%s' "$1" | awk '
-    /^## Blocked by[[:space:]]*$/ { in_s=1; next }
-    in_s && /^## /                { in_s=0 }
-    in_s                          { print }
-  ' | grep -oE '#[0-9]+' || true
-}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # --list mode
@@ -199,15 +189,15 @@ _slug_query='query($owner: String!, $name: String!, $slugLabel: String!) {
         number
         state
         stateReason
-        body
         labels(first: 30) { nodes { name } }
+        blockedBy(first: 50) { nodes { number } }
         subIssues(first: 100) {
           nodes {
             number
             state
             stateReason
-            body
             labels(first: 30) { nodes { name } }
+            blockedBy(first: 50) { nodes { number } }
           }
         }
       }
@@ -249,7 +239,7 @@ if [ "$_parent_has_status" -gt 0 ]; then
   _issue_json="$(printf '%s' "$_resp" | jq -c '
     .data.repository.issues.nodes[0] as $p |
     ([{number: $p.number, state: $p.state, stateReason: $p.stateReason,
-       body: $p.body, labels: $p.labels}]
+       labels: $p.labels, blockedBy: $p.blockedBy}]
      + ($p.subIssues.nodes // []))[]')"
 else
   _issue_json="$(printf '%s' "$_resp" | jq -c \
@@ -275,7 +265,6 @@ if [ -n "$_issue_json" ]; then
     _num="$(printf '%s' "$_sub" | jq -r '.number')"
     _state="$(printf '%s' "$_sub" | jq -r '.state')"
     _state_reason="$(printf '%s' "$_sub" | jq -r '.stateReason // ""')"
-    _body="$(printf '%s' "$_sub" | jq -r '.body // ""')"
     _label_names="$(printf '%s' "$_sub" | jq -r '.labels.nodes[].name')"
 
     # Derive status from state + stateReason + labels.
@@ -297,8 +286,8 @@ if [ -n "$_issue_json" ]; then
       *)    _type="$_type_raw" ;;
     esac
 
-    # Extract #N blocker refs from the ## Blocked by section.
-    _refs_text="$(_extract_blocker_refs "$_body")"
+    # Extract #N blocker refs from the native blockedBy connection.
+    _refs_text="$(printf '%s' "$_sub" | jq -r '.blockedBy.nodes[]?.number | "#" + tostring')"
     _ref_count=0
     if [ -n "$_refs_text" ]; then
       while IFS= read -r _ref; do
