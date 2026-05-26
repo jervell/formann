@@ -157,14 +157,14 @@ while [ "$_j" -lt "${#_to_remove_ids[@]}" ]; do
   _ri="${_to_remove_ids[$_j]}"
   _rn="${_to_remove_nums[$_j]}"
   _graphql \
-    -f query='mutation($issueId: ID!, $blockedById: ID!) {
-      removeBlockedBy(input: {issueId: $issueId, blockedById: $blockedById}) {
+    -f query='mutation($issueId: ID!, $blockingIssueId: ID!) {
+      removeBlockedBy(input: {issueId: $issueId, blockingIssueId: $blockingIssueId}) {
         issue { number }
-        blockedByIssue { number }
+        blockingIssue { number }
       }
     }' \
     --field issueId="$_target_id" \
-    --field blockedById="$_ri" >/dev/null
+    --field blockingIssueId="$_ri" >/dev/null
   echo "set-blockers: removed blocker #${_rn}" >&2
   _j=$((_j + 1))
 done
@@ -186,13 +186,13 @@ for _num in "${_to_add[@]+"${_to_add[@]}"}"; do
     exit 1
   fi
   _graphql \
-    -f query='mutation($issueId: ID!, $blockedById: ID!) {
-      addBlockedBy(input: {issueId: $issueId, blockedById: $blockedById}) {
+    -f query='mutation($issueId: ID!, $blockingIssueId: ID!) {
+      addBlockedBy(input: {issueId: $issueId, blockingIssueId: $blockingIssueId}) {
         issue { number }
-        blockedByIssue { number }
+        blockingIssue { number }
       }
     }' \
     --field issueId="$_target_id" \
-    --field blockedById="$_blocker_id" >/dev/null
+    --field blockingIssueId="$_blocker_id" >/dev/null
   echo "set-blockers: added blocker #${_num}" >&2
 done

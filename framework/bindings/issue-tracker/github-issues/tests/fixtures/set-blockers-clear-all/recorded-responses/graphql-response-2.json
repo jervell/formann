@@ -2,7 +2,7 @@
   "data": {
     "removeBlockedBy": {
       "issue": {"number": 10},
-      "blockedByIssue": {"number": 5}
+      "blockingIssue": {"number": 5}
     }
   }
 }
