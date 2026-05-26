@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# Emit the GitHub token as a KEY=value line for the runner's sandbox env.
+# Emit GitHub credentials + repo coordinates as KEY=value lines for the
+# runner's sandbox env.
 #
 # Usage (invoked by the runner's collect_binding_env hook):
 #   sandbox-env
 #
 # Output:
-#   stdout — GH_TOKEN=<token>
+#   stdout — GH_TOKEN=<token>\nGH_REPO=<owner>/<repo>
 #   stderr — diagnostics on failure. The token is NEVER written to stderr.
 #
+# GH_REPO is derived from the host repo's `origin` remote so `gh` inside the
+# sandbox can resolve the GitHub repo despite the runner-checkout's `origin`
+# pointing at the host path (not GitHub).
+#
 # Exit codes:
-#   0 — GH_TOKEN=<token> printed
-#   1 — Keychain entry missing or unreadable; a how-to-populate hint is
-#       printed to stderr.
+#   0 — both KV lines printed
+#   1 — Keychain entry missing/empty, OR host `origin` remote missing /
+#       not parseable as a GitHub URL. Diagnostics are printed to stderr.
 #   2 — environment problem (OS unsupported, 'security' binary absent).
 #
 # Keychain coordinates (macOS):
@@ -60,6 +65,38 @@ MSG
   fi
 
   printf 'GH_TOKEN=%s\n' "$token"
+
+  # Derive GH_REPO from the host repo's GitHub origin so 'gh' inside the
+  # sandbox knows which repo to target. The runner-checkout clones from the
+  # host path, so its own origin is local — gh's remote-inference would
+  # otherwise fail. GH_REPO overrides that inference.
+  #
+  # We resolve the host repo via CWD, not via $0/script-location: the runner
+  # invokes the hook with CWD set to $HOST_REPO, while the script itself may
+  # live behind a symlink (e.g., docs/formann/ pointing at a separate
+  # Formann checkout). CWD is the authoritative signal for which repo the
+  # runner is operating on.
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "$repo_root" ]]; then
+    echo "sandbox-env: cannot resolve host repo root from CWD '$PWD'" >&2
+    exit 1
+  fi
+
+  remote_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null || true)"
+  if [[ -z "$remote_url" ]]; then
+    echo "sandbox-env: host repo has no 'origin' remote; cannot derive GH_REPO" >&2
+    exit 1
+  fi
+
+  # Accept SSH (git@github.com:owner/repo.git) and HTTPS
+  # (https://github.com/owner/repo.git) origin URLs.
+  gh_repo="$(echo "$remote_url" | sed -E 's|.*github\.com[:/]||; s|\.git$||')"
+  if [[ ! "$gh_repo" =~ ^[^/]+/[^/]+$ ]]; then
+    echo "sandbox-env: cannot parse owner/repo from origin URL '$remote_url'" >&2
+    exit 1
+  fi
+
+  printf 'GH_REPO=%s\n' "$gh_repo"
 
 else
   cat >&2 <<MSG
