@@ -425,71 +425,6 @@ The title goes in GitHub's native title field. The PRD content goes in the issue
 
 This step is binding-agnostic and follows the same convention as the local-markdown binding.
 
-### Create an issue
-
-Create a new sub-issue and attach it to the feature's parent issue. This is `/to-issues`'s entry point for the GH binding. One logical operation performed in two steps.
-
-**GitHub-issues realization:**
-
-**Step 1 — Create the sub-issue.** Write the issue body following the [issue template](#issue-template), then run:
-
-```bash
-gh issue create \
-  --title "<title>" \
-  --body "$(cat <<'EOF'
-<issue body content>
-EOF
-)" \
-  --label "formann:status:needs-triage,formann:category:<cat>,formann:type:<type>"
-```
-
-Labels applied to every fresh sub-issue:
-
-- `formann:status:needs-triage` — every new issue enters the triage flow.
-- `formann:category:<cat>` — `bug` or `enhancement`.
-- `formann:type:<type>` — `afk` or `hitl` (provisional; triage confirms or flips).
-
-No `formann:feature` label — that label is parent-only.
-
-`gh issue create` prints the new issue URL. Extract the issue number from the URL (the trailing integer); this is `<new-N>`.
-
-**Step 2 — Link to the parent via `addSubIssue`.** Retrieve the node IDs for both issues, then run the mutation:
-
-```bash
-parent_node_id=$(gh issue view <parent-N> --json id --jq '.id')
-new_node_id=$(gh issue view <new-N> --json id --jq '.id')
-
-gh api graphql \
-  --field query='mutation($parentId:ID!,$subId:ID!) {
-    addSubIssue(input:{issueId:$parentId,subIssueId:$subId}) {
-      issue { number }
-      subIssue { number }
-    }
-  }' \
-  --field parentId="$parent_node_id" \
-  --field subId="$new_node_id"
-```
-
-`addSubIssue.input.issueId` is the **parent's** node ID; `addSubIssue.input.subIssueId` is the **new sub-issue's** node ID. The mutation returns `issue.number` (parent) and `subIssue.number` (new sub-issue); verify both match the expected values.
-
-To confirm the link, query the parent's `subIssues` connection:
-
-```bash
-gh api graphql \
-  --field query='query($id:ID!) {
-    node(id:$id) {
-      ... on Issue {
-        subIssues(first:100) { nodes { number } }
-      }
-    }
-  }' \
-  --field id="$parent_node_id"
-```
-
-The new issue's number should appear in `nodes[*].number`.
-
-**Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If Step 1 succeeds but Step 2 fails, the new issue exists on GitHub without a parent link — it is an orphan. This is a multi-call atomicity risk consistent with the PRD's "documented; the maintainer reconciles" framing. No engineered rollback. Recovery: re-run only Step 2 with the orphan's existing issue number and its parent's number.
-
 ### Create a standalone issue
 
 Create a single Formann-eligible GitHub issue with no parent. The issue enters at `needs-triage`.
@@ -673,17 +608,7 @@ gh api graphql \
 
 **Partial-failure atomicity.** Steps 1 and 2 are independent API calls; GitHub provides no transaction primitive. If the `gh issue create` in Step 2 succeeds but any subsequent call fails — the `gh issue view` lookup that fetches the new issue's node ID, or the `addSubIssue` mutation itself — the new issue exists on GitHub without a parent link, an orphan. The `add-issue-to-slug` script surfaces this as `_EXIT_TRANSIENT` (3) and names the orphan's number in stderr; the resolve-failure exit code (1) is reserved for slug-not-found / slug-collision cases that never created an issue. No engineered rollback. Recovery: re-run only the `addSubIssue` call with the orphan's existing issue number and the resolved parent's node ID.
 
-### GitHub web UI — minimum marker
-
-A maintainer creating an issue in the GitHub web UI can make it Formann-eligible by adding a single label:
-
-```
-formann:status:needs-triage
-```
-
-That is the **only** requirement. Slug, category, and type are all optional at creation; `/triage` assigns them at the `needs-triage → ready-for-agent` transition.
-
-**There is no shortcut from the web UI to `ready-for-agent`.** A hand-typed issue with only `formann:status:needs-triage` must go through `/triage` before the runner will pick it up. The triage step is mandatory — it validates the brief, sets slug, category, and type, and confirms the issue is complete enough to dispatch.
+**Pre-resolved parent (optimization).** When the caller already holds the parent issue number — for example, immediately after **Create a feature** returns — Step 1's slug-based lookup may be replaced with a direct node-ID fetch: `parent_node_id=$(gh issue view <parent-N> --json id --jq '.id')`. The partial-failure semantics and `addSubIssue` mutation in Step 2 are unchanged. Skip the slug-collision guard only when the parent reference is already authoritative.
 
 ### Archive a feature
 
@@ -901,7 +826,7 @@ This binding requires GitHub's **sub-issues** and **native issue dependencies** 
 
 **What the binding uses:**
 
-- The `addSubIssue` GraphQL mutation for parent → sub-issue linking (see [Create an issue](#create-an-issue)).
+- The `addSubIssue` GraphQL mutation for parent → sub-issue linking (see [Add an issue to slug X](#add-an-issue-to-slug-x)).
 - The `subIssues` connection on the parent Issue node for snapshot reads and dispatch ordering (see [Snapshot contract](#snapshot-contract)).
 - The `addBlockedBy` and `removeBlockedBy` GraphQL mutations for declarative blocker management (see [Set issue metadata](#set-issue-metadata)).
 - The `Issue.blockedBy` connection for snapshot reads of native dependencies (see [Snapshot contract](#snapshot-contract)).

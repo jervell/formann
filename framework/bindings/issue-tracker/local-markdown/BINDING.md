@@ -143,6 +143,26 @@ Ensure an issue is discoverable and dispatchable by the runner before transition
 
 **Local-markdown realization:** No-op. The local-markdown layout already guarantees runner-readiness by construction: the slug is the directory name (structural invariant — every LM issue has a slug), and there is no `formann:feature` analog. No API calls are made; the verb always succeeds.
 
+### Create a feature
+
+Create a new feature: validate the slug, check for uniqueness, create the feature directory with a PRD file, and set up the feature branch.
+
+**Inputs:** `slug` — must not already exist as a directory under `.features/`. `title`, `body` (PRD content).
+
+**Idempotency:** Not idempotent. Re-running fails — a feature with that slug is already present.
+
+**Local-markdown realization:**
+
+**Pre-flight — slug uniqueness.** Refuse if `.features/<slug>/` already exists.
+
+**Step 1 — Directory and PRD creation.** Create `.features/<slug>/` and write the PRD content to `.features/<slug>/PRD.md`. Commit via a `tracker:` commit.
+
+**Step 2 — Feature branch creation.**
+
+- If HEAD is not the project's main branch, warn the maintainer and confirm before branching.
+- If the working tree is dirty, ask the maintainer how to proceed before branching.
+- Create a git branch named with the feature slug from the current HEAD and switch to it.
+
 ### Create a standalone issue
 
 Create a new feature directory with a single issue file and no PRD. The issue enters at `needs-triage`.
@@ -177,6 +197,12 @@ Append a new issue file to an existing feature. The new issue enters at `needs-t
 **Idempotency:** Not idempotent. Each call creates a new issue file with the next number.
 
 **Local-markdown realization:** List `.features/<X>/issues/*.md`, take the highest existing `NN`, increment by one, and write `<NN+1>-<X>.md` with `status: needs-triage` frontmatter. If no issues exist yet, start at `01`. Commit the new file via a `tracker:` commit.
+
+### Archive a feature
+
+Close the feature and mark it as archived. Pre-condition: all issues in the feature must be in a terminal state (`done` or `wontfix`). Per-issue completion only flips `status`; archival is a feature-level operation.
+
+**Local-markdown realization:** Move `.features/<slug>/` to `.features/.archived/<slug>/`. The PRD and all issue files move with it. Commit via a `tracker:` commit.
 
 ## Conventions
 
@@ -233,15 +259,6 @@ Convention: commits that do work toward an issue reference the issue in the comm
 
 When the current git branch matches a feature slug, queries about issues default to that feature's scope (e.g., "show issues" lists only that feature's issues). Cross-feature queries require explicit specification. Off-feature branches (e.g., `main`) default to the broadest scope.
 
-## Setting up a feature workspace
-
-When a feature is created (typically by `/to-prd`):
-
-- Create a git branch named with the feature slug from the current HEAD.
-- If HEAD isn't the project's main branch, warn the maintainer and confirm before branching.
-- If the working tree is dirty, ask the maintainer how to proceed before branching.
-- Switch to the new branch.
-
 ## Committing tracker changes
 
 Tracker mutations — publishing an issue or PRD, changing a header field, posting a comment, writing to `.out-of-scope/`, archiving a feature — end with a git commit of the changed files, so the working tree is clean when the skill returns.
@@ -249,7 +266,3 @@ Tracker mutations — publishing an issue or PRD, changing a header field, posti
 - **One commit per logical operation.** A status change plus its accompanying comment is one commit. A `/to-issues` batch publishing N new issues is one commit.
 - **Mixed code-and-tracker flows** (e.g. `/implement` shipping for review) produce two commits: the code commit first, then the tracker commit for the state transition that depends on it.
 - **Subject line starts with `tracker:`** so these commits can be filtered (`git log --grep '^tracker:' --invert-grep`).
-
-## Archiving a shipped feature
-
-When every issue in a feature dir is terminal (`status: done` or `status: wontfix`) and the feature is shipped, the entire dir moves from `.features/<feature>/` to `.features/.archived/<feature>/`. The PRD moves with it. Per-issue completion only flips `status`; archival happens at the feature level, on explicit maintainer request (see the `triage` skill).
