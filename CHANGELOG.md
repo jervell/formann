@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`/triage` no longer fails on sub-issues under the github-issues binding** — Previously refused with a missing-slug error before transitioning to `ready-for-agent`.
+
 ## [0.2.0] - 2026-05-27
 
 ### Added

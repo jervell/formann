@@ -205,15 +205,26 @@ Ensure an issue is discoverable and dispatchable by the runner before transition
 - `issue-N` — the GitHub issue number (required).
 - `slug` — the slug to assign (required if the issue carries no `formann:slug:*` label; ignored if one is already present).
 
-**GitHub-issues realization:** Two-step internal sequence.
+**GitHub-issues realization:** Two-step internal sequence, gated by a shared parent-detection probe.
 
-**Step 1 — Slug ensure.** Read the issue's current labels and node ID:
+**Step 0 — Read labels and detect parent shape.** Read the issue's current labels and node ID:
 
 ```bash
 gh issue view <N> --json id,labels
 ```
 
-If the issue already carries a `formann:slug:*` label, this step is a no-op. Otherwise a slug must be supplied:
+If the issue carries both `formann:slug:*` and `formann:feature`, the verb is already a no-op: skip the parent probe and exit successfully (this preserves the zero-API-write idempotency contract for fully-ready issues). Otherwise, probe parent shape using the node ID:
+
+```bash
+gh api graphql \
+  --field query='query($id: ID!) { node(id: $id) { ... on Issue { parent { id } } } }' \
+  --field id="<node-id>"
+```
+
+- `parent` is `null` → **standalone**: proceed with both steps below.
+- `parent` is non-null → **sub-issue**: skip both steps and exit successfully. Sub-issues carry neither `formann:slug:*` nor `formann:feature` (parent-only, per ADR-0006 Decision B and the **Add an issue to slug X** verb). The verb is a true no-op in this case, regardless of whether `--slug` was supplied.
+
+**Step 1 — Slug ensure (standalone only).** If the issue already carries a `formann:slug:*` label, this step is a no-op. Otherwise a slug must be supplied:
 
 - **Without a slug:** refuse with a "slug required" diagnostic (exit 1). `/triage` must prompt the maintainer for one and re-invoke the verb.
 - **With a slug:** validate length (≤ 37 chars, same check as **Create a feature**), run the slug-uniqueness preflight:
@@ -231,18 +242,9 @@ If the issue already carries a `formann:slug:*` label, this step is a no-op. Oth
 
   On success: `gh label create "formann:slug:<slug>" --force`, then `gh issue edit <N> --add-label "formann:slug:<slug>"`.
 
-**Step 2 — `formann:feature` ensure.** If the issue already carries `formann:feature`, this step is a no-op. Otherwise, detect whether the issue has a GitHub-side parent using the node ID from step 1:
+**Step 2 — `formann:feature` ensure (standalone only).** If the issue already carries `formann:feature`, this step is a no-op. Otherwise: `gh issue edit <N> --add-label "formann:feature"`.
 
-```bash
-gh api graphql \
-  --field query='query($id: ID!) { node(id: $id) { ... on Issue { parent { id } } } }' \
-  --field id="<node-id>"
-```
-
-- If `parent` is `null` (standalone) → `gh issue edit <N> --add-label "formann:feature"`.
-- If `parent` is non-null (the issue is a sub-issue) → no-op; sub-issues do not carry `formann:feature`.
-
-Both steps are idempotent: re-running on a fully-ready issue (already has both `formann:slug:*` and `formann:feature`) performs no API writes.
+All steps are idempotent: re-running on a fully-ready issue (already has both `formann:slug:*` and `formann:feature`) performs no API writes; re-running on a sub-issue performs only the parent-detection probe and no writes.
 
 The role-surface script is `make-issue-runner-ready`.
 
