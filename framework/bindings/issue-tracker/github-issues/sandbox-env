@@ -81,6 +81,9 @@ MSG
   if [[ "$_origin_url" =~ ^git@([^:]+):(.+)$ ]]; then
     _gh_host="${BASH_REMATCH[1]}"
     _owner_repo="${BASH_REMATCH[2]%.git}"
+  elif [[ "$_origin_url" =~ ^ssh://([^@/]+@)?([^:/]+)(:[0-9]+)?/(.+)$ ]]; then
+    _gh_host="${BASH_REMATCH[2]}"
+    _owner_repo="${BASH_REMATCH[4]%.git}"
   elif [[ "$_origin_url" =~ ^https://([^@/]+@)?([^/]+)/(.+)$ ]]; then
     _gh_host="${BASH_REMATCH[2]}"
     _owner_repo="${BASH_REMATCH[3]%.git}"
@@ -91,6 +94,11 @@ MSG
 
   if [[ "$_gh_host" != "github.com" ]]; then
     echo "sandbox-env: origin remote hostname '$_gh_host' is not 'github.com'; only github.com is supported" >&2
+    exit 1
+  fi
+
+  if [[ ! "$_owner_repo" =~ ^[^/]+/[^/]+$ ]]; then
+    echo "sandbox-env: origin remote '$_origin_url' does not have owner/repo shape (got '$_owner_repo')" >&2
     exit 1
   fi
 

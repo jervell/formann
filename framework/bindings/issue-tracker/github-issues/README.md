@@ -4,12 +4,12 @@ This binding represents the issue-tracker role of the lifecycle for projects who
 
 ## Directory contents
 
-- **[`BINDING.md`](BINDING.md)** — the role doc. Source of truth for the agent-facing conventions: Tracker operations (the seven binding-agnostic verbs and their GitHub-issues realizations), issue conventions, authorship, sandbox compatibility. Adopting projects symlink `docs/formann/issue-tracker/` at this binding folder so skills resolve via the role surface.
+- **[`BINDING.md`](BINDING.md)** — the role doc. Source of truth for the agent-facing conventions: Tracker operations (the seven binding-agnostic verbs and their GitHub-issues realizations), issue conventions, authorship. Adopting projects symlink `docs/formann/issue-tracker/` at this binding folder so skills resolve via the role surface.
 - **[`bootstrap-labels`](bootstrap-labels)** — idempotent install-time script. Creates the binding's static label namespace via `gh label create --force`. Run once per Consumer repo before first use; re-running is harmless.
 - **[`tracker-snapshot`](tracker-snapshot)** — the binding's machine-readable interface. Emits a JSON snapshot of a feature's issues with computed AFK eligibility (`tracker-snapshot <feature-slug>`) or the list of active feature slugs (`tracker-snapshot --list`). Output is byte-compatible with the local-markdown binding. Contract summarised below; full schema in [`BINDING.md`](BINDING.md#snapshot-contract).
 - **[`body-edit`](body-edit)** — section-level body rewrite for issues. Replaces (or removes) a single `## <section>` in an issue body, preserving surrounding sections verbatim. Used by `/triage` and `/implement` to publish the agent brief and record triage notes. See [`BINDING.md`](BINDING.md#body-shaped-write-semantics) for the fetch-then-PATCH semantics and the residual race window.
 - **[`set-blockers`](set-blockers)** — declarative blocker write. Replaces an issue's native `blockedBy` dependencies with exactly the supplied set: reads current state, diffs against the requested refs, fires one `addBlockedBy` / `removeBlockedBy` mutation per delta. Empty refs clears all blockers. See [`BINDING.md`](BINDING.md#set-issue-metadata) for the contract.
-- **[`sandbox-env`](sandbox-env)** — runner hook. Emits `GH_TOKEN=<value>` on stdout by reading the macOS Keychain entry `formann-gh-token`. The runner's `collect_binding_env` invokes it before `docker run` so the container inherits the token without it appearing in shell history or process listings. See [`BINDING.md`](BINDING.md#sandbox-compatibility) for the broader sandbox contract.
+- **[`sandbox-env`](sandbox-env)** — runner hook. Emits `GH_TOKEN` (from the macOS Keychain entry `formann-gh-token`) and `GH_REPO` (derived from the host's `origin` remote) on stdout. The runner's `collect_binding_env` invokes it before `docker run` so the container inherits both values without them appearing in shell history or process listings. See [Sandbox compatibility](#sandbox-compatibility) below for setup and the full contract.
 
 ## Authorship
 
@@ -32,7 +32,28 @@ See [`BINDING.md`](BINDING.md#snapshot-contract) for the full schema, ordering r
 
 ## Sandbox compatibility
 
-This binding's write paths require network egress to `api.github.com` and a valid `GH_TOKEN`. The runner's sandbox network policy and credential-passing must accommodate both. See [`BINDING.md`](BINDING.md#sandbox-compatibility) for the full contract.
+The AFK runner dispatches `/implement` inside a Docker container with restricted filesystem and network. This binding's write paths need two things the host must arrange.
+
+### Network egress
+
+`gh` calls target `api.github.com` on port 443. The runner's sandbox network (`afk-runner-sandbox`) denies RFC1918 outbound by default; the Consumer's `setup-network.sh` must add an allowlist entry for `api.github.com:443` so `gh` invocations reach GitHub from inside the container. This is a Consumer infrastructure concern; the binding declares the requirement, not the mechanism.
+
+### Credentials via `sandbox-env`
+
+The binding ships a `sandbox-env` script at its folder root. The runner's `collect_binding_env` hook invokes `docs/formann/issue-tracker/sandbox-env` before `docker run` if executable, validates the stdout (one `KEY=value` line per env var, uppercase keys), and appends it to the container's `--env-file`. The runner itself contains no GitHub-specific knowledge — it calls the hook and passes the validated output through.
+
+The script currently emits two values:
+
+- **`GH_TOKEN`** — read from the macOS Keychain entry `formann-gh-token` (service `formann-gh-token`, account `github`). The token must hold `repo` scope (Issues read/write).
+- **`GH_REPO`** — derived from the host repo's `origin` remote so `gh` inside the container targets the same repo the host is working in. Resolves both SSH (`git@github.com:owner/repo`) and HTTPS (`https://github.com/owner/repo`) forms, strips a trailing `.git`, and rejects hostnames that aren't `github.com`.
+
+#### Keychain entry (one-time per machine)
+
+```sh
+security add-generic-password -s formann-gh-token -a github -w
+```
+
+Paste your GitHub token at the prompt (no trailing newline). Re-running updates the entry in place.
 
 ## Label-namespace bootstrap
 
