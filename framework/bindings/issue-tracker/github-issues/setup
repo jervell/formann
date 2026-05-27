@@ -3,4 +3,28 @@
 # selection with CWD set to the consumer repo root.
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# On macOS, ensure the Keychain entry for the GitHub token is populated now so
+# the AFK dispatch (sandbox-env) succeeds on first run without a Keychain-miss
+# abort.
+if [[ "$OSTYPE" == darwin* ]]; then
+  _GH_KEYCHAIN_SERVICE="formann-gh-token"
+  _GH_KEYCHAIN_ACCOUNT="github"
+
+  if ! security find-generic-password \
+      -s "$_GH_KEYCHAIN_SERVICE" \
+      -a "$_GH_KEYCHAIN_ACCOUNT" \
+      >/dev/null 2>&1; then
+    cat <<'MSG'
+Formann setup: GitHub token not found in Keychain.
+Enter your GitHub personal-access token below — the AFK dispatch runner
+reads it from here (service: formann-gh-token, account: github).
+MSG
+    security add-generic-password \
+      -s "$_GH_KEYCHAIN_SERVICE" \
+      -a "$_GH_KEYCHAIN_ACCOUNT" \
+      -w
+  fi
+fi
+
 exec "$script_dir/bootstrap-labels"
