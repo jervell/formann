@@ -16,8 +16,6 @@ Bindings may ship an optional `setup` executable at `framework/bindings/<role>/<
 
 Bindings without a `setup` file contribute no install-time setup; the installer skips silently.
 
-**github-issues realization:** The github-issues binding ships `framework/bindings/issue-tracker/github-issues/setup`, which delegates to the sibling `bootstrap-labels` script. `bootstrap-labels` creates the static `formann:*` label namespace via `gh label create --force`, which is idempotent — re-running updates labels in place without error or duplication.
-
 ## Canonical verbs
 
 ### Read the issue
