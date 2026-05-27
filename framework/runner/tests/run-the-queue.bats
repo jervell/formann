@@ -4321,16 +4321,18 @@ f|02|f/02|done|20|y|1|parked → runner/f'
   result="$(printf '%s\n' "$input" | format_end_of_run_table completed)"
 
   # Count code points per row including trailing padding — alignment means
-  # every row ends at the same display column. `wc -m` under a UTF-8 locale
-  # gives code-point counts on both macOS and Linux (-m is POSIX; counts
-  # characters when LC_CTYPE is multibyte).
+  # every row ends at the same display column. `wc -m` counts characters
+  # (not bytes) when LC_ALL is a UTF-8 locale; the locale must be applied
+  # to wc itself, not to printf. C.UTF-8 is a glibc built-in available in
+  # debian:bookworm-slim without installing the locales package, and is
+  # also present on modern macOS.
   local header data1 data2 wh wd1 wd2
   header="$(printf '%s\n' "$result" | sed -n '1p')"
   data1="$( printf '%s\n' "$result" | sed -n '2p')"
   data2="$( printf '%s\n' "$result" | sed -n '3p')"
-  wh=$(  LC_ALL=en_US.UTF-8 printf '%s' "$header" | wc -m | tr -d ' ')
-  wd1=$( LC_ALL=en_US.UTF-8 printf '%s' "$data1"  | wc -m | tr -d ' ')
-  wd2=$( LC_ALL=en_US.UTF-8 printf '%s' "$data2"  | wc -m | tr -d ' ')
+  wh=$(  printf '%s' "$header" | LC_ALL=C.UTF-8 wc -m | tr -d ' ')
+  wd1=$( printf '%s' "$data1"  | LC_ALL=C.UTF-8 wc -m | tr -d ' ')
+  wd2=$( printf '%s' "$data2"  | LC_ALL=C.UTF-8 wc -m | tr -d ' ')
 
   [ "$wh" = "$wd1" ] || { echo "header($wh) ≠ data1($wd1):"; printf '[%s]\n[%s]\n' "$header" "$data1"; false; }
   [ "$wh" = "$wd2" ] || { echo "header($wh) ≠ data2($wd2):"; printf '[%s]\n[%s]\n' "$header" "$data2"; false; }

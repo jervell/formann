@@ -86,13 +86,42 @@ fi
 _node_id="$(printf '%s' "$_issue_json" | jq -r '.id')"
 _label_names="$(printf '%s' "$_issue_json" | jq -r '.labels[].name')"
 
-# ── Step 1: slug ensure ───────────────────────────────────────────────────────
+# ── Current label inventory ──────────────────────────────────────────────────
 _has_slug=0
 if printf '%s' "$_label_names" | grep -q '^formann:slug:'; then
   _has_slug=1
 fi
+_has_feature=0
+if printf '%s' "$_label_names" | grep -q '^formann:feature$'; then
+  _has_feature=1
+fi
 
-if [ "$_has_slug" -eq 0 ]; then
+# ── Parent detection (gates both step 1 and step 2) ──────────────────────────
+# Sub-issues carry neither formann:slug:* nor formann:feature (parent-only,
+# per ADR-0006 Decision B and the "Add an issue to slug X" verb in BINDING.md).
+# Detect parent shape only when at least one step would otherwise do work —
+# preserves the idempotent fully-ready contract (both labels present ⇒ no
+# graphql call). Capture exit codes so a transient gh failure surfaces as
+# _EXIT_TRANSIENT rather than being misclassified as _EXIT_REFUSES (1).
+_is_subissue=0
+if [ "$_has_slug" -eq 0 ] || [ "$_has_feature" -eq 0 ]; then
+  _parent_resp=""
+  _gh_ec=0
+  _parent_resp="$(gh api graphql \
+    --field query='query($id: ID!) { node(id: $id) { ... on Issue { parent { id } } } }' \
+    --field id="$_node_id")" || _gh_ec=$?
+  if [ "$_gh_ec" -ne 0 ]; then
+    echo "make-issue-runner-ready: 'gh api graphql' failed (exit ${_gh_ec}); see gh's error above." >&2
+    exit "$_EXIT_TRANSIENT"
+  fi
+  _parent="$(printf '%s' "$_parent_resp" | jq -r '.data.node.parent')"
+  if [ "$_parent" != "null" ]; then
+    _is_subissue=1
+  fi
+fi
+
+# ── Step 1: slug ensure ───────────────────────────────────────────────────────
+if [ "$_has_slug" -eq 0 ] && [ "$_is_subissue" -eq 0 ]; then
   if [ -z "$_slug" ]; then
     echo "Error: issue #${_issue_num} has no slug. Supply --slug <slug> to assign one." >&2
     exit "$_EXIT_REFUSES"
@@ -142,34 +171,11 @@ if [ "$_has_slug" -eq 0 ]; then
 fi
 
 # ── Step 2: formann:feature ensure ───────────────────────────────────────────
-_has_feature=0
-if printf '%s' "$_label_names" | grep -q '^formann:feature$'; then
-  _has_feature=1
-fi
-
-if [ "$_has_feature" -eq 0 ]; then
-  # Detect if this issue has a GitHub-side parent. Capture exit codes so a
-  # transient gh failure surfaces as _EXIT_TRANSIENT rather than being
-  # misclassified as _EXIT_REFUSES (1).
-  _parent_resp=""
+if [ "$_has_feature" -eq 0 ] && [ "$_is_subissue" -eq 0 ]; then
   _gh_ec=0
-  _parent_resp="$(gh api graphql \
-    --field query='query($id: ID!) { node(id: $id) { ... on Issue { parent { id } } } }' \
-    --field id="$_node_id")" || _gh_ec=$?
+  gh issue edit "$_issue_num" --add-label "formann:feature" || _gh_ec=$?
   if [ "$_gh_ec" -ne 0 ]; then
-    echo "make-issue-runner-ready: 'gh api graphql' failed (exit ${_gh_ec}); see gh's error above." >&2
+    echo "make-issue-runner-ready: 'gh issue edit' failed (exit ${_gh_ec}); see gh's error above." >&2
     exit "$_EXIT_TRANSIENT"
   fi
-  _parent="$(printf '%s' "$_parent_resp" | jq -r '.data.node.parent')"
-
-  if [ "$_parent" = "null" ]; then
-    # Standalone: add formann:feature label.
-    _gh_ec=0
-    gh issue edit "$_issue_num" --add-label "formann:feature" || _gh_ec=$?
-    if [ "$_gh_ec" -ne 0 ]; then
-      echo "make-issue-runner-ready: 'gh issue edit' failed (exit ${_gh_ec}); see gh's error above." >&2
-      exit "$_EXIT_TRANSIENT"
-    fi
-  fi
-  # If parent is non-null (sub-issue), no-op — sub-issues do not carry formann:feature.
 fi

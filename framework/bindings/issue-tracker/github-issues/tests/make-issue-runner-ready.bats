@@ -471,3 +471,67 @@ SHIM
   assert_output --partial "make-issue-runner-ready"
   assert_output --partial "gh issue edit"
 }
+
+# ── Scenario (k): sub-issue with no slug label (parent-only, per ADR-0006 B) ──
+# Issue has no labels at all but parent-detection returns a non-null parent.
+# Sub-issues never carry formann:slug:* (parent-only) or formann:feature
+# (parent-only). The verb must no-op: exit 0, no writes, regardless of whether
+# --slug is supplied. The "Add an issue to slug X" verb explicitly creates
+# sub-issues without slug labels; this verb must accept that shape rather than
+# trap on the missing slug.
+
+@test "sub-issue no labels: exits successfully without --slug" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export GRAPHQL_FIXTURE='{"data":{"node":{"parent":{"id":"I_parent"}}}}'
+  run "$MAKE_READY" 42
+  assert_success
+}
+
+@test "sub-issue no labels: graphql parent-detection IS called" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export GRAPHQL_FIXTURE='{"data":{"node":{"parent":{"id":"I_parent"}}}}'
+  run "$MAKE_READY" 42
+  assert_success
+  run grep "api graphql" "$CALL_LOG"
+  assert_success
+}
+
+@test "sub-issue no labels: issue list NOT called (no slug uniqueness lookup)" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export GRAPHQL_FIXTURE='{"data":{"node":{"parent":{"id":"I_parent"}}}}'
+  run "$MAKE_READY" 42
+  assert_success
+  run grep "issue list" "$CALL_LOG"
+  assert_failure
+}
+
+@test "sub-issue no labels: label create NOT called" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export GRAPHQL_FIXTURE='{"data":{"node":{"parent":{"id":"I_parent"}}}}'
+  run "$MAKE_READY" 42
+  assert_success
+  run grep "label create" "$CALL_LOG"
+  assert_failure
+}
+
+@test "sub-issue no labels: issue edit NOT called" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export GRAPHQL_FIXTURE='{"data":{"node":{"parent":{"id":"I_parent"}}}}'
+  run "$MAKE_READY" 42
+  assert_success
+  run grep "issue edit" "$CALL_LOG"
+  assert_failure
+}
+
+@test "sub-issue no labels: --slug ignored (no writes)" {
+  export ISSUE_VIEW_FIXTURE='{"id":"I_node","labels":[]}'
+  export GRAPHQL_FIXTURE='{"data":{"node":{"parent":{"id":"I_parent"}}}}'
+  run "$MAKE_READY" 42 --slug some-slug
+  assert_success
+  run grep "issue list" "$CALL_LOG"
+  assert_failure
+  run grep "label create" "$CALL_LOG"
+  assert_failure
+  run grep "issue edit" "$CALL_LOG"
+  assert_failure
+}
