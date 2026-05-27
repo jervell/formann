@@ -618,7 +618,7 @@ Close the parent issue with `state_reason=completed` and mark it with `formann:a
 
 **GitHub-issues realization:**
 
-**Pre-flight — parent lookup.** Resolve the parent issue number via the **Read the feature** verb: `gh issue list --label "formann:feature" --label "formann:slug:<slug>" --state open --json number,title --jq '.'`. If no open parent is found, the feature may already be archived — report the error and stop.
+**Pre-flight — parent lookup.** Resolve the parent across all states: `gh issue list --label "formann:feature" --label "formann:slug:<slug>" --state all --json number,labels --jq '.'`. If no parent is found, the slug doesn't exist — stop. If the parent already carries `formann:archived`, the feature is archived — stop. Otherwise proceed; the parent may be open (typical) or closed (single-issue feature, where the AFK gate auto-closed the parent when its sole work-item went `done`).
 
 **Pre-flight — non-terminal guard.** The `/triage` skill enforces the non-terminal precheck in step 1 before reaching step 6. The binding re-enforces it for robustness: run `tracker-snapshot <slug>` and check every entry in `issues[]` `status` field. If any entry has a status other than `done` or `wontfix`, refuse with a clear error listing the non-terminal entries:
 
@@ -640,9 +640,9 @@ These are independent API calls. **Sequence matters:** close first so that a par
 - `tracker-snapshot --list` uses `states: [OPEN]` in its GraphQL query, so closed parents are excluded naturally — archived features drop out of feature discovery without a separate filter.
 - Sub-issues remain in whatever state they had at archive time (typically all `done` or `wontfix`).
 
-**Idempotency — re-archive after reopen:** If the maintainer reopens a parent (`gh issue reopen <parent-N>`) and then re-archives, the two-step sequence is safe to re-run:
+**Idempotency — already-closed parent:** The two-step is safe when the parent is already closed — either a single-issue feature whose AFK gate auto-closed the parent with its sole work-item, or a maintainer-reopened-then-re-archived case:
 
-1. `gh issue close <parent-N> --reason completed` — re-closes the issue.
+1. `gh issue close <parent-N> --reason completed` — closes if open; no-op if already CLOSED+COMPLETED (guaranteed for the single-issue path by the non-terminal guard).
 2. `gh issue edit <parent-N> --add-label formann:archived` — GitHub's label-add on an already-present label is a no-op; no duplicate label is created.
 
 The `formann:archived` label is durable — it survives `gh issue reopen` and persists as the intentional archive signal even while the issue is temporarily open.
