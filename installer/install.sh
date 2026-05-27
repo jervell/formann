@@ -106,6 +106,22 @@ prompt_role_bindings() {
   done
 }
 
+# === Per-binding setup hooks ================================================
+
+run_binding_setups() {
+  local formann_path="$1"
+  local consumer_path="$2"
+  local i
+  for i in "${!ROLE_NAMES[@]}"; do
+    local role="${ROLE_NAMES[$i]}"
+    local impl="${ROLE_IMPLS[$i]}"
+    local setup_hook="$formann_path/framework/bindings/$role/$impl/setup"
+    if [ -x "$setup_hook" ]; then
+      (cd "$consumer_path" && "$setup_hook")
+    fi
+  done
+}
+
 # === Product enumeration ====================================================
 
 # Single source of truth for "what does the installer produce".
@@ -335,6 +351,7 @@ main() {
   formann_path="$(detect_formann_path)"
 
   prompt_role_bindings "$formann_path"
+  run_binding_setups "$formann_path" "$consumer_path"
 
   local self_install=0
   if is_self_install "$consumer_path" "$formann_path"; then

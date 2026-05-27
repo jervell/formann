@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Per-binding install-time hook. Invoked by the installer after binding
+# selection with CWD set to the consumer repo root.
+set -euo pipefail
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$script_dir/bootstrap-labels"

@@ -6,6 +6,18 @@ This document is for **binding implementors** — people writing a new issue-tra
 
 Conformance is convention only. There are no tests and no CI gate.
 
+## Install-time setup hook
+
+Bindings may ship an optional `setup` executable at `framework/bindings/<role>/<impl>/setup`. The installer invokes it once per selected `(role, impl)` pair — after binding selection and before product enumeration — with no positional arguments. The installer sets CWD to the consumer path before invocation, so the hook can write into the consumer tree via relative paths.
+
+**Exit code contract:** 0 = success; non-zero = installer failure (stderr from the hook propagates).
+
+**Idempotency requirement:** The hook must be idempotent — re-running the installer must produce no externally visible change beyond a clean exit. A hook that violates this is a binding bug.
+
+Bindings without a `setup` file contribute no install-time setup; the installer skips silently.
+
+**github-issues realization:** The github-issues binding ships `framework/bindings/issue-tracker/github-issues/setup`, which delegates to the sibling `bootstrap-labels` script. `bootstrap-labels` creates the static `formann:*` label namespace via `gh label create --force`, which is idempotent — re-running updates labels in place without error or duplication.
+
 ## Canonical verbs
 
 ### Read the issue

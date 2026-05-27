@@ -364,3 +364,42 @@ _run_installer() {
   assert_success
   assert_output --partial "skipping skills"
 }
+
+# ---------------------------------------------------------------------------
+# Per-binding setup hook
+# ---------------------------------------------------------------------------
+
+@test "installer invokes setup hook when binding ships an executable one" {
+  setup_marker="$BATS_TEST_TMPDIR/setup-hook-fired"
+  cat > "$FORMANN_FIXTURE/framework/bindings/issue-tracker/local-markdown/setup" <<'SETUP'
+#!/usr/bin/env bash
+touch "$SETUP_MARKER"
+SETUP
+  chmod +x "$FORMANN_FIXTURE/framework/bindings/issue-tracker/local-markdown/setup"
+
+  run env SETUP_MARKER="$setup_marker" \
+    FORMANN_PATH="$FORMANN_FIXTURE" \
+    FORMANN_INSTALL_BINDING_issue_tracker=local-markdown \
+    bash "$INSTALL_SH" "$CONSUMER"
+  assert_success
+  [ -f "$setup_marker" ]
+}
+
+@test "installer skips silently when binding has no setup hook" {
+  # local-markdown fixture ships no setup script; installer must succeed with no error
+  [ ! -f "$FORMANN_FIXTURE/framework/bindings/issue-tracker/local-markdown/setup" ]
+  run _run_installer
+  assert_success
+}
+
+@test "setup hook runs with CWD set to consumer path" {
+  cat > "$FORMANN_FIXTURE/framework/bindings/issue-tracker/local-markdown/setup" <<'SETUP'
+#!/usr/bin/env bash
+touch ./setup-was-here
+SETUP
+  chmod +x "$FORMANN_FIXTURE/framework/bindings/issue-tracker/local-markdown/setup"
+
+  run _run_installer
+  assert_success
+  [ -f "$CONSUMER/setup-was-here" ]
+}
