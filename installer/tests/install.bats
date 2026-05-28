@@ -431,12 +431,20 @@ SETUP
   [ "$target" = "../../.formann/bindings/issue-tracker/local-markdown" ]
 }
 
-@test "fresh install: empty input still exits non-zero (no current binding present)" {
-  # AC7 — fresh consumer, no current binding, empty input must fail
-  run bash -c "echo '' | FORMANN_PATH='$FORMANN_FIXTURE' bash '$INSTALL_SH' '$CONSUMER'"
-  assert_failure
-  assert_output --partial "issue-tracker"
-  [ ! -e "$CONSUMER/docs/formann/issue-tracker" ]
+@test "re-install: typing a different valid impl switches the current binding" {
+  # AC2 — interactive switch sub-path: non-empty input names a different impl
+  mkdir -p "$FORMANN_FIXTURE/framework/bindings/issue-tracker/github-issues"
+  _run_installer  # first install: creates docs/formann/issue-tracker → local-markdown
+
+  # second run: no env var, type 'github-issues' at the interactive prompt.
+  # (The read prompt itself is silent when stdin is a pipe — bash only emits
+  # the prompt to a TTY — so the assertion is on the symlink, not the text.)
+  run bash -c "echo 'github-issues' | FORMANN_PATH='$FORMANN_FIXTURE' bash '$INSTALL_SH' '$CONSUMER'"
+  assert_success
+  refute_output --partial "switching"  # interactive switch, not env-var switch
+
+  target="$(readlink "$CONSUMER/docs/formann/issue-tracker")"
+  [ "$target" = "../../.formann/bindings/issue-tracker/github-issues" ]
 }
 
 @test "stale binding (impl removed from framework): stale diagnostic on stderr, installer continues" {
