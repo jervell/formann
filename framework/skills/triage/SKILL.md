@@ -15,8 +15,8 @@ Every comment or issue posted by `/triage` **must** start with this disclaimer:
 
 ## Reference docs
 
-- [AGENT-BRIEF.md](AGENT-BRIEF.md) — how to write durable agent briefs
-- [OUT-OF-SCOPE.md](OUT-OF-SCOPE.md) — how the `.out-of-scope/` knowledge base works
+- `${CLAUDE_SKILL_DIR}/AGENT-BRIEF.md` — how to write durable agent briefs
+- `${CLAUDE_SKILL_DIR}/OUT-OF-SCOPE.md` — how the `.out-of-scope/` knowledge base works
 - `docs/formann/issue-tracker/BINDING.md` — how tracker operations are realized in this project; read before acting
 
 ## Triage state
@@ -68,11 +68,11 @@ Show counts and a one-line summary per issue. Let the maintainer pick.
 5. **Apply the outcome.** Before transitioning to `ready-for-agent` or `ready-for-human`, invoke the **Make issue runner-ready** verb. If it refuses (binding-specific reasons, typically a missing slug under GH-issues), prompt the maintainer for the missing input and re-invoke. If unresolvable, refuse the state transition — the issue stays in its prior state (typically `needs-triage`, or `needs-info` if open questions remain).
 
    Set the issue's state to the chosen value, plus the side effects below:
-   - `ready-for-agent` — Publish the agent brief ([AGENT-BRIEF.md](AGENT-BRIEF.md)). If the issue is type `HITL`, the brief should call out the gates the agent must check in at.
+   - `ready-for-agent` — Publish the agent brief (see `${CLAUDE_SKILL_DIR}/AGENT-BRIEF.md`). If the issue is type `HITL`, the brief should call out the gates the agent must check in at.
    - `ready-for-human` — Publish the agent brief with a note on why an agent can't start (external access, manual production step, etc.).
    - `needs-info` — Record triage notes (template below).
    - `wontfix` (bug) — Comment with Wontfix explanation.
-   - `wontfix` (enhancement) — write to `.out-of-scope/` ([OUT-OF-SCOPE.md](OUT-OF-SCOPE.md)); Comment with Wontfix explanation linking to the out-of-scope file.
+   - `wontfix` (enhancement) — write to `.out-of-scope/` (see `${CLAUDE_SKILL_DIR}/OUT-OF-SCOPE.md`); Comment with Wontfix explanation linking to the out-of-scope file.
    - `done` — accepting an `in-review` issue. Optionally Comment with Note if there's something worth recording.
    - `ready-for-agent` (from `in-review`) — rejecting; Comment with Rework notes explaining what needs to change.
    - `needs-triage` — optionally Comment with Note if there's partial progress.

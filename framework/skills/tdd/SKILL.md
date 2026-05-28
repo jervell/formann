@@ -13,7 +13,7 @@ description: Test-driven development with red-green-refactor loop. Use when user
 
 **Bad tests** are coupled to implementation. They mock internal collaborators, test private methods, or verify through external means (like querying a database directly instead of using the interface). The warning sign: your test breaks when you refactor, but behavior hasn't changed. If you rename an internal function and tests fail, those tests were testing implementation, not behavior.
 
-See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking guidelines.
+See `${CLAUDE_SKILL_DIR}/tests.md` for examples and `${CLAUDE_SKILL_DIR}/mocking.md` for mocking guidelines.
 
 ## Anti-Pattern: Horizontal Slices
 
@@ -50,8 +50,8 @@ Before writing any code:
 
 - [ ] Confirm with user what interface changes are needed
 - [ ] Confirm with user which behaviors to test (prioritize)
-- [ ] Identify opportunities for [deep modules](deep-modules.md) (small interface, deep implementation)
-- [ ] Design interfaces for [testability](interface-design.md)
+- [ ] Identify opportunities for deep modules — small interface, deep implementation (see `${CLAUDE_SKILL_DIR}/deep-modules.md`)
+- [ ] Design interfaces for testability (see `${CLAUDE_SKILL_DIR}/interface-design.md`)
 - [ ] List the behaviors to test (not implementation steps)
 - [ ] Get user approval on the plan
 
@@ -88,7 +88,7 @@ Rules:
 
 ### 4. Refactor
 
-After all tests pass, look for [refactor candidates](refactoring.md):
+After all tests pass, look for refactor candidates (see `${CLAUDE_SKILL_DIR}/refactoring.md`):
 
 - [ ] Extract duplication
 - [ ] Deepen modules (move complexity behind simple interfaces)

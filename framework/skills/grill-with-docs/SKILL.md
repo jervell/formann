@@ -45,7 +45,7 @@ When the user states how something works, check whether the code agrees. If you 
 
 ### Update GLOSSARY.md inline
 
-When a term is resolved, update `GLOSSARY.md` right there. Don't batch these up — capture them as they happen. Use the format in [GLOSSARY-FORMAT.md](./GLOSSARY-FORMAT.md).
+When a term is resolved, update `GLOSSARY.md` right there. Don't batch these up — capture them as they happen. Use the format in `${CLAUDE_SKILL_DIR}/GLOSSARY-FORMAT.md`.
 
 Don't couple `GLOSSARY.md` to implementation details. Only include terms that are meaningful to domain experts.
 
@@ -57,6 +57,6 @@ Only offer to create an ADR when all three are true:
 2. **Surprising without context** — a future reader will wonder "why did they do it this way?"
 3. **The result of a real trade-off** — there were genuine alternatives and you picked one for specific reasons
 
-If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](./ADR-FORMAT.md).
+If any of the three is missing, skip the ADR. Use the format in `${CLAUDE_SKILL_DIR}/ADR-FORMAT.md`.
 
 </supporting-info>
