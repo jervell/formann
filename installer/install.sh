@@ -55,8 +55,47 @@ is_self_install() {
 
 # === Role binding selection =================================================
 
+# Detect the current binding for a role from the consumer's existing symlink.
+# Prints the impl name to stdout if valid; prints nothing and emits a stale
+# diagnostic to stderr when the symlink is absent, dangling, or off-shape.
+detect_current_binding() {
+  local consumer_path="$1"
+  local formann_path="$2"
+  local role="$3"
+
+  local role_symlink="$consumer_path/docs/formann/$role"
+
+  [ -L "$role_symlink" ] || return 0
+
+  local raw_target
+  raw_target="$(readlink "$role_symlink")"
+
+  local expected_prefix="../../.formann/bindings/$role/"
+  local impl_candidate
+  impl_candidate="${raw_target#"$expected_prefix"}"
+
+  # off-shape: prefix not present or trailing segment contains a slash
+  if [ "$impl_candidate" = "$raw_target" ] || [ -z "$impl_candidate" ]; then
+    echo "install.sh: stale binding for '$role': unrecognized symlink target '$raw_target'" >&2
+    return 0
+  fi
+  case "$impl_candidate" in
+    */*)
+      echo "install.sh: stale binding for '$role': unrecognized symlink target '$raw_target'" >&2
+      return 0
+      ;;
+  esac
+
+  if [ -d "$formann_path/framework/bindings/$role/$impl_candidate" ]; then
+    printf '%s' "$impl_candidate"
+  else
+    echo "install.sh: stale binding for '$role': '$impl_candidate' no longer exists in framework" >&2
+  fi
+}
+
 prompt_role_bindings() {
   local formann_path="$1"
+  local consumer_path="$2"
   local bindings_dir="$formann_path/framework/bindings"
 
   ROLE_NAMES=()
@@ -78,14 +117,27 @@ prompt_role_bindings() {
       continue
     fi
 
+    local current_impl
+    current_impl="$(detect_current_binding "$consumer_path" "$formann_path" "$role")"
+
     local env_var="FORMANN_INSTALL_BINDING_${role//-/_}"
     local chosen
 
     if [ -n "${!env_var:-}" ]; then
       chosen="${!env_var}"
+      if [ -n "$current_impl" ] && [ "$chosen" != "$current_impl" ]; then
+        echo "install.sh: switching '$role' from $current_impl to $chosen" >&2
+      fi
     else
       local impls_str="${impls[*]}"
-      read -r -p "Role '$role' impls: [$impls_str]. Pick one: " chosen
+      if [ -n "$current_impl" ]; then
+        read -r -p "Role '$role' impls: [$impls_str]. Current: $current_impl. Pick one [Enter=keep]: " chosen || chosen=""
+        if [ -z "$chosen" ]; then
+          chosen="$current_impl"
+        fi
+      else
+        read -r -p "Role '$role' impls: [$impls_str]. Pick one: " chosen || chosen=""
+      fi
     fi
 
     local valid=0
@@ -350,7 +402,7 @@ main() {
   local formann_path
   formann_path="$(detect_formann_path)"
 
-  prompt_role_bindings "$formann_path"
+  prompt_role_bindings "$formann_path" "$consumer_path"
   run_binding_setups "$formann_path" "$consumer_path"
 
   local self_install=0

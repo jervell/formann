@@ -24,6 +24,38 @@ Re-running is safe: symlinks with correct targets are left alone; stale symlinks
 (wrong target) are overwritten; real files and directories at managed paths are
 never clobbered.
 
+### Re-install prompt behavior
+
+On re-install the installer detects the consumer's current binding for each
+role from the existing `docs/formann/<role>` symlink and offers it as the
+default:
+
+```
+Role 'issue-tracker' impls: [local-markdown github-issues]. Current: local-markdown. Pick one [Enter=keep]:
+```
+
+- **Press Enter** (or close stdin) to keep the current binding unchanged.
+- **Type a different impl name** to switch to it.
+
+If the current binding is stale (the impl was removed from the framework, the
+symlink is dangling, or the target path has an unexpected shape), the installer
+prints one diagnostic line to stderr naming the stale value and falls back to
+the fresh prompt with no default:
+
+```
+install.sh: stale binding for 'issue-tracker': 'old-impl' no longer exists in framework
+```
+
+When `FORMANN_INSTALL_BINDING_<role>` is set and differs from the detected
+current binding, the installer prints a switching notice to stderr and uses the
+env-var value:
+
+```
+install.sh: switching 'issue-tracker' from local-markdown to github-issues
+```
+
+When the env-var matches the current binding, the installer stays silent.
+
 ## Non-interactive mode (for scripts and tests)
 
 Set `FORMANN_INSTALL_BINDING_<role>` (dashes replaced by underscores) to bypass

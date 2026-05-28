@@ -403,3 +403,109 @@ SETUP
   assert_success
   [ -f "$CONSUMER/setup-was-here" ]
 }
+
+# ---------------------------------------------------------------------------
+# Suggest current binding on re-install (AC1–AC7)
+# ---------------------------------------------------------------------------
+
+@test "re-install: empty input keeps the current binding" {
+  # AC2 / AC6 — valid current binding, empty interactive input → keep it
+  _run_installer  # first install: creates docs/formann/issue-tracker → local-markdown
+
+  # second run: no env var, empty input via pipe
+  run bash -c "echo '' | FORMANN_PATH='$FORMANN_FIXTURE' bash '$INSTALL_SH' '$CONSUMER'"
+  assert_success
+
+  target="$(readlink "$CONSUMER/docs/formann/issue-tracker")"
+  [ "$target" = "../../.formann/bindings/issue-tracker/local-markdown" ]
+}
+
+@test "re-install: closed stdin (non-interactive) keeps the current binding" {
+  # AC6 — empty input via closed stdin in non-interactive mode
+  _run_installer
+
+  run bash -c "FORMANN_PATH='$FORMANN_FIXTURE' bash '$INSTALL_SH' '$CONSUMER' </dev/null"
+  assert_success
+
+  target="$(readlink "$CONSUMER/docs/formann/issue-tracker")"
+  [ "$target" = "../../.formann/bindings/issue-tracker/local-markdown" ]
+}
+
+@test "fresh install: empty input still exits non-zero (no current binding present)" {
+  # AC7 — fresh consumer, no current binding, empty input must fail
+  run bash -c "echo '' | FORMANN_PATH='$FORMANN_FIXTURE' bash '$INSTALL_SH' '$CONSUMER'"
+  assert_failure
+  assert_output --partial "issue-tracker"
+  [ ! -e "$CONSUMER/docs/formann/issue-tracker" ]
+}
+
+@test "stale binding (impl removed from framework): stale diagnostic on stderr, installer continues" {
+  # AC3 — current impl disappears from framework → stale message, prompt falls through
+  _run_installer  # installs local-markdown
+
+  # make local-markdown stale: remove from fixture, add a different impl
+  rm -rf "$FORMANN_FIXTURE/framework/bindings/issue-tracker/local-markdown"
+  mkdir -p "$FORMANN_FIXTURE/framework/bindings/issue-tracker/github-issues"
+
+  run env FORMANN_PATH="$FORMANN_FIXTURE" \
+    FORMANN_INSTALL_BINDING_issue_tracker=github-issues \
+    bash "$INSTALL_SH" "$CONSUMER"
+  assert_success
+
+  # stale diagnostic must name the vanished impl
+  assert_output --partial "local-markdown"
+  assert_output --partial "stale"
+
+  # symlink re-pointed to the new impl
+  target="$(readlink "$CONSUMER/docs/formann/issue-tracker")"
+  [ "$target" = "../../.formann/bindings/issue-tracker/github-issues" ]
+}
+
+@test "stale binding (dangling symlink — impl not in framework): stale diagnostic, installer continues" {
+  # AC3 — symlink points to impl that never existed in framework
+  mkdir -p "$CONSUMER/docs/formann"
+  ln -s "../../.formann/bindings/issue-tracker/old-impl" "$CONSUMER/docs/formann/issue-tracker"
+
+  run _run_installer
+  assert_success
+
+  assert_output --partial "old-impl"
+  assert_output --partial "stale"
+
+  # symlink updated to the valid impl chosen via env var
+  target="$(readlink "$CONSUMER/docs/formann/issue-tracker")"
+  [ "$target" = "../../.formann/bindings/issue-tracker/local-markdown" ]
+}
+
+@test "stale binding (off-shape symlink target): stale diagnostic, installer continues" {
+  # AC3 — symlink target does not follow .formann/bindings/<role>/<impl> shape
+  mkdir -p "$CONSUMER/docs/formann"
+  ln -s "../../some-other/path" "$CONSUMER/docs/formann/issue-tracker"
+
+  run _run_installer
+  assert_success
+
+  assert_output --partial "stale"
+  refute_output --partial "switching"
+}
+
+@test "env var matches current binding: no switching message emitted" {
+  # AC4 — env var equals current; installer stays silent
+  _run_installer  # installs local-markdown via env var
+
+  run _run_installer  # same env var again
+  assert_success
+  refute_output --partial "switching"
+}
+
+@test "env var differs from current binding: switching message on stderr" {
+  # AC5 — env var names a different impl → one stderr line 'switching … from … to …'
+  mkdir -p "$FORMANN_FIXTURE/framework/bindings/issue-tracker/github-issues"
+  _run_installer  # installs local-markdown
+
+  run env FORMANN_PATH="$FORMANN_FIXTURE" \
+    FORMANN_INSTALL_BINDING_issue_tracker=github-issues \
+    bash "$INSTALL_SH" "$CONSUMER"
+  assert_success
+  assert_output --partial "switching 'issue-tracker' from local-markdown to github-issues"
+}
