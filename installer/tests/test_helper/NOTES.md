@@ -1,7 +1,7 @@
 # Vendored bats helpers
 
 These are plain copies (not git submodules) of the upstream bats helpers, so the
-test suite is self-contained — `bats .agents/runner/tests/` works on a fresh
+test suite is self-contained — `bats installer/tests/` works on a fresh
 checkout without any extra git or npm steps.
 
 ## bats-support

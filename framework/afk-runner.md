@@ -94,7 +94,7 @@ A custom Docker bridge (`afk-runner-sandbox`, bridge interface `afk-rnr-br0`, su
 
 - **Allow** intra-bridge traffic (so containers can talk to each other).
 - **Allow** public internet (Anthropic API, Maven Central, GitHub, javadoc).
-- **Deny** RFC1918 destinations: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`. The Pi, the LAN, corporate VPN ranges are unreachable.
+- **Deny** RFC1918 destinations: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`. The LAN, corporate VPN ranges, in-network deploy targets are unreachable.
 
 Rules live in a dedicated chain (`AFK-RUNNER-SANDBOX-FW`) that `DOCKER-USER` jumps to for packets entering on the sandbox bridge. Idempotent — re-running `setup-network.sh` re-applies rules cleanly. They persist for as long as the Docker daemon's iptables state is intact (cleared by Docker Desktop restart; re-applied by the next pre-flight).
 
@@ -401,7 +401,7 @@ Host propagation is the moment of trust. The runner first publishes the runner-c
 Bypass mode (`--dangerously-skip-permissions`) is on, but only inside the container. The container has:
 
 - **No access to host filesystem outside `/repo`** — only the runner-checkout is mounted, not the host repo, not `~/.ssh`, not `~/.gitconfig`, not `~/.m2` (project-specific cache instead).
-- **No LAN access** — RFC1918-deny rules block the Pi, the home network, corporate VPN ranges. Public internet stays open.
+- **No LAN access** — RFC1918-deny rules block the LAN, corporate VPN ranges, in-network deploy targets. Public internet stays open.
 - **No persistent state outside the mounted volumes** — token is per-container env var, not in any image layer.
 - **No host docker socket** — the container can't spawn sibling containers or escape via Docker.
 

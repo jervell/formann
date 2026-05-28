@@ -26,9 +26,10 @@ def resolve_consumer_root(start: Path) -> Path | None:
     ``None`` if no such ancestor exists. Mirrors ``build-image.sh``'s
     ``HOST_REPO`` walk and ``tracker-snapshot``'s ``tracker_root`` walk —
     consumer-side resources must be discovered from ``$cwd``, never from
-    ``__file__``: when the viewer is invoked through ``iot/.formann/``,
-    ``Path(__file__).resolve()`` physically follows the symlink and lands
-    in the framework checkout, away from the consumer's ``.features/``.
+    ``__file__``: when the viewer is invoked through a consumer's
+    ``.formann/`` symlink, ``Path(__file__).resolve()`` physically follows
+    the symlink and lands in the framework checkout, away from the
+    consumer's ``.features/``.
     """
     walk = start if start.is_absolute() else start.absolute()
     while True:

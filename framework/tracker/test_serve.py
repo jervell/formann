@@ -130,9 +130,9 @@ class TestResolveConsumerRoot(unittest.TestCase):
     """The viewer reaches the consumer's ``.features/`` by walking $cwd
     upward for a ``.formann`` ancestor — same shape ``build-image.sh`` and
     ``tracker-snapshot`` use. Without this walk, ``Path(__file__).resolve()``
-    follows the ``iot/.formann/`` symlink into the framework checkout and
-    the viewer renders an empty tree against ``formann/.features/`` (which
-    does not exist)."""
+    follows the consumer's ``.formann/`` symlink into the framework checkout
+    and the viewer renders an empty tree against the framework's
+    ``.features/`` (which does not exist)."""
 
     def test_walks_up_from_descendant_to_dotformann_ancestor(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

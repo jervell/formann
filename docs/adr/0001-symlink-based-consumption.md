@@ -12,6 +12,6 @@ Consumers adopt Formann by symlinking into a local Formann checkout, not by copy
 ## Consequences
 
 - Consumers must run Formann's installer on first setup (and after Formann moves locally) to create `.formann`. CI must recreate it on every fresh checkout — a one-line step, but it must exist.
-- The `.formann` indirection adds one symlink hop, but preserves the existing intra-repo precedent (`.claude/skills/triage -> ../../.agents/skills/triage` in iot today is the same shape, intra-repo).
+- The `.formann` indirection adds one symlink hop, but preserves an intra-repo precedent (`.claude/skills/triage -> ../../.agents/skills/triage` is the same shape, intra-repo).
 - Framework updates propagate to consumers on `git pull` inside the Formann checkout — no per-consumer action. This is both a feature (always current) and a hazard (breaking changes propagate instantly). Version pinning can be added later when warranted; YAGNI for v0.
 - The consumer's committed `.gitignore` must include `/.formann` so the per-machine symlink doesn't drift into git.

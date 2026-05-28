@@ -109,4 +109,4 @@ _Avoid_: "setup script" (the prompt may delegate to scripts, but the installer i
 
 - "agent" — overloaded between (a) a Claude Code subagent (e.g., `review-feature`) and (b) "the autonomous thing running in the sandbox." Resolved: (a) is **Agent**; (b) is **Dispatch**.
 - "target repo" — used in conversation for what is now **Consumer**. Resolved: prefer **Consumer**.
-- "docs/agents/" — the pre-Formann name of the **Role surface** in iot. Resolved: renamed to `docs/formann/` post-extraction.
+- "docs/agents/" — the pre-Formann name of the **Role surface**. Resolved: renamed to `docs/formann/`.

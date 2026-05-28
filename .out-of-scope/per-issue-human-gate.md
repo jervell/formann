@@ -38,4 +38,4 @@ per-issue Verification comment recording each walked row's verdict.
 
 ## Prior requests
 
-- `afk-runner/112` — "Surface and enforce [human] verification gates on in-review issues" (raised in iot, archived there)
+- `afk-runner/112` — "Surface and enforce [human] verification gates on in-review issues" (raised pre-extraction, archived there)
