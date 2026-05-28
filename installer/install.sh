@@ -383,11 +383,27 @@ update_gitignore() {
 
 print_claude_md_snippet() {
   local formann_path="$1"
+  local consumer_path="$2"
+  local snippet_template="$formann_path/installer/templates/claude-md-snippet.md"
+  local claude_md="$consumer_path/CLAUDE.md"
+
+  if [ -f "$claude_md" ]; then
+    local snippet_content claude_md_content
+    snippet_content="$(cat "$snippet_template")"
+    claude_md_content="$(cat "$claude_md")"
+    case "$claude_md_content" in
+      *"$snippet_content"*)
+        printf 'install.sh: CLAUDE.md already contains the Formann section, skipping snippet print\n' >&2
+        return 0
+        ;;
+    esac
+  fi
+
   printf '\n'
   printf '══════════════════════════════════════════════════════════\n'
   printf '  Paste the following into your CLAUDE.md:\n'
   printf '══════════════════════════════════════════════════════════\n'
-  cat "$formann_path/installer/templates/claude-md-snippet.md"
+  cat "$snippet_template"
   printf '══════════════════════════════════════════════════════════\n'
 }
 
@@ -415,7 +431,7 @@ main() {
 
   install_products "$consumer_path" <<< "$products"
   update_gitignore "$consumer_path" "$self_install" "$products"
-  print_claude_md_snippet "$formann_path"
+  print_claude_md_snippet "$formann_path" "$consumer_path"
 }
 
 main "$@"

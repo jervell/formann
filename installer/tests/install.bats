@@ -201,6 +201,38 @@ _run_installer() {
 }
 
 # ---------------------------------------------------------------------------
+# CLAUDE.md snippet suppression
+# ---------------------------------------------------------------------------
+
+@test "snippet suppressed when CLAUDE.md already contains the snippet verbatim" {
+  bats_require_minimum_version 1.5.0
+  cp "$FORMANN_FIXTURE/installer/templates/claude-md-snippet.md" "$CONSUMER/CLAUDE.md"
+  run --separate-stderr _run_installer
+  assert_success
+  refute_output --partial "══"
+  refute_output --partial "Paste the following"
+  echo "$stderr" | grep -qF "CLAUDE.md already contains the Formann section, skipping snippet print"
+}
+
+@test "snippet prints when CLAUDE.md exists but lacks the snippet" {
+  echo "# My project docs" > "$CONSUMER/CLAUDE.md"
+  run _run_installer
+  assert_success
+  assert_output --partial "## Formann"
+  assert_output --partial "══"
+}
+
+@test "snippet prints when CLAUDE.md has a minor edit to the snippet (fuzzy match not supported)" {
+  sed 's/^## Formann$/## Formann methodology/' \
+    "$FORMANN_FIXTURE/installer/templates/claude-md-snippet.md" \
+    > "$CONSUMER/CLAUDE.md"
+  run _run_installer
+  assert_success
+  assert_output --partial "══"
+  assert_output --partial "Paste the following"
+}
+
+# ---------------------------------------------------------------------------
 # Idempotency
 # ---------------------------------------------------------------------------
 

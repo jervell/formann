@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Installer prompts default to the consumer's current binding on re-install; press Enter to keep it.
+- Installer suppresses the CLAUDE.md snippet banner when the consumer's root `CLAUDE.md` already contains the snippet verbatim; emits one stderr confirmation line instead.
 
 ### Fixed
 - **`/triage` no longer fails on sub-issues under the github-issues binding** — Previously refused with a missing-slug error before transitioning to `ready-for-agent`.
