@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Installer runs each binding's optional install-time setup hook after binding selection. For the `github-issues` binding, the hook seeds the `formann:*` label namespace and prompts for the GH-token macOS Keychain entry when missing. Local-markdown ships no hook; that path is unchanged.
 
+### Changed
+- Installer prompts default to the consumer's current binding on re-install; press Enter to keep it.
+
 ### Fixed
 - **`/triage` no longer fails on sub-issues under the github-issues binding** — Previously refused with a missing-slug error before transitioning to `ready-for-agent`.
 
