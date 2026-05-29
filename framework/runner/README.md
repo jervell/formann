@@ -184,7 +184,7 @@ an abort flag.
 | File | Role |
 |------|------|
 | `Dockerfile` | **Consumer-owned** (lives at `<consumer>/runner/Dockerfile`, not in the framework — see ADR-0002). The installer scaffolds an initial Debian-slim image with JDK 21, Maven, git, the `claude` CLI, a non-root user (UID/GID 1000), workdir `/repo`, and an inlined entrypoint that suppresses kernel core dumps (`ulimit -c 0`). The consumer edits it for their project. |
-| `build-image.sh` | Builds the consumer's image idempotently from `<consumer>/runner/Dockerfile`. Walks `$PWD` upward to find the consumer root (`.formann` ancestor), so it works from anywhere inside the consumer repo. Reuses cached layers; `--rebuild` forces a full rebuild. Prints the image name on stdout. |
+| `build-image.sh` | Builds the consumer's image idempotently from `<consumer>/runner/Dockerfile`. Walks `$PWD` upward to find the consumer root (`.formann` ancestor), so it works from anywhere inside the consumer repo. Reuses the cached image. `--rebuild` forces a build that still reuses the layer cache (cheap; picks up Dockerfile edits but keeps installed tools at their cached versions). `--fresh` forces a build with no layer cache and a base-image re-pull, so every tool — apt packages, the JDK, Node, and the Claude CLI — re-resolves to its current published version. Prints the image name on stdout. |
 | `setup-network.sh` | Creates the sandbox bridge network and applies the RFC1918-deny outbound policy. Idempotent. Prints the network name on stdout. |
 | `retrieve-secret.sh` | Verbatim vendor of `arne/claude-code-api-key-setup`'s generic Keychain/libsecret/keyctl reader. Provenance in `NOTES.md`. |
 | `retrieve-token.sh` | Wraps `retrieve-secret.sh` with the OAuth-token service/account constants from `lib.sh`. Prints the token on stdout, fails fast with a populate-the-Keychain hint on stderr. Token never echoed beyond stdout. |
@@ -289,7 +289,10 @@ verify them by hand:
 # Build (or rebuild) the image. Run from anywhere inside the consumer repo;
 # the script locates the consumer root via the .formann indirection symlink.
 .formann/runner/build-image.sh
-# .formann/runner/build-image.sh --rebuild   # force fresh build
+# .formann/runner/build-image.sh --rebuild   # rebuild, reusing the layer cache
+# .formann/runner/build-image.sh --fresh     # rebuild from scratch; re-resolves
+#                                             # every tool (incl. the Claude CLI)
+#                                             # to its current published version
 
 # Create the sandbox network and apply the deny-RFC1918 policy.
 .formann/runner/setup-network.sh

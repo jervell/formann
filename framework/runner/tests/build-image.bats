@@ -77,3 +77,29 @@ STUB
   assert_success
   assert_output "afk-runner-sandbox"
 }
+
+@test "build-image.sh --fresh bypasses the layer cache and re-pulls the base" {
+  cd "$CONSUMER"
+  run bash "$SCRIPT" --fresh
+  assert_success
+  build_args="$(cat "$STUB_OUTPUT")"
+  [[ "$build_args" == *"--no-cache"* ]] || {
+    echo "expected --no-cache in build args, got: $build_args" >&2
+    return 1
+  }
+  [[ "$build_args" == *"--pull"* ]] || {
+    echo "expected --pull in build args, got: $build_args" >&2
+    return 1
+  }
+}
+
+@test "build-image.sh --rebuild reuses the layer cache (no --no-cache)" {
+  cd "$CONSUMER"
+  run bash "$SCRIPT" --rebuild
+  assert_success
+  build_args="$(cat "$STUB_OUTPUT")"
+  [[ "$build_args" != *"--no-cache"* ]] || {
+    echo "expected --rebuild to reuse the layer cache, got --no-cache: $build_args" >&2
+    return 1
+  }
+}
