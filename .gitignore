@@ -9,6 +9,7 @@ __pycache__/
 /.claude/skills/grill-me
 /.claude/skills/grill-with-docs
 /.claude/skills/implement
+/.claude/skills/improve-codebase-architecture
 /.claude/skills/tdd
 /.claude/skills/to-issues
 /.claude/skills/to-prd
