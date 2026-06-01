@@ -51,18 +51,10 @@ EOF
 
   # Force darwin OSTYPE so the macOS branch runs in CI (Linux host).
   export OSTYPE="darwin21"
-}
 
-# Mirror of the runner's collect_binding_env validation regex
-# (framework/runner/run-the-queue.sh:1522 — applied per line). Returns 0 if
-# every line matches, 1 otherwise. The runner-side validator is the contract;
-# this helper re-states it locally until #49 extracts a shared validator.
-_validate_output() {
-  local _line
-  while IFS= read -r _line; do
-    [[ "$_line" =~ ^[A-Z_][A-Z0-9_]*= ]] || return 1
-  done <<<"$1"
-  return 0
+  VALIDATE_BINDING_ENV_SH="$HERE/../../../../runner/validate-binding-env.sh"
+  # shellcheck source=../../../../runner/validate-binding-env.sh
+  source "$VALIDATE_BINDING_ENV_SH"
 }
 
 @test "Keychain entry present — emits GH_TOKEN and GH_REPO on stdout" {
@@ -149,17 +141,17 @@ EOF
 @test "output lines are valid KEY=value format parseable by collect_binding_env" {
   run "$SANDBOX_ENV"
   assert_success
-  _validate_output "$output"
+  validate_binding_env_output "$output"
 }
 
 @test "validator rejects output with a malformed (lowercase-key) second line" {
   # Fixture: a valid first line followed by a lowercase-keyed second line —
-  # the runner's per-line validator must reject this. If _validate_output
+  # the runner's per-line validator must reject this. If validate_binding_env_output
   # accepts it (e.g., because the assertion anchors at start of whole string
-  # and only sees line 1), the bug at sandbox-env.bats:93 is back.
+  # and only sees line 1), the bug is back.
   local malformed="GH_TOKEN=ok
 gh_repo=lowercase_bad"
-  ! _validate_output "$malformed"
+  ! validate_binding_env_output "$malformed"
 }
 
 # ── GH_REPO URL parsing — success cases ──────────────────────────────────────

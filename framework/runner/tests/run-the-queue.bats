@@ -1364,7 +1364,7 @@ EOF
   result="$(collect_binding_env "$role_surface/sandbox-env")"
   [ "$result" = "GH_TOKEN=fixture_token_123" ]
   # Key matches the KEY=value format that docker --env-file accepts.
-  [[ "$result" =~ ^[A-Z_][A-Z0-9_]*=.* ]]
+  validate_binding_env_output "$result"
 }
 
 # === dispatch_one — snapshot failure mid-dispatch =========================

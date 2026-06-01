@@ -53,6 +53,8 @@
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"
+# shellcheck source=validate-binding-env.sh
+source "$HERE/validate-binding-env.sh"
 
 # === Configuration =========================================================
 
@@ -1519,7 +1521,7 @@ collect_binding_env() {
   local line
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
-    if [[ ! "$line" =~ ^[A-Z_][A-Z0-9_]*= ]]; then
+    if ! binding_env_line_valid "$line"; then
       # Never echo $line or any substring of it — a no-`=` line would
       # leak the entire value via `${line%%=*}`, which returns the whole
       # string when the pattern doesn't match. The script's own stderr
