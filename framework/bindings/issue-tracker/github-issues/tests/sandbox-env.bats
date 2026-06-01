@@ -57,6 +57,19 @@ EOF
   source "$VALIDATE_BINDING_ENV_SH"
 }
 
+# Applies the runner's shared per-line rule (binding_env_line_valid, sourced
+# above) across every non-empty line, the way collect_binding_env does. The
+# per-line rule is the shared contract; this multi-line loop is test scaffolding
+# and lives here rather than in the runner source, because collect_binding_env
+# validates and emits in a single pass and has no use for a whole-string boolean.
+_validate_output() {
+  local _line
+  while IFS= read -r _line; do
+    [[ -z "$_line" ]] && continue
+    binding_env_line_valid "$_line" || return 1
+  done <<<"$1"
+}
+
 @test "Keychain entry present — emits GH_TOKEN and GH_REPO on stdout" {
   run "$SANDBOX_ENV"
   assert_success
@@ -141,17 +154,17 @@ EOF
 @test "output lines are valid KEY=value format parseable by collect_binding_env" {
   run "$SANDBOX_ENV"
   assert_success
-  validate_binding_env_output "$output"
+  _validate_output "$output"
 }
 
 @test "validator rejects output with a malformed (lowercase-key) second line" {
   # Fixture: a valid first line followed by a lowercase-keyed second line —
-  # the runner's per-line validator must reject this. If validate_binding_env_output
+  # the runner's per-line validator must reject this. If _validate_output
   # accepts it (e.g., because the assertion anchors at start of whole string
   # and only sees line 1), the bug is back.
   local malformed="GH_TOKEN=ok
 gh_repo=lowercase_bad"
-  ! validate_binding_env_output "$malformed"
+  ! _validate_output "$malformed"
 }
 
 # ── GH_REPO URL parsing — success cases ──────────────────────────────────────

@@ -1363,8 +1363,9 @@ EOF
 
   result="$(collect_binding_env "$role_surface/sandbox-env")"
   [ "$result" = "GH_TOKEN=fixture_token_123" ]
-  # Key matches the KEY=value format that docker --env-file accepts.
-  validate_binding_env_output "$result"
+  # Key matches the KEY=value format that docker --env-file accepts. $result is
+  # a single line, so the runner's per-line predicate is the exact validator.
+  binding_env_line_valid "$result"
 }
 
 # === dispatch_one — snapshot failure mid-dispatch =========================

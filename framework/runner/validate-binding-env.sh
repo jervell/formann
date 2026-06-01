@@ -9,13 +9,3 @@
 binding_env_line_valid() {
   [[ "$1" =~ ^[A-Z_][A-Z0-9_]*= ]]
 }
-
-# Returns 0 if every non-empty line of the argument string conforms to the
-# KEY=value line-shape rule, 1 on the first violation.
-validate_binding_env_output() {
-  local _line
-  while IFS= read -r _line; do
-    [[ -z "$_line" ]] && continue
-    binding_env_line_valid "$_line" || return 1
-  done <<<"$1"
-}
