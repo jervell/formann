@@ -34,34 +34,50 @@ label_create_calls() {
 }
 
 # ---------------------------------------------------------------------------
-# Static label inventory (must match bootstrap-labels exactly)
-# ---------------------------------------------------------------------------
-EXPECTED_LABELS=(
-  "formann:feature"
-  "formann:archived"
-  "formann:status:needs-triage"
-  "formann:status:needs-info"
-  "formann:status:ready-for-agent"
-  "formann:status:ready-for-human"
-  "formann:status:in-review"
-  "formann:status:wontfix"
-  "formann:category:bug"
-  "formann:category:enhancement"
-  "formann:type:afk"
-  "formann:type:hitl"
-)
 
-# ---------------------------------------------------------------------------
+@test "creates exactly the declared labels — both directions" {
+  # Derive the expected set from the script's create_label invocations so
+  # a label added to or removed from the script changes the test outcome
+  # with no manual edit to a parallel list.
+  DECLARED_LABELS=()
+  while IFS= read -r name; do
+    DECLARED_LABELS+=("$name")
+  done < <(grep -E '^create_label ' "$BOOTSTRAP_LABELS" | sed -E 's/^create_label "([^"]+)".*/\1/')
 
-@test "creates every label in the static namespace" {
   run "$BOOTSTRAP_LABELS"
   assert_success
 
-  # `gh label create` takes the label name as a *positional* argument, not
-  # a --name flag. Assert on the positional form so this test fails when the
-  # script drifts back to --name (which gh CLI rejects with "unknown flag").
-  for label in "${EXPECTED_LABELS[@]}"; do
-    assert grep -qE -- "^label create --force $label( |$)" "$CALL_LOG"
+  # Extract the label name from each recorded 'label create --force <name> ...' call.
+  CREATED_LABELS=()
+  while IFS= read -r line; do
+    if [[ "$line" == label\ create\ --force\ * ]]; then
+      rest="${line#label create --force }"
+      CREATED_LABELS+=("${rest%% *}")
+    fi
+  done < "$CALL_LOG"
+
+  # Direction 1: every declared label must be created at runtime.
+  for name in "${DECLARED_LABELS[@]}"; do
+    found=0
+    for created in "${CREATED_LABELS[@]}"; do
+      [[ "$created" == "$name" ]] && found=1 && break
+    done
+    [[ "$found" -eq 1 ]] || {
+      echo "Declared label '$name' was not created at runtime" >&2
+      return 1
+    }
+  done
+
+  # Direction 2: every label created at runtime must be declared in the script.
+  for created in "${CREATED_LABELS[@]}"; do
+    found=0
+    for name in "${DECLARED_LABELS[@]}"; do
+      [[ "$name" == "$created" ]] && found=1 && break
+    done
+    [[ "$found" -eq 1 ]] || {
+      echo "Label '$created' was created at runtime but is not declared in the script" >&2
+      return 1
+    }
   done
 }
 
