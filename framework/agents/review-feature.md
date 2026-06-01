@@ -16,7 +16,7 @@ A feature name. If none is supplied in the prompt, default to the active feature
 ## Scope resolution
 
 1. Determine the feature.
-2. Scope is `master...HEAD` on the feature's branch.
+2. Scope is the feature branch's divergence from the repo's default branch — the three-dot diff `<base>...HEAD`, where `<base>` is resolved at runtime (`git symbolic-ref --short refs/remotes/origin/HEAD`), never hardcoded.
 3. Read the PRD and every issue file in the feature.
 4. State the resolved scope — feature name, branch, commit count, file count — before reviewing, so the user can interrupt if it's wrong.
 
