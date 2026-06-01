@@ -177,4 +177,4 @@ See [`afk-runner.md`](afk-runner.md) for the architecture, binding contract, out
 - **`framework/agents/`** — review aids (decision-neutral, console-only — never mutate state):
   - `review-issue.md` — single-issue review supporting verify. Single-pass; invoke inline as a subagent (e.g. `@"review-issue (agent)"`).
   - `review-feature.md` — two-pass whole-feature review supporting archive/merge. Spawns a challenger via the `Agent` tool, which only works from a top-level session, so launch it as its own Claude Code session (e.g. `claude --agent review-feature`).
-- **`CLAUDE.md`** — agent entry point. Signposts the operational docs (`issue-tracker.md`, `triage-labels.md`, `domain.md`); does not link to this doc, which is intentionally meta and not loaded on every agent session.
+- **`CLAUDE.md`** — agent entry point. Signposts the operational docs (`issue-tracker/BINDING.md`, `triage-states.md`, `domain.md`); does not link to this doc, which is intentionally meta and not loaded on every agent session.
