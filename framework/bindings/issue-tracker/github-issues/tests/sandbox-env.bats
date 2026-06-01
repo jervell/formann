@@ -52,9 +52,8 @@ EOF
   # Force darwin OSTYPE so the macOS branch runs in CI (Linux host).
   export OSTYPE="darwin21"
 
-  VALIDATE_BINDING_ENV_SH="$HERE/../../../../runner/validate-binding-env.sh"
   # shellcheck source=../../../../runner/validate-binding-env.sh
-  source "$VALIDATE_BINDING_ENV_SH"
+  source "$HERE/../../../../runner/validate-binding-env.sh"
 }
 
 # Applies the runner's shared per-line rule (binding_env_line_valid, sourced
