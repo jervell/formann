@@ -23,6 +23,8 @@ Indexed by what you have in front of you:
 
 ## Layout
 
+**Binding note.** Concrete paths and mechanisms throughout this doc — the `.features/` tree, archive as a directory move — are the **local-markdown** binding's realization, used as the running example. Another binding maps the same roles to its own mechanism: under GitHub Issues, issues are `#N`, a PRD is an issue body, and archive closes the parent issue and labels it `formann:archived` instead of moving a directory. The binding defines the mechanism (see [Design principles](#design-principles)).
+
 Two scopes. Project-level artifacts accumulate across features; feature-level artifacts come and go.
 
 ```
@@ -101,7 +103,7 @@ Type (`AFK` / `HITL`) is orthogonal to state. `HITL + ready-for-agent` is normal
 
 ## AFK runner
 
-Automation that drains a feature's `ready-for-agent + AFK` queue while you're away. Built on top of the pipeline — same issues, same state machine — but without the maintainer's keystroke as the bottleneck. Triggered manually: from any local state, run `framework/runner/run-the-queue.sh`. The runner stops when the queue empties or on Ctrl-C.
+Automation that drains `ready-for-agent + AFK` queues while you're away. Built on top of the pipeline — same issues, same state machine — but without the maintainer's keystroke as the bottleneck. Triggered manually from any local state, in one of three modes: bare (`framework/runner/run-the-queue.sh`) drains every active feature; `--feature <slug>` narrows to one feature; `--issue <feature>/<NN>` dispatches a single issue. The runner stops when its scope is drained, or on Ctrl-C.
 
 Each iteration picks the next eligible issue — skipping any with a runner-private abort flag at `.runner-state/aborted/<feature>/<NN>` — and spawns two sandboxed `claude` dispatches in sequence. The first runs `/implement` to ship the work to `in-review`. The second — the **review-and-gate** dispatch — runs an independent `review-issue` pass on the just-shipped commits and either auto-accepts to `done` (clean verdict) or appends the findings as a comment (≥1 Critical finding). HITL issues are not the runner's mandate: they fail the eligibility gate (loop mode skips them; single-dispatch refuses with exit 2) and stay on the maintainer's plate. The runner itself never writes to the tracker — every state change happens inside a dispatched `claude` session.
 
