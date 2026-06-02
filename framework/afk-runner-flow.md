@@ -46,7 +46,7 @@ Conventions:
        trap handle_preflight_signal on INT/TERM
                   │
                   ▼
-                preflight                (9 invariants — see below;
+                preflight                (10 invariants — see below;
                                           narrowed modes also run the
                                           `check_feature_eligibility`
                                           CLI-input gate)
@@ -92,13 +92,15 @@ Conventions:
 
 ## Pre-flight invariants
 
-Rows in evaluation order. `no-other-runner` runs first (lock acquisition gates everything else); the rest run in numeric order with `4b` immediately after `4`. Drain mode (bare invocation) defers `runner-checkout` and `mvn-cache` into the outer loop — those are per-feature concerns when more than one feature might drain.
+Rows in evaluation order. `no-other-runner` runs first (lock acquisition gates everything else); the rest run in numeric order, with `1b` after `1` and `4b` immediately after `4`. Drain mode (bare invocation) defers two per-feature concerns into the outer loop: `runner-checkout` *branch-sync* (2b) and `mvn-cache` (5). Everything else — including the `runner-checkout` *clone-existence* check (2a) — is global and runs before the mode split.
 
 | # | Name                       | Check                                                                                              | Drain mode? |
 | - | -------------------------- | -------------------------------------------------------------------------------------------------- | ----------- |
 | 8 | `no-other-runner`          | `.runner-state/lock` not held by a live process. (`acquire_lock` runs first.)                      | global      |
 | 1 | `discovery`                | `tracker-snapshot --list` exits 0 and returns a parseable JSON array. Persisted to `<run-dir>/discovery.json`. | global |
-| 2 | `runner-checkout`          | `.runner-state/checkout/` exists or clones; sync'd to the target branch tip.                       | per-feature (lazy) |
+| 1b | `runner-remote`           | `runner` git remote on the host repo is absent (added → `HOST_CHECKOUT`) or already matches it; a conflicting URL fails. Mutates only host `.git/config`. | global |
+| 2a | `runner-checkout`         | `.runner-state/checkout/` exists, else cloned from the host repo. Clone-existence only — no branch-switching. | global |
+| 2b | `runner-checkout`         | Runner-checkout sync'd to the target branch's tip on host.                                          | per-feature (lazy) |
 | 3 | `docker-daemon`            | `docker info` succeeds.                                                                            | global      |
 | 4 | `runner-image`             | `afk-runner-sandbox` exists (else built from `Dockerfile`).                                        | global      |
 | 4b | `gate-prompt`             | `framework/runner/review-and-gate.md` is present.                                                    | global      |
@@ -106,7 +108,7 @@ Rows in evaluation order. `no-other-runner` runs first (lock acquisition gates e
 | 6 | `sandbox-network`          | `afk-runner-sandbox` bridge + iptables RFC1918-deny rules in place.                                | global      |
 | 7 | `oauth-token`              | Keychain returns a non-empty token; held in `TOKEN` for the rest of the run.                       | global      |
 
-The runner is independent of host's HEAD and working tree: no invariant inspects either. Feature validation (unknown slug) in narrowed modes runs through `check_feature_eligibility`, a CLI-input gate that sits between invariants 1 and 2. It is **not** an invariant: on refusal it returns 2 with a `feature-restricted` / `single-dispatch (refused: <reason>)` stop reason — not `fail_invariant`, not `preflight-abort:`. Drain mode skips this gate entirely; per-feature eligibility is decided inside the outer loop by `drain_one_feature`'s cascade.
+The runner is independent of host's HEAD and working tree: no invariant inspects either. Feature validation (unknown slug) in narrowed modes runs through `check_feature_eligibility`, a CLI-input gate that runs after the global invariants (through `runner-checkout` clone-existence, 2a) and immediately before branch-sync (2b). It is **not** an invariant: on refusal it returns 2 with a `feature-restricted` / `single-dispatch (refused: <reason>)` stop reason — not `fail_invariant`, not `preflight-abort:`. Drain mode skips this gate entirely; per-feature eligibility is decided inside the outer loop by `drain_one_feature`'s cascade.
 
 Global invariant failure → `fail_invariant` → `exit 2`. The EXIT trap (`finalize_run`) then writes a SUMMARY.md whose body names the failing invariant. Per-feature lazy failures (drain mode) record a `skip:<reason>` row in SUMMARY.md and the run continues.
 
@@ -153,9 +155,10 @@ Wraps the per-issue loop and walks every feature in the discovery output.
 │         │                         failure)                                │
 │         ▼                                                                 │
 │   record_feature_outcome — once, keyed off inner RUN_STOP_REASON:         │
-│     "snapshot-failed" → feature-snapshot-failed                           │
-│     "fetch-failed"    → skip:fetch-failed                                 │
-│     anything else     → drained                                           │
+│     "propagation-error" → no row; halts the drain (see stop reasons)      │
+│     "snapshot-failed"   → feature-snapshot-failed                         │
+│     "fetch-failed"      → skip:fetch-failed                               │
+│     anything else       → drained                                         │
 │         │                                                                 │
 │         ▼                                                                 │
 │   [RUNNER_INTERRUPTED?] ──yes──► RUN_STOP_REASON = "interrupted"; stop    │
@@ -216,19 +219,35 @@ Abort flags persist across runs (files on disk). The eligibility skip log line i
 
 ```
    pre = take_snapshot(feature)
+        │  (fail ──► RUN_STOP_REASON = snapshot-failed-mid-dispatch:pre;
+        │            record FAIL; ret 1)
    pre_head = git rev-parse HEAD (runner-checkout)
         │
         ▼
    run_dispatch_container("/implement <ref>")        ─► writes <NN>.log, <NN>.exit
+   impl_transport_crash = (impl_rc != 0 && is_transport_crash(<NN>.log))
         │
         ▼
    post_head = git rev-parse HEAD (runner-checkout)
-   post_impl = take_snapshot(feature)
+   has_commits = (pre_head != post_head)
         │
         ▼
-   v_impl = classify_outcome(pre, post_impl, ref)
-   (3 args — exit code is NOT consulted; status delta is the verdict)
-   has_commits = (pre_head != post_head)
+   post_impl = take_snapshot(feature)
+        │
+   [post-implement snapshot ok?]
+        │
+        ├─ no ─► park committed work to parking ref (when has_commits):
+        │           • park error    → RUN_STOP_REASON = propagation-error;
+        │                             record FAIL; ret 1
+        │           • park ok / none → RUN_STOP_REASON =
+        │                             snapshot-failed-mid-dispatch:post-implement;
+        │                             record FAIL; ret 1
+        │
+        ▼ yes
+   v_impl = classify_outcome(pre, post_impl, ref, impl_transport_crash)
+   (4 args — classify_outcome ignores the container exit code; status delta is
+    the verdict. The transport-crash flag flips the non-success path from
+    failure to dispatch-aborted.)
         │
         ▼
    [has_commits?]
@@ -243,28 +262,35 @@ Abort flags persist across runs (files on disk). The eligibility skip log line i
    │         yes       no
    │          │        │
    │          ▼        │
-   │       record FAIL │
-   │       ret 1       │
+   │   RUN_STOP_REASON │
+   │   = propagation-  │
+   │     error         │
+   │   record FAIL     │
+   │   ret 1           │
    │                   │
    └─────────┬─────────┘
              ▼
           [v_impl?]
-       ┌─────┴───────────────────────┐
-     failure                       success
-       │                             │
-       ▼                             ▼
+   ┌─────────┴───────────────────────┐
+ failure / dispatch-aborted        success
+   │                                 │
+   ▼                                 ▼
    [post_impl eligible?]     (continue to gate stage)
    ┌──────┴──────┐
   yes           no
    │             │
-   ▼             │
-write_abort_flag │    (stuck: would be re-picked without flag)
- (implement)     │
+   ▼             │    (stuck: would be re-picked without flag)
+write_abort_flag │
+ (implement;     │
+  type=transport │
+  on dispatch-   │
+  aborted, else  │
+  technical)     │
    │             │
    └──────┬──────┘
           ▼
-       record FAIL
-       ret 1
+   record FAIL (or dispatch-aborted)
+   ret 1
 ```
 
 The runner dispatches eligible AFK refs only — both loop mode (snapshot
@@ -281,6 +307,16 @@ comment must reach the host before the next iteration's
 container-died-before-commit failure leaves `pre_head == post_head`,
 so the propagation branch is a no-op for it.
 
+A transport crash — the dispatch container died for an infrastructure
+reason (`impl_rc` nonzero and the log matches `is_transport_crash`) —
+sets `impl_transport_crash`, which flips the classifier's non-success
+verdict from `failure` to `dispatch-aborted`: the abort flag carries
+`type=transport` instead of `technical`, and the recorded outcome is
+`dispatch-aborted`. The post-implement snapshot-failure branch takes
+precedence over that signal — an unreadable snapshot leaves the issue's
+state unknown, so the iteration parks any committed work and bails before
+the classifier runs.
+
 ### Gate stage
 
 ```
@@ -296,52 +332,80 @@ so the propagation branch is a no-op for it.
  success     │
  return 0    │
              ▼
+   pre_gate_head = git rev-parse HEAD (runner-checkout)
    run_gate_container(prompt + ref)              ─► writes <NN>-review.log
+   post_gate_head = git rev-parse HEAD (runner-checkout)
+   gate_has_commits = (pre_gate_head != post_gate_head)
+   gate_transport_crash = (gate_rc != 0 && is_transport_crash(<NN>-review.log))
              │
              ▼
    post_gate = take_snapshot(feature)
              │
-             ▼
-   v_gate = classify_gate_outcome(post_impl, post_gate, ref, gate_rc)
-   (4 args — both the snapshot delta AND the exit code are primary)
+   [post-gate snapshot ok?]
+        │
+        ├─ no ─► park committed gate work to parking ref (when gate_has_commits):
+        │           • park error    → RUN_STOP_REASON = propagation-error;
+        │                             record FAIL; ret 1
+        │           • park ok / none → RUN_STOP_REASON =
+        │                             snapshot-failed-mid-dispatch:post-gate;
+        │                             record FAIL; ret 1
+        │
+        ▼ yes
+   v_gate = classify_gate_outcome(post_impl, post_gate, ref, gate_rc,
+                                  gate_transport_crash)
+   (5 args — snapshot delta AND exit code are primary; a transport crash on a
+    nonzero exit flips gate-failed to review-aborted)
              │
              ▼
         [v_gate?]
-   ┌─────────┼───────────┐
-   │         │           │
- gate-     clean        blocked
- failed      │           │
-   │         └─────┬─────┘
-   │               │
-   ▼               ▼
- write_abort_  propagate_feature  (publish to parking ref; best-effort host ff)
- flag(gate)        │
- record        [error?]
- gate-failed  ┌────┴─────┐
- ret 1        yes        no
-               │          │
-               ▼          ▼
-            RUN_STOP_REASON record (done if v_gate=clean, else blocked)
-            ="propagation-error" return 0
-            record gate-failed
-            ret 1
+        │
+        ├─ gate-failed / review-aborted ─►
+        │     write_abort_flag(gate; type=transport on review-aborted)
+        │     park committed gate work (when gate_has_commits):
+        │       • park error    → RUN_STOP_REASON = propagation-error
+        │       • park ok / none → (no stop reason)
+        │     record gate-failed / review-aborted; ret 1
+        │
+        └─ clean / blocked ─► propagate_feature  (publish to parking ref;
+              │                                   best-effort host ff)
+           [error?]
+           ┌───┴────┐
+          yes       no
+           │         │
+           ▼         ▼
+   RUN_STOP_REASON   record (done if v_gate=clean, else blocked)
+   = propagation-    return 0
+     error
+   record gate-failed
+   ret 1
 ```
 
 ### Per-iteration verdict reference
 
 | Path                                                                          | Recorded outcome | `dispatch_one` rc | `RUN_STOP_REASON` set?   | Abort flag written? |
 | ----------------------------------------------------------------------------- | ---------------- | ----------------- | ------------------------ | ------------------- |
-| Implement classifier `failure`, no committed change                           | `FAIL`           | 1                 | no                       | yes (`implement`)   |
-| Implement classifier `failure` with committed change, propagate ok, post eligible | `FAIL`       | 1                 | no                       | yes (`implement`)   |
-| Implement classifier `failure` with committed change, propagate ok, post non-eligible | `FAIL`   | 1                 | no                       | no                  |
-| Implement classifier `failure` with committed change, propagate error        | `FAIL`           | 1                 | `propagation-error`      | no                  |
-| Implement classifier `success`, propagate error                               | `FAIL`           | 1                 | `propagation-error`      | no                  |
-| Gate classifier `gate-failed`                                                 | `gate-failed`    | 1                 | no                       | yes (`gate`)        |
-| Gate `clean`/`blocked`, propagate error                                       | `gate-failed`    | 1                 | `propagation-error`      | no                  |
-| Gate `clean`, propagate ok                                                    | `done`           | 0                 | no                       | no                  |
-| Gate `blocked`, propagate ok                                                  | `blocked`        | 0                 | no                       | no                  |
+| Snapshot fails mid-dispatch (`pre` / `post-implement` / `post-gate`); committed work, if any, parks ok | `FAIL` | 1 | `snapshot-failed-mid-dispatch:<stage>` | no |
+| Snapshot fails `post-implement`/`post-gate`, committed work, park error | `FAIL` | 1 | `propagation-error` | no |
+| Implement classifier `failure`, no committed change | `FAIL` | 1 | no | yes (`implement`) |
+| Implement classifier `failure`, committed change, propagate ok, post eligible | `FAIL` | 1 | no | yes (`implement`) |
+| Implement classifier `failure`, committed change, propagate ok, post non-eligible | `FAIL` | 1 | no | no |
+| Implement classifier `dispatch-aborted`, post eligible | `dispatch-aborted` | 1 | no | yes (`implement`, `transport`) |
+| Implement classifier `dispatch-aborted`, post non-eligible | `dispatch-aborted` | 1 | no | no |
+| Implement, committed change, propagate error (any classifier verdict) | `FAIL` | 1 | `propagation-error` | no |
+| Gate classifier `gate-failed` (no gate commit, or parked ok) | `gate-failed` | 1 | no | yes (`gate`) |
+| Gate classifier `review-aborted` (no gate commit, or parked ok) | `review-aborted` | 1 | no | yes (`gate`, `transport`) |
+| Gate `gate-failed`/`review-aborted`, committed gate work, park error | `gate-failed`/`review-aborted` | 1 | `propagation-error` | yes (`gate`) |
+| Gate `clean`/`blocked`, propagate error | `gate-failed` | 1 | `propagation-error` | no |
+| Gate `clean`, propagate ok | `done` | 0 | no | no |
+| Gate `blocked`, propagate ok | `blocked` | 0 | no | no |
 
-The "no committed change" row writes the implement abort flag unconditionally because, in code, the write is gated on `post_eligible == "true"` — and with no commits the post-snapshot reads HEAD (unchanged), so post-status equals pre-status (`ready-for-agent`) and `post_eligible` is necessarily `true`. The "post non-eligible" branch is reachable only when a commit *did* land (e.g., `/implement` bailed to `needs-info`), which is captured by the dedicated row above. The "propagate error" rows cover step-1 failure (parking-ref publish failed); `RUN_STOP_REASON="propagation-error"` causes `run_loop` to break immediately, preserving the un-published commits on the runner-checkout for operator recovery. No abort flag is written.
+The two snapshot-failure rows bail before the classifier runs — an unreadable snapshot leaves the issue's state unknown — parking any committed work first so the next iteration's reset can't lose it. `snapshot-failed-mid-dispatch:<stage>` is transient: `run_single` overwrites it with `single-dispatch (…)`, and in loop / drain mode the next iteration re-snapshots and re-classifies, so it shows up in the per-iteration record but not in the terminal Stop reasons list below.
+
+The "no committed change" row writes the implement abort flag unconditionally because, in code, the write is gated on `post_eligible == "true"` — and with no commits the post-snapshot reads HEAD (unchanged), so post-status equals pre-status (`ready-for-agent`) and `post_eligible` is necessarily `true`. The "post non-eligible" branch is reachable only when a commit *did* land (e.g., `/implement` bailed to `needs-info`), which is captured by the dedicated row above.
+
+The `dispatch-aborted` / `review-aborted` rows are the transport-crash variants — the container died for an infrastructure reason. Control flow matches the corresponding `failure` / `gate-failed` row, but the abort flag carries `type=transport` and the recorded label changes.
+
+The "propagate error" rows cover a parking-ref publish failure; `RUN_STOP_REASON="propagation-error"` causes `run_loop` to break immediately, preserving the un-published commits on the runner-checkout for operator recovery. No abort flag is written — except on the gate `gate-failed`/`review-aborted` row, which writes its flag *before* attempting the park, making it the one path where an abort flag and `propagation-error` coincide.
 
 ## Outputs
 
@@ -354,7 +418,7 @@ The "no committed change" row writes the implement abort flag unconditionally be
 | `<NN>.log` (narrowed) / `<feature>/<NN>.log` (drain) | Per implement dispatch. | Container stdout + stderr from `claude -p "/implement <ref>"`. Drain mode nests under a feature subdir so per-issue artifacts don't collide across features. |
 | `<NN>.exit` / `<feature>/<NN>.exit` | Per implement dispatch. | Container exit code (forensics only — classifier ignores it). |
 | `<NN>-review.log` / `<feature>/<NN>-review.log` | Per gate dispatch (iterations that reached the gate stage). | Container stdout + stderr from gate dispatch. |
-| `SUMMARY.md`      | Always (written by `finalize_run` from EXIT trap).                         | Narrowed modes: feature heading + flat per-issue table. Drain mode: per-feature sections (`## <feature> — drained` with nested table, or `## <feature> — skipped: <reason>` / `## <feature> — feature-snapshot-failed` one-liner). Pre-flight aborts replace the table with a single line naming the invariant. |
+| `SUMMARY.md`      | Always (written by `finalize_run` from EXIT trap).                         | Narrowed modes: feature heading + flat per-issue table. Drain mode: per-feature sections (`## <feature> — drained` with nested table, or `## <feature> — skipped: <reason>` / `## <feature> — feature-snapshot-failed` one-liner). Pre-flight aborts replace the table with a single line naming the invariant. When any dispatch parked work to a parking ref, a `## Unpulled parked work` section (one `git pull runner <feature>` recipe per parked feature) follows the table; when `finalize_run` swept any stale parking ref, a `## Swept parking refs` section is appended after the body. |
 
 ### Files written under `.runner-state/aborted/<feature>/`
 
@@ -377,8 +441,8 @@ The "no committed change" row writes the implement abort flag unconditionally be
 - `interrupted` *(loop-phase Ctrl-C)*
 - `snapshot-failed` *(`tracker-snapshot` crashed mid-loop; exit 1)*
 - `propagation-error` *(parking-ref publish failed; exit 1; runner-checkout retains un-published commits)*
-- `feature-restricted (refused: unknown-feature | branch-missing)` *(--feature mode)*
-- `single-dispatch (success)` / `single-dispatch (failure)` / `single-dispatch (refused: <reason>)` *(--issue mode; refusal reasons: `HITL`, `wrong-status`, `blockers-unmet`, `missing`, `unknown-feature`, `branch-missing`, `snapshot-failed`)*
+- `feature-restricted (refused: unknown-feature)` *(--feature mode)*
+- `single-dispatch (success)` / `single-dispatch (failure)` / `single-dispatch (refused: <reason>)` *(--issue mode; refusal reasons: `HITL`, `wrong-status`, `blockers-unmet`, `missing`, `unknown-feature`, `snapshot-failed`)*
 
 **All modes — pre-flight-phase:**
 

@@ -1043,7 +1043,7 @@ check_discovery() {
   fi
 }
 
-# 1b. Feature eligibility — TARGET_FEATURE must appear in DISCOVERY_JSON.
+# Feature eligibility — TARGET_FEATURE must appear in DISCOVERY_JSON.
 #     This is a CLI-input refusal (the slug came from `--feature` or
 #     `--issue`), so it exits 2 with a `feature-restricted` /
 #     `single-dispatch` stop reason rather than going through
@@ -1325,7 +1325,7 @@ ensure_runner_checkout() {
   fi
 }
 
-# 4. Docker daemon responds.
+# 3. Docker daemon responds.
 check_docker_daemon() {
   if ! docker info >/dev/null 2>&1; then
     fail_invariant "docker-daemon" \
@@ -1333,7 +1333,7 @@ check_docker_daemon() {
   fi
 }
 
-# 5b. Gate prompt file exists. The post-implement review-and-gate dispatch
+# 4b. Gate prompt file exists. The post-implement review-and-gate dispatch
 #     reads this prompt at dispatch time, appends the issue ref, and hands
 #     the result to a fresh `claude -p` invocation. Slots in the framework-
 #     artifact pre-flight cluster, between the image and the per-feature
@@ -1346,7 +1346,7 @@ check_gate_prompt() {
   fi
 }
 
-# 5. Runner image exists or is built. `build-image.sh` is idempotent.
+# 4. Runner image exists or is built. `build-image.sh` is idempotent.
 ensure_image() {
   if ! "$HERE/build-image.sh" >/dev/null; then
     fail_invariant "runner-image" \
@@ -1354,7 +1354,7 @@ ensure_image() {
   fi
 }
 
-# 6. Per-feature mvn cache volume exists. `ensure-mvn-cache.sh` is idempotent.
+# 5. Per-feature mvn cache volume exists. `ensure-mvn-cache.sh` is idempotent.
 ensure_mvn_cache() {
   if ! MVN_VOLUME="$("$HERE/ensure-mvn-cache.sh" "$TARGET_FEATURE")"; then
     fail_invariant "mvn-cache" \
@@ -1366,7 +1366,7 @@ ensure_mvn_cache() {
   fi
 }
 
-# 7. Sandbox docker network exists. `setup-network.sh` is idempotent.
+# 6. Sandbox docker network exists. `setup-network.sh` is idempotent.
 ensure_network() {
   if ! NET_NAME="$("$HERE/setup-network.sh")"; then
     fail_invariant "sandbox-network" \
@@ -1378,7 +1378,7 @@ ensure_network() {
   fi
 }
 
-# 8. OAuth token retrievable from Keychain. Captured into a shell variable;
+# 7. OAuth token retrievable from Keychain. Captured into a shell variable;
 #    never echoed, never logged, passed to docker -e only.
 retrieve_oauth_token() {
   if ! TOKEN="$("$HERE/retrieve-token.sh")"; then
@@ -1400,7 +1400,7 @@ preflight() {
   acquire_lock
   check_discovery                        # invariant 1: tracker-snapshot --list
   ensure_runner_remote                   # invariant 1b: runner remote
-  if ! ensure_runner_checkout_exists >&2; then
+  if ! ensure_runner_checkout_exists >&2; then  # invariant 2a (clone-existence)
     fail_invariant "runner-checkout" \
       "ensure_runner_checkout_exists failed (rm -rf $HOST_CHECKOUT and re-run to recover)"
   fi
@@ -1417,7 +1417,7 @@ preflight() {
   # row, not a pre-flight abort.
   if [ "$RUN_MODE" != "drain" ]; then
     check_feature_eligibility || return $?
-    ensure_runner_checkout               # invariant 2 (branch-sync)
+    ensure_runner_checkout               # invariant 2b (branch-sync)
   fi
   check_docker_daemon                    # invariant 3
   ensure_image                           # invariant 4
