@@ -5,8 +5,8 @@ dispatching `/implement` per issue inside a sandboxed Docker container.
 
 `run-the-queue.sh` has three invocation forms:
 
-- **Bare invocation** (`run-the-queue.sh`, no args) — **drain mode**. Walks every active feature returned by `tracker-snapshot --list` (the discovery output, persisted to `<run-dir>/discovery.json`) and drains the ones it's allowed to touch. Features skipped for per-feature reasons (`branch-missing`, `fetch-failed`, `feature-snapshot-failed`, `queue-empty`) produce a SUMMARY row and the run continues. This is the scheduled-job shape: fire the runner regardless of which branch you have checked out; every authorized AFK queue advances.
-- **`--feature <slug>`** — **loop mode**. Narrows to one feature; refuses loudly on structural gate failures (`unknown-feature`, `branch-missing`).
+- **Bare invocation** (`run-the-queue.sh`, no args) — **drain mode**. Walks every active feature returned by `tracker-snapshot --list` (the discovery output, persisted to `<run-dir>/discovery.json`) and drains the ones it's allowed to touch. Features skipped for per-feature reasons (`fetch-failed`, `feature-snapshot-failed`, `queue-empty`) produce a SUMMARY row and the run continues. This is the scheduled-job shape: fire the runner regardless of which branch you have checked out; every authorized AFK queue advances.
+- **`--feature <slug>`** — **loop mode**. Narrows to one feature; refuses loudly on a structural gate failure (`unknown-feature`).
 - **`--issue <feature>/<NN>`** — **single-dispatch mode**. Dispatches one ref; refuses loudly on eligibility gate failures.
 
 Drain mode stops on: every feature considered (`completed`); Ctrl-C (`interrupted`); or `tracker-snapshot --list` itself failing (`preflight-abort: discovery`).
@@ -54,7 +54,10 @@ combined-outcome column. The combined-outcome vocabulary is:
 |---------|---------|
 | `done` | Gate found no Critical findings; status flipped to `done`. |
 | `blocked` | Gate found ≥1 🔴 Critical; status stayed at `in-review` with findings appended as a comment. |
-| `gate-failed` | Gate dispatch errored or landed on an off-mission status. Runner writes an abort flag and continues. |
+| `gate-failed` | Gate dispatch errored or landed on an off-mission status. Runner writes a `type: technical` abort flag and continues. |
+| `review-aborted` | Gate subprocess transport-crashed (empty log, API 5xx/429, network error) and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
+| `dispatch-aborted` | Implement subprocess transport-crashed and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
+| `in-review` | AFK iteration interrupted between the implement and gate stages: implement landed `in-review`, the interrupt pre-empted the gate, and the iteration is recorded at its implement outcome. |
 | `FAIL` | Implement-stage failure (classifier verdict, container error, or parking-ref publish failure). Any `tracker:` work the dispatch did commit (notably the comment `/implement` posts on a bail) is still propagated to the host so it shows up on your branch when you return. |
 
 The trailing `stop reason:` line varies by mode.
@@ -69,8 +72,8 @@ The trailing `stop reason:` line varies by mode.
 **Narrowed modes (`--feature`, `--issue`):**
 
 - `queue-empty` / `interrupted` / `snapshot-failed` / `propagation-error` — the per-issue loop's stop reasons (see "The dispatch loop" in `afk-runner.md`).
-- `feature-restricted (refused: <reason>)` (`--feature`) — `<reason>` is `unknown-feature` (slug not in discovery output) or `branch-missing` (no host ref for `<slug>`).
-- `single-dispatch (success|failure)` (`--issue`); or `single-dispatch (refused: <reason>)` — `<reason>` is one of: HITL type, wrong status, unmet blockers, `unknown-feature`, `branch-missing`, `snapshot-failed`.
+- `feature-restricted (refused: <reason>)` (`--feature`) — `<reason>` is `unknown-feature` (slug not in discovery output).
+- `single-dispatch (success|failure)` (`--issue`); or `single-dispatch (refused: <reason>)` — `<reason>` is one of: HITL type, wrong status, unmet blockers, `unknown-feature`, `snapshot-failed`.
 
 **All modes — pre-flight-phase:**
 

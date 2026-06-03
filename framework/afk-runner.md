@@ -108,6 +108,7 @@ The runner consumes the issue tracker through a single binding-supplied executab
   "issues": [
     {
       "ref": "<feature>/NN",
+      "nn": "<binding-agnostic issue number>",
       "status": "<frontmatter status>",
       "category": "<frontmatter category>",
       "type": "<frontmatter type>",
@@ -122,6 +123,8 @@ The runner consumes the issue tracker through a single binding-supplied executab
 `eligible` is `true` iff `status == "ready-for-agent"` **and** `type == "AFK"` **and** every blocker is an in-feature issue with `status == "done"`. Anything else (HITL, unmet blockers, cross-feature blockers the binding can't verify, malformed frontmatter) yields `eligible: false`.
 
 `parse_error` is emitted only on issues whose frontmatter failed to parse — missing closing `---`, non-`key: value` lines, etc. The script does not exit non-zero just because one issue is malformed; the malformed entry appears in `issues[]` with `parse_error` set and `eligible: false` so the runner can see it and skip past it.
+
+`nn` is the binding-agnostic issue number. The runner keys abort flags and single-dispatch lookup on `nn` rather than parsing `ref`, because the native ref shape varies by binding (local-markdown: `<feature>/NN`; github-issues: `#N`). `nn` is the stable numeric handle; the runner resolves it back to the binding-native `ref` in one place.
 
 The runner uses snapshots for two purposes:
 
@@ -176,7 +179,7 @@ In drain mode (bare invocation), the runner sits an additional loop above the pe
 
 1. **Top-of-iteration check** — Ctrl-C arrived? Stop with reason `interrupted`.
 2. **Pick next feature** — `next_eligible_feature` returns the first discovery slug not yet considered in this run, or empty when discovery is exhausted.
-3. **Per-feature gate cascade** — `drain_one_feature` runs the side-effecting helpers in short-circuit order and records `drain` or `skip:<reason>` at the first failing step (priority: `fetch-failed` → `feature-snapshot-failed` → `queue-empty` → `drain`). Missing host branches are no longer a gate signal — `ensure_runner_checkout_on_branch` lazily creates the runner-checkout branch from `main` when the host has no ref yet.
+3. **Per-feature gate cascade** — `drain_one_feature` runs the side-effecting helpers in short-circuit order and records `drain` or `skip:<reason>` at the first failing step (priority: `fetch-failed` → `feature-snapshot-failed` → `queue-empty` → `drain`). Missing host branches are no longer a gate signal — `ensure_runner_checkout_on_branch` lazily creates the runner-checkout branch from the remote's default branch (resolved via `refs/remotes/origin/HEAD`, not a hardcoded `main`) when the host has no ref yet.
    - **`skip:fetch-failed`** — `ensure_runner_checkout_on_branch <feature>` failed to sync the runner-checkout to this feature's tip (git error, transient I/O, permissions). Recorded and run continues.
    - **`feature-snapshot-failed`** — `tracker-snapshot <slug>` exited non-zero or returned unparseable output for this feature. Distinct from the run-level `discovery-failed` (which catches the same issue at run start). One feature's snapshot crash does **not** abort the run — other features still drain.
    - **`skip:queue-empty`** — the feature snapshot has no eligible non-aborted AFK refs. Every snapshot's `eligible: true` ref carries an abort flag, or there are no eligible refs in the first place. The feature shows up in SUMMARY as "considered, nothing to do".
@@ -206,7 +209,7 @@ One iteration, end to end:
 6. **Propagate (any committed runner-checkout change)** — if the runner-checkout's HEAD advanced during the dispatch (the runner produced commits), publish them to the per-feature parking ref on host (`refs/remotes/runner/<branch>`, force-updated), then attempt a best-effort fast-forward of host's branch ref (no `--update-head-ok`). The propagation gate is the commit delta, not the classifier verdict. Under local-markdown, a `/implement` bail commits an explanatory `tracker:` comment without flipping status; that commit must reach the parking ref before the next iteration's sync moves on. Under GitHub Issues, a bail makes an API call that produces no commit — propagation is a no-op, which is correct. A genuine technical failure (container died before any tracker write) leaves HEAD unchanged and the runner skips propagation. Git's refusal of the host fast-forward (HEAD-on-target or non-ff) is an expected `parked-only` outcome and the iteration is recorded as success; only the parking-ref publish failing — a rare runner bug — records FAIL. If the classifier verdict is `failure` (independent of whether propagation ran), iteration also ends here with `FAIL`.
 7. **Gate decision** — every successful AFK implement proceeds to the review-and-gate dispatch. Both run modes refuse non-AFK refs before reaching this point (loop via the snapshot's `eligible` filter, single-dispatch via the same flag in `run_single`), so `dispatch_one` never sees a non-AFK ref.
 8. **Review-and-gate dispatch** — `claude -p "<gate-prompt>\n<ref>" --dangerously-skip-permissions` in another fresh sandbox container. Output captured to `<NN>-review.log`.
-9. **Classify gate** — pre/post snapshots and the dispatch exit code feed `classify_gate_outcome`. Verdict is `clean`, `blocked`, or `gate-failed`.
+9. **Classify gate** — pre/post snapshots, the dispatch exit code, and a transport-crash flag feed `classify_gate_outcome`. Verdict is `clean`, `blocked`, `gate-failed`, or `review-aborted` (the last when the gate subprocess transport-crashed).
 10. **Propagate (if gate succeeded and produced commits)** — same publish-then-fast-forward sequence as step 6, gated on the runner-checkout HEAD delta across the gate dispatch. Under local-markdown the gate prompt's `tracker:` commit advances HEAD and this fires; under github-issues the gate's API-only mutations leave HEAD unchanged and this is a no-op.
 
 Per-issue failures don't stop the queue — they're logged, the runner moves to the next eligible issue. The failed `/implement` already posts its own comment on the issue; the runner adds nothing beyond the abort flag written on stuck failures (see "Failure handling" below).
@@ -239,61 +242,69 @@ Two pure functions in `run-the-queue.sh`. Both take JSON snapshots and return a 
 
 ### `classify_outcome` — implement stage
 
-| Pre status         | Post status     | Verdict   |
-| ------------------ | --------------- | --------- |
-| `ready-for-agent`  | `in-review`     | `success` |
-| `ready-for-agent`  | `done`          | `success` |
-| `ready-for-agent`  | anything else   | `failure` |
-| anything else      | (any)           | `failure` |
+Inputs: pre-dispatch snapshot, post-dispatch snapshot, ref, and a transport-crash boolean (true when the dispatch subprocess crashed on a transport-class failure — empty log, API 5xx/429, network error; see [`runner/README.md`](runner/README.md)).
 
-A missing entry in either snapshot counts as "anything else" — `failure`. The pre-status guard catches argument-order swaps and stale snapshots.
+| Pre status         | Post status     | Verdict                                                          |
+| ------------------ | --------------- | --------------------------------------------------------------- |
+| `ready-for-agent`  | `in-review`     | `success`                                                       |
+| `ready-for-agent`  | `done`          | `success`                                                       |
+| `ready-for-agent`  | anything else   | `failure` (`dispatch-aborted` if the dispatch transport-crashed) |
+| anything else      | (any)           | `failure`                                                       |
+
+A missing entry in either snapshot counts as "anything else". The pre-status guard catches argument-order swaps and stale snapshots, and fires before the transport-crash check — a pre-status that isn't `ready-for-agent` is always `failure`.
 
 ### `classify_gate_outcome` — gate stage
 
-Inputs: pre-gate snapshot (post-implement state), post-gate snapshot, ref, gate dispatch exit code.
+Inputs: pre-gate snapshot (post-implement state), post-gate snapshot, ref, gate dispatch exit code, and a transport-crash boolean (true when the gate subprocess crashed on a transport-class failure — see [`runner/README.md`](runner/README.md)).
 
-The function evaluates a sequence of guards and returns on the first match. Reading the table as guards-in-order rather than as pre×exit×post combinations matches the code at run-the-queue.sh:120-148 and is inherently complete:
+The function evaluates a sequence of guards and returns on the first match. Reading the table as guards-in-order rather than as combinations matches the code at run-the-queue.sh:151-179 and is inherently complete:
 
-| #  | Guard (evaluated in order)                          | Verdict       |
-| -- | --------------------------------------------------- | ------------- |
-| 1  | pre status ∉ {`in-review`, `done`}                  | `gate-failed` |
-| 2  | exit code is nonzero                                 | `gate-failed` |
-| 3  | post status == `done`                                | `clean`       |
-| 4  | post status == `in-review`                           | `blocked`     |
-| 5  | post status is anything else (incl. missing)         | `gate-failed` |
+| #  | Guard (evaluated in order)                          | Verdict          |
+| -- | --------------------------------------------------- | ---------------- |
+| 1  | pre status ∉ {`in-review`, `done`}                  | `gate-failed`    |
+| 2  | exit code is nonzero, transport-crash               | `review-aborted` |
+| 3  | exit code is nonzero, no transport-crash            | `gate-failed`    |
+| 4  | post status == `done`, or ref absent from snapshot  | `clean`          |
+| 5  | post status == `in-review`                          | `blocked`        |
+| 6  | post status is anything else (present but unexpected) | `gate-failed`  |
 
-Pre status of `done` is admitted alongside `in-review` because `/implement` can legitimately land at either (a maintainer-adjusted brief may direct the dispatch straight to `done`); guards 2–5 do not differentiate which of the two pre states reached them.
+Pre status of `done` is admitted alongside `in-review` because `/implement` can legitimately land at either (a maintainer-adjusted brief may direct the dispatch straight to `done`); the later guards do not differentiate which of the two pre states reached them. An **absent** ref (guard 4) is `clean`, not a failure: the github-issues binding closes the issue on `done`, so the issue dropping out of the snapshot is that binding's native "done" signal.
 
-`clean` and `blocked` both return 0 from `dispatch_one` — operational health is fine, the verdict is independent. `gate-failed` returns 1 and writes an abort flag.
+`clean` and `blocked` both return 0 from `dispatch_one` — operational health is fine, the verdict is independent. `gate-failed` and `review-aborted` both return 1 and write an abort flag (`type: technical` and `type: transport` respectively).
 
 ### Combined per-iteration outcome
 
-| Outcome       | Meaning                                                                                      |
-| ------------- | -------------------------------------------------------------------------------------------- |
-| `done`        | AFK iteration; gate found no Critical findings and flipped status to `done`.                |
-| `blocked`     | AFK iteration; gate found ≥1 Critical; findings appended as a comment, status stays `in-review`. |
-| `gate-failed` | AFK iteration; gate dispatch errored or off-mission. Runner writes an abort flag and continues.  |
-| `FAIL`        | Implement-stage failure (classifier verdict, container error, or parking-ref publish failure). Runner writes an abort flag where applicable and continues. |
+| Outcome            | Meaning                                                                                      |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| `done`             | AFK iteration; gate found no Critical findings and flipped status to `done`.                |
+| `blocked`          | AFK iteration; gate found ≥1 Critical; findings appended as a comment, status stays `in-review`. |
+| `gate-failed`      | AFK iteration; gate dispatch errored or off-mission. Runner writes a `type: technical` abort flag and continues. |
+| `review-aborted`   | AFK iteration; the gate subprocess transport-crashed (empty log, API 5xx/429, network error) and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
+| `dispatch-aborted` | The implement subprocess transport-crashed and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
+| `in-review`        | AFK iteration interrupted between the implement and gate stages — implement landed `in-review`, the interrupt pre-empted the gate, and the iteration is recorded at its implement outcome. |
+| `FAIL`             | Implement-stage failure (classifier verdict, container error, or parking-ref publish failure). Runner writes an abort flag where applicable and continues. |
 
 ## Pre-flight invariants
 
 Fail-fast checks run before the loop starts. A failure prints `runner: <invariant>: <message>` and exits 2; the EXIT trap still writes a SUMMARY.md naming the invariant.
 
-| # | Invariant          | Check                                                                                           |
-| - | ------------------ | ----------------------------------------------------------------------------------------------- |
-| 1 | `discovery`        | `tracker-snapshot --list` exits 0 and returns a parseable JSON array of feature slugs. Persisted to `<run-dir>/discovery.json` for forensics. |
-| 2 | `runner-checkout`  | Runner-checkout exists or can be cloned, and is sync'd to the target branch tip. **Drain mode**: deferred to the per-feature loop. |
-| 3 | `docker-daemon`    | `docker info` succeeds.                                                                         |
-| 4 | `runner-image`     | The sandbox image exists or builds.                                                             |
-| 4b | `gate-prompt`     | `review-and-gate.md` exists next to `run-the-queue.sh`.                                        |
-| 5 | `mvn-cache`        | Per-feature Docker volume exists (created on first use). **Drain mode**: deferred to the per-feature loop — features the runner skips don't get a cache volume. |
-| 6 | `sandbox-network`  | Custom Docker bridge + RFC1918-deny rules in place.                                            |
-| 7 | `oauth-token`      | Keychain retrieval succeeds; the token is captured into a shell variable.                      |
-| 8 | `no-other-runner`  | Pidfile lock at `.runner-state/lock` not held by a live process. Acquired first within `preflight()`, before invariants 1–7. |
+| #  | Invariant          | Check                                                                                           |
+| -- | ------------------ | ----------------------------------------------------------------------------------------------- |
+| 1  | `discovery`        | `tracker-snapshot --list` exits 0 and returns a parseable JSON array of feature slugs. Persisted to `<run-dir>/discovery.json` for forensics. |
+| 1b | `runner-remote`    | Host's `runner` git remote points at the runner-checkout — registered if absent; aborts if it already exists with a conflicting URL. |
+| 2a | `runner-checkout`  | Runner-checkout clone exists or can be cloned. Runs unconditionally (all modes), before the drain/narrowed split. |
+| 2b | `runner-checkout`  | Runner-checkout is sync'd to the target branch tip. **Drain mode**: deferred to the per-feature loop. |
+| 3  | `docker-daemon`    | `docker info` succeeds.                                                                         |
+| 4  | `runner-image`     | The sandbox image exists or builds.                                                             |
+| 4b | `gate-prompt`      | `review-and-gate.md` exists next to `run-the-queue.sh`.                                        |
+| 5  | `mvn-cache`        | Per-feature Docker volume exists (created on first use). **Drain mode**: deferred to the per-feature loop — features the runner skips don't get a cache volume. |
+| 6  | `sandbox-network`  | Custom Docker bridge + RFC1918-deny rules in place.                                            |
+| 7  | `oauth-token`      | Keychain retrieval succeeds; the token is captured into a shell variable.                      |
+| 8  | `no-other-runner`  | Pidfile lock at `.runner-state/lock` not held by a live process. Acquired first within `preflight()`, before every other invariant. |
 
-The runner is independent of the host's current branch and working-tree state — no invariant inspects either. Feature validation (unknown slug, branch missing) runs as a CLI-input gate between invariants 1 and 2 (`check_feature_eligibility`, **narrowed modes only**); on refusal the runner exits 2 with a `feature-restricted (refused: <reason>)` / `single-dispatch (refused: <reason>)` stop reason, not a `preflight-abort:`. The gate sits before `runner-checkout` so an unknown slug surfaces the AC-mandated refusal instead of an opaque `git fetch origin <slug>` failure.
+The runner is independent of the host's current branch and working-tree state — no invariant inspects either. Feature validation (unknown slug) runs as a CLI-input gate after the runner-checkout clone-existence check (2a) and immediately before branch-sync (2b) (`check_feature_eligibility`, **narrowed modes only**); on refusal the runner exits 2 with a `feature-restricted (refused: <reason>)` / `single-dispatch (refused: <reason>)` stop reason, not a `preflight-abort:`. The gate sits before branch-sync so an unknown slug surfaces the AC-mandated refusal instead of an opaque `git fetch origin <slug>` failure.
 
-Drain mode (bare invocation) skips `check_feature_eligibility`, `runner-checkout`, and `mvn-cache` at pre-flight: there's no single target feature to validate up front, and the runner-checkout / mvn-cache are scoped per-drained-feature inside the outer loop. `drain_one_feature`'s gate cascade records the analogous skips at iteration time (`skip:fetch-failed`, `feature-snapshot-failed`, `skip:queue-empty`). The remaining global invariants (`discovery`, `docker-daemon`, `runner-image`, `gate-prompt`, `sandbox-network`, `oauth-token`, `no-other-runner`) still gate the whole run — they're infrastructure-level concerns, not feature-specific.
+Drain mode (bare invocation) skips `check_feature_eligibility`, runner-checkout **branch-sync (2b)**, and `mvn-cache` at pre-flight: there's no single target feature to validate up front, and branch-sync / mvn-cache are scoped per-drained-feature inside the outer loop. The runner-checkout clone-existence check (2a) still runs unconditionally — the clone is global; only the per-branch sync is per-feature. `drain_one_feature`'s gate cascade records the analogous skips at iteration time (`skip:fetch-failed`, `feature-snapshot-failed`, `skip:queue-empty`). The remaining global invariants (`discovery`, `runner-remote`, runner-checkout clone-existence, `docker-daemon`, `runner-image`, `gate-prompt`, `sandbox-network`, `oauth-token`, `no-other-runner`) still gate the whole run — they're infrastructure-level concerns, not feature-specific.
 
 Per-run dir creation, log capture, and trap installation happen earlier in `main()` — before `preflight()` runs. A concurrent invocation therefore does mint a per-run dir before its lock acquisition fails, and that dir gets a `preflight-abort: no-other-runner` SUMMARY.md.
 
@@ -305,6 +316,7 @@ The runner stops on one of these run-level reasons. Pre-flight-phase stops and l
 
 - **`completed`** — every feature in discovery output considered (replaces single-feature's `queue-empty` at the run level). Normal drain. Exit 0.
 - **`interrupted`** — Ctrl-C during the outer loop. The in-flight container, if any, receives SIGTERM; next feature is not started. Exit 0.
+- **`propagation-error`** — a parking-ref publish failed inside a feature's dispatch loop. The entire drain halts; no subsequent feature is considered. Exit 1.
 - **`discovery-failed`** — `tracker-snapshot --list` exited non-zero or returned unparseable JSON. Surfaces as `preflight-abort: discovery` in the existing pre-flight stop family. Exit 2.
 
 ### Narrowed modes (`--feature`, `--issue`)
@@ -312,8 +324,9 @@ The runner stops on one of these run-level reasons. Pre-flight-phase stops and l
 - **`queue-empty`** — no eligible, non-aborted ref remains at the top of an iteration. Normal completion (loop mode). Exit 0.
 - **`interrupted`** — Ctrl-C during the dispatch loop. Exit 0.
 - **`snapshot-failed`** — `tracker-snapshot` exited non-zero mid-loop (corrupt runner-checkout, jq missing, binding-implementation crash). Exit 1.
+- **`propagation-error`** — a parking-ref publish failed during a dispatch. The loop halts. Exit 1.
 
-Single-dispatch mode (`--issue <ref>`) reports `single-dispatch (success|failure)`, or `single-dispatch (refused: <reason>)` when the named ref fails the eligibility gate (HITL type, wrong status, unmet blockers, missing from the feature snapshot, `unknown-feature`, `branch-missing`, or `snapshot-failed` if `tracker-snapshot` itself exited non-zero).
+Single-dispatch mode (`--issue <ref>`) reports `single-dispatch (success|failure)`, or `single-dispatch (refused: <reason>)` when the named ref fails the eligibility gate (HITL type, wrong status, unmet blockers, missing from the feature snapshot, `unknown-feature`, or `snapshot-failed` if `tracker-snapshot` itself exited non-zero).
 
 ### All modes — pre-flight-phase stops
 
