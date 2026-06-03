@@ -1877,7 +1877,7 @@ EOF
   [ "$prop_head" = "$post_sha" ]
   # Dispatch record carries the gate-failed label and the propagation
   # indicator in the trailing column.
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"*"|propagated → host" ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|01-review|"*"|propagated → host" ]]
 }
 
 # === run_single — refusal cases ===========================================
@@ -2187,9 +2187,9 @@ setup_eligibility_test() {
   set -e
 
   [ "$rc" -eq 0 ]
-  # One record, combined label `done`, review-log marker present.
+  # One record, combined label `done`, step-log suffix present.
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|01-review|"* ]]
   # Two propagations: post-implement and post-gate.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
@@ -2226,7 +2226,7 @@ setup_eligibility_test() {
 
   [ "$rc" -eq 0 ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|01-review|"* ]]
   # Only the implement-stage propagate ran; the gate-stage call was gated
   # out by the empty HEAD delta.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
@@ -2323,7 +2323,7 @@ setup_eligibility_test() {
   [ "$rc" -eq 0 ]
   # left-for-human is operationally clean — no abort flag, no failure.
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|01-review|"* ]]
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
@@ -2353,7 +2353,7 @@ setup_eligibility_test() {
 
   [ "$rc" -ne 0 ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|01-review|"* ]]
   # Only the post-implement propagation ran; the gate-failed branch
   # does not propagate.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
@@ -2380,7 +2380,7 @@ setup_eligibility_test() {
   set -e
 
   [ "$rc" -eq 0 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|01-review|"* ]]
 }
 
 @test "dispatch_one — RUNNER_INTERRUPTED between implement and walk prevents item dispatch" {
@@ -2466,7 +2466,7 @@ setup_eligibility_test() {
   # left-for-human verdict propagates unchanged despite the dirty working tree.
   [ "$rc" -eq 0 ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|01-review|"* ]]
   # Both the post-implement and post-walk-item propagations ran.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
@@ -2505,7 +2505,7 @@ setup_eligibility_test() {
 
   [ "$rc" -eq 0 ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|01-review|"* ]]
 }
 
 @test "walk_post_implement_steps — default equivalence: continue-exhausted produces left-for-human (was: blocked)" {
@@ -2534,7 +2534,7 @@ setup_eligibility_test() {
   # left-for-human: rc=0 (no failure), no abort flag.
   [ "$rc" -eq 0 ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|01-review|"* ]]
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
 }
 
@@ -2566,7 +2566,7 @@ setup_eligibility_test() {
   # gate-failed: rc=1, abort flag written with dispatch: review (item label).
   [ "$rc" -eq 1 ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|01-review|"* ]]
   [ -f "$HOST_ABORT_DIR/f/01" ]
   grep -q '^dispatch: review$' "$HOST_ABORT_DIR/f/01"
   grep -q '^type: technical$' "$HOST_ABORT_DIR/f/01"
@@ -2797,28 +2797,44 @@ afk-runner|02|afk-runner/02|FAIL|18|'
   echo "$result" | grep -qF '| afk-runner/02 | FAIL | 18s | - | [02.log](02.log) |' || { echo "$result"; false; }
 }
 
-@test "format_summary_md — walk-bearing rows include the review-log link" {
-  input='afk-runner|01|afk-runner/01|done|42|y
-afk-runner|02|afk-runner/02|left-for-human|36|y
-afk-runner|03|afk-runner/03|gate-failed|11|y
+@test "format_summary_md — walk-bearing rows include step-log links" {
+  # step_logs field is a colon-sep list of step suffixes (e.g. "01-review").
+  # Each suffix produces a "<NN>-<suffix>.log" link alongside "<NN>.log".
+  input='afk-runner|01|afk-runner/01|done|42|01-review
+afk-runner|02|afk-runner/02|left-for-human|36|01-review
+afk-runner|03|afk-runner/03|gate-failed|11|01-review
 afk-runner|04|afk-runner/04|in-review|17|
 afk-runner|05|afk-runner/05|FAIL|3|'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
   # AFK walk rows (done / left-for-human / gate-failed) carry both the dispatch
-  # log and the review log. Propagation field absent → '-' indicator.
-  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | - | [01.log](01.log) [01-review.log](01-review.log) |' \
+  # log and the step log. Propagation field absent → '-' indicator.
+  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | - | [01.log](01.log) [01-01-review.log](01-01-review.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/02 | left-for-human | 36s | - | [02.log](02.log) [02-review.log](02-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/02 | left-for-human | 36s | - | [02.log](02.log) [02-01-review.log](02-01-review.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/03 | gate-failed | 11s | - | [03.log](03.log) [03-review.log](03-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/03 | gate-failed | 11s | - | [03.log](03.log) [03-01-review.log](03-01-review.log) |' \
     || { echo "$result"; false; }
   # Interrupt-between-stages row (implement-step recorded `in-review`,
   # interrupted before walk) and implement-FAIL row carry only the dispatch log.
   echo "$result" | grep -qF '| afk-runner/04 | in-review | 17s | - | [04.log](04.log) |' \
     || { echo "$result"; false; }
   echo "$result" | grep -qF '| afk-runner/05 | FAIL | 3s | - | [05.log](05.log) |' \
+    || { echo "$result"; false; }
+}
+
+@test "format_summary_md — multi-step manifest produces one link per step" {
+  # Iterate manifest: three steps, colon-separated suffixes.
+  input='afk-runner|01|afk-runner/01|done|42|01-review-and-gate:02-fix:03-review-and-gate'
+  result="$(printf '%s\n' "$input" | format_summary_md \
+    afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
+
+  echo "$result" | grep -qF '[01-01-review-and-gate.log](01-01-review-and-gate.log)' \
+    || { echo "$result"; false; }
+  echo "$result" | grep -qF '[01-02-fix.log](01-02-fix.log)' \
+    || { echo "$result"; false; }
+  echo "$result" | grep -qF '[01-03-review-and-gate.log](01-03-review-and-gate.log)' \
     || { echo "$result"; false; }
 }
 
@@ -2850,15 +2866,15 @@ afk-runner|05|afk-runner/05|FAIL|3|'
 }
 
 @test "format_summary_md — dispatch-aborted and review-aborted render as outcome labels" {
-  # dispatch-aborted has no review log; review-aborted does (gate stage ran).
+  # dispatch-aborted has no step logs; review-aborted does (gate stage ran).
   input='afk-runner|01|afk-runner/01|dispatch-aborted|12|
-afk-runner|02|afk-runner/02|review-aborted|38|y'
+afk-runner|02|afk-runner/02|review-aborted|38|01-review'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
   echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted | 12s | - | [01.log](01.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/02 | review-aborted | 38s | - | [02.log](02.log) [02-review.log](02-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/02 | review-aborted | 38s | - | [02.log](02.log) [02-01-review.log](02-01-review.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -2883,7 +2899,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|y'
 }
 
 @test "format_summary_md — propagated dispatch shows indicator column" {
-  input='afk-runner|01|afk-runner/01|done|42|y||propagated'
+  input='afk-runner|01|afk-runner/01|done|42|01-review||propagated'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
@@ -2894,7 +2910,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|y'
 }
 
 @test "format_summary_md — parked dispatch shows indicator column and end-of-run section" {
-  input='afk-runner|01|afk-runner/01|done|42|y||parked → runner/afk-runner'
+  input='afk-runner|01|afk-runner/01|done|42|01-review||parked → runner/afk-runner'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
@@ -2907,7 +2923,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|y'
 }
 
 @test "format_summary_md — multiple parked dispatches counted per feature" {
-  input='afk-runner|01|afk-runner/01|done|42|y||parked → runner/afk-runner
+  input='afk-runner|01|afk-runner/01|done|42|01-review||parked → runner/afk-runner
 afk-runner|02|afk-runner/02|in-review|30|||parked → runner/afk-runner'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
@@ -2918,7 +2934,7 @@ afk-runner|02|afk-runner/02|in-review|30|||parked → runner/afk-runner'
 }
 
 @test "format_summary_md — no parked section when all dispatches propagated" {
-  input='afk-runner|01|afk-runner/01|done|42|y||propagated
+  input='afk-runner|01|afk-runner/01|done|42|01-review||propagated
 afk-runner|02|afk-runner/02|FAIL|5|||'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
@@ -2934,7 +2950,7 @@ afk-runner|02|afk-runner/02|FAIL|5|||'
 # propagation == parked.
 #
 # Input record schema:
-#   feature|nn|ref|label|duration|review_present|attempt_count|propagation
+#   feature|nn|ref|label|duration|step_logs|attempt_count|propagation
 # The function only cares about fields 1 (feature) and 8 (propagation).
 
 @test "format_parked_ledger — empty input emits nothing" {
@@ -3359,7 +3375,7 @@ setup_abort_test() {
 @test "write_abort_flag — review item dispatch stores dispatch: review" {
   setup_abort_test
   local flag_file="$HOST_ABORT_DIR/f/01"
-  write_abort_flag "f" "01" "review" 0 "$HOST_REPO/.runner-state/runs/ts/01-review.log"
+  write_abort_flag "f" "01" "review" 0 "$HOST_REPO/.runner-state/runs/ts/01-01-review.log"
   grep -q '^dispatch: review$' "$flag_file"
 }
 
@@ -3397,7 +3413,7 @@ setup_abort_test() {
 @test "write_abort_flag — type: transport written when 6th arg is transport" {
   setup_abort_test
   local flag_file="$HOST_ABORT_DIR/f/01"
-  write_abort_flag "f" "01" "review" 1 "$HOST_REPO/.runner-state/runs/ts/01-review.log" "transport"
+  write_abort_flag "f" "01" "review" 1 "$HOST_REPO/.runner-state/runs/ts/01-01-review.log" "transport"
   grep -q '^type: transport$' "$flag_file"
 }
 
@@ -4364,7 +4380,7 @@ SHIM
 
 @test "format_multi_feature_summary_md — heading, run line, stop reason, encounter-order sections" {
   input='F|alpha|drained
-I|alpha|01|alpha/01|done|42|y
+I|alpha|01|alpha/01|done|42|01-review
 F|beta|skip:fetch-failed
 F|gamma|drained
 I|gamma|01|gamma/01|in-review|13|'
@@ -4387,7 +4403,7 @@ I|gamma|01|gamma/01|in-review|13|'
 
   # Drained features carry per-issue tables nested under their section.
   # Propagation field absent in these records → '-' indicator.
-  echo "$result" | grep -qF '| alpha/01 | done | 42s | - | [alpha/01.log](alpha/01.log) [alpha/01-review.log](alpha/01-review.log) |' \
+  echo "$result" | grep -qF '| alpha/01 | done | 42s | - | [alpha/01.log](alpha/01.log) [alpha/01-01-review.log](alpha/01-01-review.log) |' \
     || { echo "$result"; false; }
   echo "$result" | grep -qF '| gamma/01 | in-review | 13s | - | [gamma/01.log](gamma/01.log) |' \
     || { echo "$result"; false; }
@@ -4429,27 +4445,27 @@ I|gamma|01|gamma/01|in-review|13|'
 }
 
 @test "format_multi_feature_summary_md — GH-shaped ref (#N) emits feature-path log link" {
-  # I row schema: I|feature|nn|ref|outcome|duration|review_present
+  # I row schema: I|feature|nn|ref|outcome|duration|step_logs
   # Log path uses feature/nn so per-run artifacts don't collide across features.
   input='F|some-feature|drained
-I|some-feature|42|#42|done|25|y'
+I|some-feature|42|#42|done|25|01-review'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:10:35 ended completed)"
 
-  echo "$result" | grep -qF '| #42 | done | 25s | - | [some-feature/42.log](some-feature/42.log) [some-feature/42-review.log](some-feature/42-review.log) |' \
+  echo "$result" | grep -qF '| #42 | done | 25s | - | [some-feature/42.log](some-feature/42.log) [some-feature/42-01-review.log](some-feature/42-01-review.log) |' \
     || { echo "$result"; false; }
 }
 
 @test "format_multi_feature_summary_md — dispatch-aborted and review-aborted render as outcome labels" {
   input='F|alpha|drained
 I|alpha|01|alpha/01|dispatch-aborted|12|
-I|alpha|02|alpha/02|review-aborted|38|y'
+I|alpha|02|alpha/02|review-aborted|38|01-review'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:30:00 ended completed)"
 
   echo "$result" | grep -qF '| alpha/01 | dispatch-aborted | 12s | - | [alpha/01.log](alpha/01.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| alpha/02 | review-aborted | 38s | - | [alpha/02.log](alpha/02.log) [alpha/02-review.log](alpha/02-review.log) |' \
+  echo "$result" | grep -qF '| alpha/02 | review-aborted | 38s | - | [alpha/02.log](alpha/02.log) [alpha/02-01-review.log](alpha/02-01-review.log) |' \
     || { echo "$result"; false; }
 }
 
@@ -4476,8 +4492,8 @@ I|alpha|01|alpha/01|dispatch-aborted|12||2'
 
 @test "format_multi_feature_summary_md — propagation indicator column shown per row" {
   input='F|alpha|drained
-I|alpha|01|alpha/01|done|42|y|1|propagated
-I|alpha|02|alpha/02|done|30|y|1|parked → runner/alpha'
+I|alpha|01|alpha/01|done|42|01-review|1|propagated
+I|alpha|02|alpha/02|done|30|01-review|1|parked → runner/alpha'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:30:00 ended completed)"
 
@@ -4489,7 +4505,7 @@ I|alpha|02|alpha/02|done|30|y|1|parked → runner/alpha'
 
 @test "format_multi_feature_summary_md — parked dispatch produces end-of-run section" {
   input='F|alpha|drained
-I|alpha|01|alpha/01|done|42|y|1|parked → runner/alpha
+I|alpha|01|alpha/01|done|42|01-review|1|parked → runner/alpha
 F|beta|drained
 I|beta|01|beta/01|done|13||1|propagated'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
@@ -4504,7 +4520,7 @@ I|beta|01|beta/01|done|13||1|propagated'
 
 @test "format_multi_feature_summary_md — no parked section when all dispatches propagated" {
   input='F|alpha|drained
-I|alpha|01|alpha/01|done|42|y|1|propagated'
+I|alpha|01|alpha/01|done|42|01-review|1|propagated'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:30:00 ended completed)"
 
@@ -4985,7 +5001,7 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
     "delta|feature-snapshot-failed"
   )
   RUN_DISPATCHES=(
-    "alpha|01|alpha/01|done|42|y"
+    "alpha|01|alpha/01|done|42|01-review"
     "gamma|01|gamma/01|in-review|13|"
   )
 
@@ -5005,7 +5021,7 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -n "$d" ]
   [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] && [ "$c" -lt "$d" ]
   # Drained features carry per-issue rows; skipped/snapshot-failed do not.
-  grep -qF '| alpha/01 | done | 42s | - | [alpha/01.log](alpha/01.log) [alpha/01-review.log](alpha/01-review.log) |' "$RUN_DIR/SUMMARY.md"
+  grep -qF '| alpha/01 | done | 42s | - | [alpha/01.log](alpha/01.log) [alpha/01-01-review.log](alpha/01-01-review.log) |' "$RUN_DIR/SUMMARY.md"
   grep -qF '| gamma/01 | in-review | 13s | - | [gamma/01.log](gamma/01.log) |' "$RUN_DIR/SUMMARY.md"
   # Skipped features don't get a per-issue row.
   ! grep -qF '| beta/' "$RUN_DIR/SUMMARY.md"

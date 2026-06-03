@@ -89,6 +89,14 @@ _Avoid_: "runner clone" (that's the **Runner-checkout** at `.runner-state/checko
 The ordered sequence of **Dispatch**es the **Runner** executes after a successful `/implement`. Driven by a **Consumer**-owned manifest (`runner/manifest.md`) resolved at pre-flight; each manifest entry maps a label to a framework- or consumer-supplied prompt. The **Runner** walks the manifest one item at a time: dispatch → propagate → snapshot → classify → react. The default manifest contains exactly one entry running the fused `review-and-gate` prompt, reproducing the original hardcoded gate stage. An issue left at `in-review` after all items are exhausted is recorded as `left-for-human` (no abort flag). A **Dispatch** error in any item writes an abort flag keyed by the item's label.
 _Avoid_: "gate stage", "review phase" (those describe specific prompts, not the configurable walk structure)
 
+**Building-block step**:
+A single-purpose framework-shipped prompt in the **Post-implement phase** manifest that does exactly one thing: `review` (runs the independent review, posts severity-tagged findings comment, no state change), `gate` (reads the latest findings comment, promotes to `done` only when no Critical findings, no new review), or `fix` (reads the latest findings comment and commits changes, no state change, no comment). Compose them in a manifest to get different workflows: `[review]` for review-without-gate, `[review, gate]` to reuse the framework gate with a separate review, or the unrolled iterate pattern (`[review-and-gate, fix, review-and-gate, …]`) to loop until clean.
+_Avoid_: "step", "prompt" (ambiguous — these are specifically the decomposed single-purpose variants, not the fused `review-and-gate`)
+
+**Review↔gate contract**:
+The handoff convention between a review step and a gate step: the review posts a comment containing severity markers (`🔴 Critical` / `🟡 Important` / `🟢 Minor`), and the gate reads the **latest** such comment and thresholds on `🔴 Critical`. Because the steps are separate **Dispatch**es with no shared stdout or filesystem, the tracker comment is the sole channel. Any review that emits the convention interoperates with the framework `gate` prompt; a custom review that cannot emit it ships its own gate.
+_Avoid_: "review contract", "findings format" (the contract is specifically the severity-marker convention in the posted comment)
+
 ### Installer
 
 **Installer**:

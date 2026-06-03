@@ -424,9 +424,11 @@ format_end_of_run_table() {
 }
 
 # SUMMARY.md content for a normal run (loop drained or interrupted).
-# Reads `feature|nn|ref|outcome|duration|review_present|attempt_count|propagation`
-# records on stdin (fields past `outcome` are optional — when `review_present`
-# is `y`, the row's logs cell adds a `<NN>-review.log` link alongside `<NN>.log`;
+# Reads `feature|nn|ref|outcome|duration|step_logs|attempt_count|propagation`
+# records on stdin (fields past `outcome` are optional — when `step_logs` is
+# non-empty, the row's logs cell adds `<NN>-<suffix>.log` links alongside
+# `<NN>.log` for each colon-separated suffix in `step_logs` (e.g. `01-review`,
+# `01-review-and-gate:02-fix:03-review-and-gate`);
 # `propagation` is the indicator string from `propagate_feature` —
 # `propagated → host`, `parked → runner/<branch>`, or empty). The
 # `propagation` column shows the indicator verbatim, or `-` when empty.
@@ -458,8 +460,11 @@ format_summary_md() {
       prop=(NF >= 8 && $8 != "") ? $8 : "-";
       if (attempt_count > 1) { out = out " (" attempt_count " attempts)" }
       logs = sprintf("[%s.log](%s.log)", nn, nn);
-      if (review == "y") {
-        logs = logs " [" nn "-review.log](" nn "-review.log)";
+      if (review != "") {
+        nsteps = split(review, rsteps, ":");
+        for (si = 1; si <= nsteps; si++) {
+          logs = logs " [" nn "-" rsteps[si] ".log](" nn "-" rsteps[si] ".log)";
+        }
       }
       printf "| %s | %s | %s | %s | %s |\n", ref, out, humanize_dur(dur), prop, logs;
     }'
@@ -480,7 +485,7 @@ format_summary_md() {
 #   I|<feature>|<nn>|<ref>|<outcome>|<duration>|<review_present>|<attempt_count>|<propagation>
 #
 # `I` rows belong to the most recent preceding `F|<slug>|drained` section.
-# `review_present` is `y` when the iteration produced a `<ref>-review.log`
+# `step_logs` is a colon-separated list of walk-step log suffixes (e.g. `01-review`)
 # alongside `<ref>.log`. `propagation` is the indicator string from
 # `propagate_feature` — `propagated → host`, `parked → runner/<branch>`,
 # or empty. Log paths in multi-feature mode embed the feature segment of the
@@ -547,8 +552,11 @@ format_multi_feature_summary_md() {
       prop=(NF >= 9 && $9 != "") ? $9 : "-";
       if (attempt_count > 1) { out = out " (" attempt_count " attempts)" }
       logs = sprintf("[%s/%s.log](%s/%s.log)", feature, nn, feature, nn);
-      if (review == "y") {
-        logs = logs " [" feature "/" nn "-review.log](" feature "/" nn "-review.log)";
+      if (review != "") {
+        nsteps = split(review, rsteps, ":");
+        for (si = 1; si <= nsteps; si++) {
+          logs = logs " [" feature "/" nn "-" rsteps[si] ".log](" feature "/" nn "-" rsteps[si] ".log)";
+        }
       }
       printf "| %s | %s | %s | %s | %s |\n", ref, out, humanize_dur(dur), prop, logs;
       next;
@@ -753,10 +761,15 @@ stop_runner_log_capture() {
   RUNNER_LOG_FIFO=""
 }
 
-# Append a `feature|nn|ref|label|duration|review_present|attempt_count|propagation`
+# Append a `feature|nn|ref|label|duration|step_logs|attempt_count|propagation`
 # record to RUN_DISPATCHES. `label` is the iteration's combined outcome — one of
 # `done | blocked | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL`.
-# `review_present` is `y` when the iteration produced a `<NN>-review.log`.
+# `step_logs` is a colon-separated list of walk-step log suffixes produced by
+# `walk_post_implement_steps` (e.g. `01-review` for a single "review" step;
+# `01-review-and-gate:02-fix:03-review-and-gate` for an unrolled iterate
+# manifest). Empty when no post-implement steps ran (implement-only run or
+# interrupted before the walk). Formatters split on `:` to generate per-step
+# log links (`<NN>-<suffix>.log`) alongside `<NN>.log` in the SUMMARY table.
 # `attempt_count` (default 1) is the data hook for the retry slice; the
 # formatters render `(N attempts)` only when N > 1, so it is silent here.
 # `propagation` is the value of $RUNNER_LAST_PROPAGATION at record time —
@@ -2157,12 +2170,22 @@ walk_post_implement_steps() {
   local total_item_seconds=0
   local total_attempts="$impl_attempts"
   local any_item_ran=0
+  local step_idx=0       # walk-position counter (1-based, incremented per item)
+  local step_logs=""     # colon-sep list of step-log suffixes accumulated during walk
 
   while IFS=$'\t' read -r item_label item_path; do
     [ -z "$item_label" ] && continue
 
     any_item_ran=1
-    local item_log_file="$log_dir/$log_basename-$item_label.log"
+    step_idx=$(( step_idx + 1 ))
+    local step_suffix
+    step_suffix="$(printf '%02d' "$step_idx")-$item_label"
+    if [ -z "$step_logs" ]; then
+      step_logs="$step_suffix"
+    else
+      step_logs="$step_logs:$step_suffix"
+    fi
+    local item_log_file="$log_dir/$log_basename-$step_suffix.log"
 
     # Emit the "starting" progress line for this item.
     local item_start_clock
@@ -2209,12 +2232,12 @@ walk_post_implement_steps() {
           local halt_duration
           halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds ))
           RUN_STOP_REASON="propagation-error"
-          record_dispatch "$feature" "$nn" "$ref" "FAIL" "$halt_duration" "y" "$total_attempts"
+          record_dispatch "$feature" "$nn" "$ref" "FAIL" "$halt_duration" "$step_logs" "$total_attempts"
           return 1
         fi
       fi
       RUN_STOP_REASON="snapshot-failed-mid-dispatch:post-$item_label"
-      record_dispatch "$feature" "$nn" "$ref" "FAIL" "$snap_iter_duration" "y" "$total_attempts"
+      record_dispatch "$feature" "$nn" "$ref" "FAIL" "$snap_iter_duration" "$step_logs" "$total_attempts"
       return 1
     fi
 
@@ -2240,12 +2263,12 @@ walk_post_implement_steps() {
             local halt_duration
             halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds - item_duration ))
             format_progress_outcome "$(now_clock)" "$ref" "$item_label" "halt → gate-failed" "$item_duration"
-            record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$halt_duration" "y" "$total_attempts"
+            record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$halt_duration" "$step_logs" "$total_attempts"
             RUN_STOP_REASON="propagation-error"
             return 1
           fi
         fi
-        record_dispatch "$feature" "$nn" "$ref" "done" "$iter_duration" "y" "$total_attempts"
+        record_dispatch "$feature" "$nn" "$ref" "done" "$iter_duration" "$step_logs" "$total_attempts"
         return 0
         ;;
 
@@ -2267,12 +2290,12 @@ walk_post_implement_steps() {
             local halt_duration
             halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds - item_duration ))
             format_progress_outcome "$(now_clock)" "$ref" "$item_label" "halt → $item_combined_label" "$item_duration"
-            record_dispatch "$feature" "$nn" "$ref" "$item_combined_label" "$halt_duration" "y" "$total_attempts"
+            record_dispatch "$feature" "$nn" "$ref" "$item_combined_label" "$halt_duration" "$step_logs" "$total_attempts"
             RUN_STOP_REASON="propagation-error"
             return 1
           fi
         fi
-        record_dispatch "$feature" "$nn" "$ref" "$item_combined_label" "$iter_duration" "y" "$total_attempts"
+        record_dispatch "$feature" "$nn" "$ref" "$item_combined_label" "$iter_duration" "$step_logs" "$total_attempts"
         return 1
         ;;
 
@@ -2287,11 +2310,11 @@ walk_post_implement_steps() {
             local halt_duration
             halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds - item_duration ))
             RUN_STOP_REASON="propagation-error"
-            record_dispatch "$feature" "$nn" "$ref" "left-for-human" "$halt_duration" "y" "$total_attempts"
+            record_dispatch "$feature" "$nn" "$ref" "left-for-human" "$halt_duration" "$step_logs" "$total_attempts"
             return 1
           fi
         fi
-        record_dispatch "$feature" "$nn" "$ref" "left-for-human" "$iter_duration" "y" "$total_attempts"
+        record_dispatch "$feature" "$nn" "$ref" "left-for-human" "$iter_duration" "$step_logs" "$total_attempts"
         return 0
         ;;
 
@@ -2306,7 +2329,7 @@ walk_post_implement_steps() {
             local halt_duration
             halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds - item_duration ))
             format_progress_outcome "$(now_clock)" "$ref" "$item_label" "halt → gate-failed" "$item_duration"
-            record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$halt_duration" "y" "$total_attempts"
+            record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$halt_duration" "$step_logs" "$total_attempts"
             RUN_STOP_REASON="propagation-error"
             return 1
           fi
@@ -2319,10 +2342,9 @@ walk_post_implement_steps() {
   # manifest was empty — implement-only run). Either way the issue is
   # intentionally left at in-review for the maintainer; "left-for-human"
   # is the correct combined outcome for both cases (no abort flag).
-  local left_review_flag=""
-  [ "$any_item_ran" -eq 1 ] && left_review_flag="y"
+  # step_logs is empty when no items ran (implement-only); non-empty otherwise.
   record_dispatch "$feature" "$nn" "$ref" "left-for-human" \
-    "$(( impl_duration + total_item_seconds ))" "$left_review_flag" "$total_attempts"
+    "$(( impl_duration + total_item_seconds ))" "$step_logs" "$total_attempts"
   return 0
 }
 
