@@ -239,6 +239,7 @@ enumerate_products() {
   done
 
   printf 'copy\trunner/Dockerfile\t%s\n' "$formann_path/installer/templates/Dockerfile"
+  printf 'copy\trunner/manifest.md\t%s\n' "$formann_path/installer/templates/manifest.md"
 }
 
 # === Symlink + copy helpers =================================================

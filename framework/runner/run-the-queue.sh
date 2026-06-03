@@ -1340,7 +1340,7 @@ check_manifest() {
   # Redirect resolve_manifest's stderr to stdout so failures are captured
   # in RESOLVED_MANIFEST for the fail_invariant message; on success stdout
   # holds only the valid tab-delimited pairs (stderr is empty).
-  if ! RESOLVED_MANIFEST="$(resolve_manifest "$manifest_text" "$HERE" "$HOST_REPO/runner" 2>&1)"; then
+  if ! RESOLVED_MANIFEST="$(resolve_manifest "$manifest_text" "$HERE" "$HOST_REPO/$RUNNER_CONSUMER_PROMPTS_DIR" 2>&1)"; then
     fail_invariant "manifest" "$RESOLVED_MANIFEST"
   fi
 }
@@ -2316,15 +2316,13 @@ walk_post_implement_steps() {
   done <<< "$resolved_manifest"
 
   # All manifest items exhausted with the issue still at in-review (or
-  # manifest was empty — implement-only run). The "left-for-human" outcome
-  # requires no abort flag; the issue stays at in-review for the maintainer.
-  if [ "$any_item_ran" -eq 1 ]; then
-    record_dispatch "$feature" "$nn" "$ref" "left-for-human" \
-      "$(( impl_duration + total_item_seconds ))" "y" "$total_attempts"
-  else
-    # Empty manifest: implement-only run. Record the implement outcome.
-    record_dispatch "$feature" "$nn" "$ref" "$impl_label" "$impl_duration" "" "$impl_attempts"
-  fi
+  # manifest was empty — implement-only run). Either way the issue is
+  # intentionally left at in-review for the maintainer; "left-for-human"
+  # is the correct combined outcome for both cases (no abort flag).
+  local left_review_flag=""
+  [ "$any_item_ran" -eq 1 ] && left_review_flag="y"
+  record_dispatch "$feature" "$nn" "$ref" "left-for-human" \
+    "$(( impl_duration + total_item_seconds ))" "$left_review_flag" "$total_attempts"
   return 0
 }
 

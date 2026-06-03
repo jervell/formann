@@ -55,9 +55,16 @@ RUNNER_ABORT_PATH="$RUNNER_STATE_DIR/aborted"
 # operates against this working tree.
 RUNNER_CONTAINER_REPO_PATH="/repo"
 
+# Consumer-repo-relative directory that holds the post-implement manifest
+# and any consumer-supplied prompts referenced by it. The installer seeds
+# runner/Dockerfile and runner/manifest.md into this directory; consumer
+# prompts added here are reachable via the `consumer:` namespace in the
+# manifest. Fixed by convention; the resolver is pointed at this root.
+RUNNER_CONSUMER_PROMPTS_DIR="runner"
+
 # Consumer-repo-relative path to the post-implement steps manifest.
 # The manifest lists ordered post-implement Dispatches; the runner resolves
 # it at pre-flight and walks the entries after each successful /implement.
 # A pre-flight invariant verifies the file's presence and validity before
 # the loop starts.
-RUNNER_MANIFEST_FILE="runner/manifest.md"
+RUNNER_MANIFEST_FILE="${RUNNER_CONSUMER_PROMPTS_DIR}/manifest.md"

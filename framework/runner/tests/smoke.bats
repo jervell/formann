@@ -69,6 +69,8 @@ setup() {
   ln -s "../../.formann/bindings/issue-tracker/local-markdown" \
         "$WORKSPACE/docs/formann/issue-tracker"
   cp -RP "$HOST_REPO/.claude" "$WORKSPACE/.claude"
+  mkdir -p "$WORKSPACE/runner"
+  cp "$HOST_REPO/installer/templates/manifest.md" "$WORKSPACE/runner/manifest.md"
   cat >"$WORKSPACE/.gitignore" <<'EOF'
 /.formann
 /docs/formann/issue-tracker

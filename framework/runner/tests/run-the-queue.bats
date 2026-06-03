@@ -164,6 +164,41 @@ snapshot_one() {
   [ "$result" = "fail" ]
 }
 
+# === walk_post_implement_steps (empty manifest) ================================
+#
+# When resolved_manifest is empty, no Dispatch container runs. The issue stays
+# at in-review (set by /implement). The outcome is "left-for-human" — not the
+# raw implement label — because the walk was exhausted immediately (zero items)
+# rather than interrupted before it started.
+
+@test "walk_post_implement_steps — empty manifest records left-for-human outcome" {
+  local _captured_label=""
+  record_dispatch() { _captured_label="$4"; }
+
+  walk_post_implement_steps \
+    "f" "01" "#01" \
+    "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" "01" \
+    '{"feature":"f","issues":[{"ref":"#01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}' \
+    "in-review" 5 1 \
+    ""
+
+  [ "$_captured_label" = "left-for-human" ]
+}
+
+@test "walk_post_implement_steps — empty manifest records no abort flag" {
+  local _captured_review=""
+  record_dispatch() { _captured_review="${6:-}"; }
+
+  walk_post_implement_steps \
+    "f" "01" "#01" \
+    "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" "01" \
+    '{"feature":"f","issues":[{"ref":"#01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}' \
+    "in-review" 5 1 \
+    ""
+
+  [ -z "$_captured_review" ]
+}
+
 # === is_transport_crash =======================================================
 #
 # Pure predicate: returns exit 0 when a dispatch log carries a transport-class

@@ -46,6 +46,7 @@ _setup_formann_fixture() {
   mkdir -p "$FORMANN_FIXTURE/installer/templates"
   cp "$INSTALLER_DIR/templates/Dockerfile" "$FORMANN_FIXTURE/installer/templates/Dockerfile"
   cp "$INSTALLER_DIR/templates/claude-md-snippet.md" "$FORMANN_FIXTURE/installer/templates/claude-md-snippet.md"
+  cp "$INSTALLER_DIR/templates/manifest.md" "$FORMANN_FIXTURE/installer/templates/manifest.md"
 }
 
 _setup_synthetic_consumer() {
@@ -157,6 +158,34 @@ _run_installer() {
 }
 
 # ---------------------------------------------------------------------------
+# runner/manifest.md
+# ---------------------------------------------------------------------------
+
+@test "runner/manifest.md is created as a real file (not a symlink)" {
+  run _run_installer
+  assert_success
+  [ ! -L "$CONSUMER/runner/manifest.md" ]
+  [ -f "$CONSUMER/runner/manifest.md" ]
+}
+
+@test "runner/manifest.md contains the default review-and-gate entry" {
+  run _run_installer
+  assert_success
+  grep -q "framework:review-and-gate.md" "$CONSUMER/runner/manifest.md"
+}
+
+@test "installer leaves real manifest.md alone (does not clobber consumer override)" {
+  mkdir -p "$CONSUMER/runner"
+  echo "sentinel-manifest" > "$CONSUMER/runner/manifest.md"
+
+  run _run_installer
+  assert_success
+
+  content="$(cat "$CONSUMER/runner/manifest.md")"
+  [ "$content" = "sentinel-manifest" ]
+}
+
+# ---------------------------------------------------------------------------
 # .gitignore
 # ---------------------------------------------------------------------------
 
@@ -241,16 +270,19 @@ _run_installer() {
   snapshot_before="$(find "$CONSUMER" -mindepth 1 | sort)"
   gitignore_before="$(cat "$CONSUMER/.gitignore")"
   dockerfile_before="$(cat "$CONSUMER/runner/Dockerfile")"
+  manifest_before="$(cat "$CONSUMER/runner/manifest.md")"
 
   _run_installer
 
   snapshot_after="$(find "$CONSUMER" -mindepth 1 | sort)"
   gitignore_after="$(cat "$CONSUMER/.gitignore")"
   dockerfile_after="$(cat "$CONSUMER/runner/Dockerfile")"
+  manifest_after="$(cat "$CONSUMER/runner/manifest.md")"
 
   [ "$snapshot_before" = "$snapshot_after" ]
   [ "$gitignore_before" = "$gitignore_after" ]
   [ "$dockerfile_before" = "$dockerfile_after" ]
+  [ "$manifest_before" = "$manifest_after" ]
 }
 
 @test ".gitignore entry is not duplicated on second run" {
