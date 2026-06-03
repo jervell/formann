@@ -47,8 +47,8 @@
 #
 # The script is also sourceable; pure logic (`classify_outcome`,
 # `next_eligible_ref`, `next_eligible_feature`, `classify_gate_outcome`,
-# `format_multi_feature_summary_md`) is exposed for the bats suite. `main`
-# only runs when the script is executed directly.
+# `classify_item_action`, `format_multi_feature_summary_md`) is exposed for
+# the bats suite. `main` only runs when the script is executed directly.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -175,6 +175,45 @@ classify_gate_outcome() {
     done|"")   echo "clean" ;;
     in-review) echo "blocked" ;;
     *)         echo "gate-failed" ;;
+  esac
+}
+
+# Classify the per-item control-flow action after a post-implement step runs.
+# Inputs:
+#   $1 — post-item status string (already extracted from the snapshot by the
+#         caller; NOT a snapshot JSON blob)
+#   $2 — Dispatch exit code
+#
+# Output (stdout): exactly one of `stop-success`, `continue`, `terminate-run`,
+# or `fail`.
+#
+#   stop-success   — exit 0 AND status is done, wontfix, or empty (github-issues
+#                    binding closes the work-item parent on done, so absence is
+#                    the binding-native signal for done).
+#   continue       — exit 0 AND status is in-review; proceed to the next step.
+#   terminate-run  — exit 0 AND status is ready-for-agent (runaway: the step
+#                    re-opened an eligible issue that the next loop iteration
+#                    would re-dispatch).
+#   fail           — nonzero exit, or exit 0 with any other status (including
+#                    ready-for-human, needs-triage, needs-info, and unknown).
+#
+# No transport_crash input and no transport-flavoured verdict — transport vs
+# technical abort-flag typing is the caller's concern.
+#
+# Pure logic — no I/O beyond stdin/stdout. Sourceable from bats.
+classify_item_action() {
+  local status="$1" exit_code="$2"
+
+  if [ "$exit_code" != "0" ]; then
+    echo "fail"
+    return 0
+  fi
+
+  case "$status" in
+    done|wontfix|"") echo "stop-success" ;;
+    in-review)       echo "continue" ;;
+    ready-for-agent) echo "terminate-run" ;;
+    *)               echo "fail" ;;
   esac
 }
 

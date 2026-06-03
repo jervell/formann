@@ -212,6 +212,65 @@ snapshot_one() {
   [ "$result" = "success" ]
 }
 
+# === classify_item_action =====================================================
+#
+# Pure classifier for the per-item control-flow decision after a post-implement
+# step runs. Inputs: (post-item status string, dispatch exit code). Returns
+# exactly one of `stop-success`, `continue`, `terminate-run`, `fail`.
+
+@test "classify_item_action — exit 0 + done is stop-success" {
+  [ "$(classify_item_action done 0)" = "stop-success" ]
+}
+
+@test "classify_item_action — exit 0 + wontfix is stop-success" {
+  [ "$(classify_item_action wontfix 0)" = "stop-success" ]
+}
+
+@test "classify_item_action — exit 0 + empty status is stop-success" {
+  [ "$(classify_item_action "" 0)" = "stop-success" ]
+}
+
+@test "classify_item_action — exit 0 + in-review is continue" {
+  [ "$(classify_item_action in-review 0)" = "continue" ]
+}
+
+@test "classify_item_action — exit 0 + ready-for-agent is terminate-run" {
+  [ "$(classify_item_action ready-for-agent 0)" = "terminate-run" ]
+}
+
+@test "classify_item_action — exit 0 + ready-for-human is fail" {
+  [ "$(classify_item_action ready-for-human 0)" = "fail" ]
+}
+
+@test "classify_item_action — exit 0 + needs-triage is fail" {
+  [ "$(classify_item_action needs-triage 0)" = "fail" ]
+}
+
+@test "classify_item_action — exit 0 + needs-info is fail" {
+  [ "$(classify_item_action needs-info 0)" = "fail" ]
+}
+
+@test "classify_item_action — exit 0 + unexpected status is fail" {
+  [ "$(classify_item_action some-unknown-status 0)" = "fail" ]
+}
+
+@test "classify_item_action — nonzero exit is fail regardless of status" {
+  [ "$(classify_item_action done 1)"            = "fail" ]
+  [ "$(classify_item_action in-review 1)"       = "fail" ]
+  [ "$(classify_item_action ready-for-agent 1)" = "fail" ]
+  [ "$(classify_item_action "" 1)"              = "fail" ]
+  [ "$(classify_item_action done 137)"          = "fail" ]
+}
+
+@test "classify_item_action — no transport_crash input, no transport-flavoured output" {
+  # The function takes exactly two args; any third arg is ignored and the
+  # output must never include a transport-flavoured token.
+  result="$(classify_item_action in-review 1)"
+  [ "$result" != "review-aborted" ]
+  [ "$result" != "dispatch-aborted" ]
+  [ "$result" = "fail" ]
+}
+
 # === is_transport_crash =======================================================
 #
 # Pure predicate: returns exit 0 when a dispatch log carries a transport-class
