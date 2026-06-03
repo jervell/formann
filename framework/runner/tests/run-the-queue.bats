@@ -1368,6 +1368,109 @@ EOF
   binding_env_line_valid "$result"
 }
 
+@test "run_sandbox_container — binding env (GH_TOKEN) reaches docker via --env-file" {
+  # Regression: binding_env_args=(--env-file <(...)) stored a process
+  # substitution in an array and used it later in the `docker run` command.
+  # The process-sub fd is closed when the assignment statement completes, and
+  # its number is reused by the inline --env-file <()s in the docker command,
+  # so docker reads an empty file and GH_TOKEN/GH_REPO never reach the
+  # container. The dispatched agent then sees `gh: not authenticated`. The
+  # OAuth token survives only because it is passed inline. The binding
+  # env-file must reach docker the same way.
+  local cap="$BATS_TEST_TMPDIR/captured-env"
+  : >"$cap"
+
+  # Fake docker on PATH: append each --env-file's content to $cap, exit 0.
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat >"$BATS_TEST_TMPDIR/bin/docker" <<EOF
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  [ "\$1" = "--env-file" ] && { shift; cat "\$1" >>"$cap" 2>>"$cap"; }
+  [ "\$1" = "--cidfile" ] && { echo cid >"\$2" 2>/dev/null || true; }
+  shift
+done
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+
+  # Fixture sandbox-env on the role surface — stands in for the keychain read.
+  mkdir -p "$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker"
+  cat >"$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker/sandbox-env" <<'EOF'
+#!/usr/bin/env bash
+printf 'GH_TOKEN=fixture_binding_token\n'
+printf 'GH_REPO=owner/repo\n'
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker/sandbox-env"
+
+  # Minimal runtime config for run_sandbox_container.
+  HOST_REPO="$BATS_TEST_TMPDIR/repo"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/repo"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR"
+  NET_NAME=none
+  RUNNER_CONTAINER_REPO_PATH=/repo
+  RUNNER_CONTAINER_M2_PATH=/m2
+  MVN_VOLUME=vol
+  RUNNER_IMAGE_NAME=img
+  TOKEN=oauth
+  RUNNER_GIT_USER_NAME=Arne
+  RUNNER_GIT_USER_EMAIL=a@b.c
+  RUNNER_INTERRUPTED=0
+  RUNNER_KILL_GRACE_SECONDS=1
+  IN_FLIGHT_CID_FILE=""
+
+  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch.log" claude -p "/implement #1"
+
+  grep -q '^GH_TOKEN=fixture_binding_token$' "$cap"
+}
+
+@test "run_sandbox_container — empty binding env (no sandbox-env) still dispatches" {
+  # Local-markdown / no-prereq bindings emit no sandbox-env, so binding_env is
+  # empty. The inline --env-file then carries a blank env-file, which docker
+  # ignores (verified against real docker). The dispatch must still run and the
+  # OAuth token must still arrive — i.e. the empty case is a clean no-op, not a
+  # crash and not a dropped OAuth token.
+  local cap="$BATS_TEST_TMPDIR/captured-env"
+  : >"$cap"
+
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat >"$BATS_TEST_TMPDIR/bin/docker" <<EOF
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  [ "\$1" = "--env-file" ] && { shift; cat "\$1" >>"$cap" 2>>"$cap"; }
+  [ "\$1" = "--cidfile" ] && { echo cid >"\$2" 2>/dev/null || true; }
+  shift
+done
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+
+  # No sandbox-env on the role surface → collect_binding_env returns empty.
+  mkdir -p "$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker"
+
+  HOST_REPO="$BATS_TEST_TMPDIR/repo"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/repo"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR"
+  NET_NAME=none
+  RUNNER_CONTAINER_REPO_PATH=/repo
+  RUNNER_CONTAINER_M2_PATH=/m2
+  MVN_VOLUME=vol
+  RUNNER_IMAGE_NAME=img
+  TOKEN=oauth_value
+  RUNNER_GIT_USER_NAME=Arne
+  RUNNER_GIT_USER_EMAIL=a@b.c
+  RUNNER_INTERRUPTED=0
+  RUNNER_KILL_GRACE_SECONDS=1
+  IN_FLIGHT_CID_FILE=""
+
+  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch.log" claude -p "/implement #1"
+
+  # OAuth still delivered; no binding GH_TOKEN leaked in from nowhere.
+  grep -q '^CLAUDE_CODE_OAUTH_TOKEN=oauth_value$' "$cap"
+  ! grep -q '^GH_TOKEN=' "$cap"
+}
+
 # === dispatch_one — snapshot failure mid-dispatch =========================
 #
 # Regression: the three take_snapshot calls inside dispatch_one were bare

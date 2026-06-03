@@ -1601,15 +1601,19 @@ run_sandbox_container() {
   done
 
   # Collect binding-specific env vars from the role-surface sandbox-env hook.
-  # No-op if the binding declares no script (local-markdown, any binding
+  # Empty if the binding declares no script (local-markdown, any binding
   # without sandbox prerequisites). Fail-hard on script error or malformed
   # output — see collect_binding_env for the validation policy.
+  #
+  # binding_env is passed to the container with an inline --env-file <() in the
+  # docker command below, exactly like the OAuth and GIT env-files — NOT stored
+  # in a variable. A process substitution's fd closes when its creating
+  # statement ends, so a deferred `args=(--env-file <(...))` array hands docker
+  # a dead fd whose number the inline OAuth <() reuses — silently dropping
+  # GH_TOKEN/GH_REPO (the container runs, but gh sees no auth). An empty
+  # binding_env yields a blank env-file, which docker ignores.
   local binding_env
   binding_env="$(collect_binding_env "$HOST_REPO/docs/formann/issue-tracker/sandbox-env")" || return 1
-  local binding_env_args=()
-  if [[ -n "$binding_env" ]]; then
-    binding_env_args=(--env-file <(printf '%s\n' "$binding_env"))
-  fi
 
   docker run --rm -t \
     --cidfile "$cid_file" \
@@ -1623,7 +1627,7 @@ run_sandbox_container() {
     --env-file <(printf 'GIT_AUTHOR_NAME=%s\nGIT_AUTHOR_EMAIL=%s\nGIT_COMMITTER_NAME=%s\nGIT_COMMITTER_EMAIL=%s\n' \
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL" \
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL") \
-    ${binding_env_args[@]+"${binding_env_args[@]}"} \
+    --env-file <(printf '%s\n' "$binding_env") \
     "$RUNNER_IMAGE_NAME" \
     "$@" \
     >"$log_file" 2>&1 &
