@@ -130,13 +130,13 @@ A `type: transport` flag means the subprocess never produced model output — th
 
 ```
 type: transport
-dispatch: gate
+dispatch: review
 at: 2026-05-16T19:58:37Z
 exit: 1
 log: .runner-state/runs/20260516-195837/f/01-review.log
 ```
 
-An interrupted dispatch (Ctrl-C or SIGTERM during an active implement or gate run) does not write an abort flag — the maintainer's intent is to stop, not to mark the issue as stuck. The next run re-dispatches the issue normally without any `rm` recipe required.
+The `dispatch` field carries the manifest item's label (e.g. `review` for the default single-entry manifest). An interrupted dispatch (Ctrl-C or SIGTERM during an active implement or item run) does not write an abort flag — the maintainer's intent is to stop, not to mark the issue as stuck. The next run re-dispatches the issue normally without any `rm` recipe required.
 
 Single-dispatch (`--issue <ref>`) shares the same eligibility gate as loop mode but reacts differently when the named ref fails it: instead of silently skipping (loop mode's response — the ref isn't in the eligible set, so it never gets picked), single-dispatch exits 2 with `single-dispatch (refused: <reason>)` and prints a stderr diagnostic naming the cause (HITL, wrong status, unmet blockers, missing from snapshot, or `snapshot-failed` if `tracker-snapshot` itself crashed). No container runs and no abort flag is written — the maintainer corrects the invocation (target an eligible AFK ref, or re-triage the named one) and re-runs.
 

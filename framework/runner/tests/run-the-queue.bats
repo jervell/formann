@@ -91,113 +91,6 @@ snapshot_one() {
   [ "$result" = "failure" ]
 }
 
-# === classify_gate_outcome =================================================
-#
-# Pure classifier for the post-implement review-and-gate dispatch. Inputs:
-# (pre-gate snapshot, post-gate snapshot, ref, exit_code). Returns one of
-# `clean | blocked | gate-failed`. The gate's pre-snapshot is the
-# post-implement state — issue at in-review.
-
-@test "classify_gate_outcome — exit 0 + post.status=done is clean" {
-  pre="$(snapshot_one f/01 in-review)"
-  post="$(snapshot_one f/01 done)"
-  result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
-  [ "$result" = "clean" ]
-}
-
-@test "classify_gate_outcome — exit 0 + post.status=in-review is blocked" {
-  pre="$(snapshot_one f/01 in-review)"
-  post="$(snapshot_one f/01 in-review)"
-  result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
-  [ "$result" = "blocked" ]
-}
-
-@test "classify_gate_outcome — nonzero exit is gate-failed regardless of status" {
-  pre="$(snapshot_one f/01 in-review)"
-  post="$(snapshot_one f/01 done)"
-  result="$(classify_gate_outcome "$pre" "$post" f/01 1)"
-  [ "$result" = "gate-failed" ]
-  result="$(classify_gate_outcome "$pre" "$post" f/01 137)"
-  [ "$result" = "gate-failed" ]
-}
-
-@test "classify_gate_outcome — exit 0 + off-mission post-status (ready-for-agent) is gate-failed" {
-  pre="$(snapshot_one f/01 in-review)"
-  post="$(snapshot_one f/01 ready-for-agent)"
-  result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
-  [ "$result" = "gate-failed" ]
-}
-
-@test "classify_gate_outcome — exit 0 + off-mission post-status (wontfix) is gate-failed" {
-  pre="$(snapshot_one f/01 in-review)"
-  post="$(snapshot_one f/01 wontfix)"
-  result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
-  [ "$result" = "gate-failed" ]
-}
-
-@test "classify_gate_outcome — exit 0 + ref absent from post snapshot is clean (github-issues binding: done closes issue)" {
-  # pre=in-review, exit 0, ref gone from snapshot → binding-native done → clean.
-  pre="$(snapshot_one f/01 in-review)"
-  post='{"feature":"f","issues":[]}'
-  result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
-  [ "$result" = "clean" ]
-
-  # pre=done, exit 0, ref gone from snapshot → also clean.
-  pre="$(snapshot_one f/01 done)"
-  result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
-  [ "$result" = "clean" ]
-}
-
-@test "classify_gate_outcome — only the named ref is consulted" {
-  pre='{"feature":"f","issues":[
-    {"ref":"f/01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false},
-    {"ref":"f/02","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}
-  ]}'
-  post='{"feature":"f","issues":[
-    {"ref":"f/01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false},
-    {"ref":"f/02","status":"done","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}
-  ]}'
-  # f/01 stayed at in-review — blocked.
-  [ "$(classify_gate_outcome "$pre" "$post" f/01 0)" = "blocked" ]
-  # f/02 flipped to done — clean.
-  [ "$(classify_gate_outcome "$pre" "$post" f/02 0)" = "clean" ]
-}
-
-@test "classify_gate_outcome — pre.status outside {in-review, done} is gate-failed" {
-  # Guards against argument-order swaps: if the caller accidentally passes
-  # pre at ready-for-agent (implement stage snapshot) the function should
-  # refuse rather than silently misclassify.
-  pre="$(snapshot_one f/01 ready-for-agent)"
-  post="$(snapshot_one f/01 done)"
-  result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
-  [ "$result" = "gate-failed" ]
-
-  pre="$(snapshot_one f/01 wontfix)"
-  result="$(classify_gate_outcome "$pre" "$post" f/01 0)"
-  [ "$result" = "gate-failed" ]
-}
-
-@test "classify_gate_outcome — transport-crash=true + nonzero exit is review-aborted" {
-  pre="$(snapshot_one f/01 in-review)"
-  post="$(snapshot_one f/01 in-review)"
-  result="$(classify_gate_outcome "$pre" "$post" f/01 1 true)"
-  [ "$result" = "review-aborted" ]
-}
-
-@test "classify_gate_outcome — transport-crash=true does not override clean/blocked/pre-status guard" {
-  # clean: exit 0 + post=done → still clean, transport-crash irrelevant.
-  pre="$(snapshot_one f/01 in-review)"
-  post="$(snapshot_one f/01 done)"
-  [ "$(classify_gate_outcome "$pre" "$post" f/01 0 true)" = "clean" ]
-  # blocked: exit 0 + post=in-review → still blocked.
-  post="$(snapshot_one f/01 in-review)"
-  [ "$(classify_gate_outcome "$pre" "$post" f/01 0 true)" = "blocked" ]
-  # pre-status guard: pre=ready-for-agent → gate-failed (not review-aborted).
-  pre="$(snapshot_one f/01 ready-for-agent)"
-  post="$(snapshot_one f/01 done)"
-  [ "$(classify_gate_outcome "$pre" "$post" f/01 1 true)" = "gate-failed" ]
-}
-
 @test "classify_outcome — transport-crash=true + failure is dispatch-aborted" {
   pre="$(snapshot_one f/01 ready-for-agent)"
   post="$(snapshot_one f/01 ready-for-agent)"
@@ -539,7 +432,7 @@ _setup_retry_test() {
     with_transport_retry "$log_file" run_sandbox_container \
       claude -p "/implement $ref" --dangerously-skip-permissions
   }
-  # keep setup_dispatch_one_test's run_gate_container (no-op returning 0)
+  # keep setup_dispatch_one_test's run_item_container (no-op returning 0)
   propagate_feature() { :; }
 
   RUNNER_INTERRUPTED=0
@@ -548,8 +441,8 @@ _setup_retry_test() {
   local dispatch_rc=$?
   set -e
 
-  # Implement succeeded (issue flipped to in-review); gate ran (blocked — snapshot
-  # didn't advance further, so classify_gate_outcome returns blocked / clean).
+  # Implement succeeded (issue flipped to in-review); walk ran (left-for-human —
+  # snapshot didn't advance further to done).
   [ "$dispatch_rc" -eq 0 ]
 
   # .attempt-1 was archived during the retry backoff
@@ -562,36 +455,58 @@ _setup_retry_test() {
   [ "$(cat "$SANDBOX_CALL_COUNT_FILE")" -ge 2 ]
 }
 
-# === check_gate_prompt =====================================================
+# === check_manifest ===========================================================
 #
-# Pre-flight invariant: the gate prompt file must exist on disk before
-# the loop starts. Fail-fast with `runner: gate-prompt: <path> not found`
-# if absent. Without this guard, a missing prompt would only be noticed
-# mid-run when the gate dispatch tries to read it — by which point time
-# was already burned on /implement.
+# Pre-flight invariant: the consumer-owned manifest must exist and be valid
+# before the loop starts. Fail-fast before any Dispatch; without this guard
+# a missing or malformed manifest would only be noticed mid-run — by which
+# point time was already burned on /implement.
 
-@test "check_gate_prompt — missing prompt fails with the gate-prompt invariant message" {
-  # Point HERE at an empty tempdir so the prompt lookup misses.
-  HERE="$BATS_TEST_TMPDIR/no-prompt"
-  mkdir -p "$HERE"
+@test "check_manifest — missing manifest fails with the manifest invariant message" {
+  HOST_REPO="$BATS_TEST_TMPDIR/no-manifest"
+  mkdir -p "$HOST_REPO"
   # Suppress the EXIT trap (it expects RUN_DIR plumbing we haven't set up).
   trap - EXIT
 
-  run check_gate_prompt
+  run check_manifest
   [ "$status" -eq 2 ]
-  [[ "$output" == *"runner: gate-prompt:"* ]]
-  [[ "$output" == *"$HERE/review-and-gate.md not found"* ]]
+  [[ "$output" == *"runner: manifest:"* ]]
+  [[ "$output" == *"$HOST_REPO/$RUNNER_MANIFEST_FILE not found"* ]]
 }
 
-@test "check_gate_prompt — present prompt passes silently" {
-  HERE="$BATS_TEST_TMPDIR/with-prompt"
-  mkdir -p "$HERE"
-  : >"$HERE/review-and-gate.md"
+@test "check_manifest — valid manifest sets RESOLVED_MANIFEST" {
+  HOST_REPO="$BATS_TEST_TMPDIR/with-manifest"
+  mkdir -p "$HOST_REPO/runner"
+  # Default one-entry manifest using the real HERE/review-and-gate.md.
+  printf 'review → framework:review-and-gate.md\n' >"$HOST_REPO/$RUNNER_MANIFEST_FILE"
   trap - EXIT
 
-  run check_gate_prompt
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  check_manifest
+  # RESOLVED_MANIFEST must be non-empty and contain the label and path.
+  [ -n "$RESOLVED_MANIFEST" ]
+  [[ "$RESOLVED_MANIFEST" == *"review"*"review-and-gate.md"* ]]
+}
+
+@test "check_manifest — malformed manifest entry fails with the manifest invariant message" {
+  HOST_REPO="$BATS_TEST_TMPDIR/bad-manifest"
+  mkdir -p "$HOST_REPO/runner"
+  printf 'bad-line-no-arrow\n' >"$HOST_REPO/$RUNNER_MANIFEST_FILE"
+  trap - EXIT
+
+  run check_manifest
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"runner: manifest:"* ]]
+}
+
+@test "check_manifest — unresolved prompt reference fails with the manifest invariant message" {
+  HOST_REPO="$BATS_TEST_TMPDIR/missing-ref"
+  mkdir -p "$HOST_REPO/runner"
+  printf 'review → framework:nonexistent-prompt.md\n' >"$HOST_REPO/$RUNNER_MANIFEST_FILE"
+  trap - EXIT
+
+  run check_manifest
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"runner: manifest:"* ]]
 }
 
 # === acquire_lock ==========================================================
@@ -1001,9 +916,9 @@ setup_dispatch_one_test() {
   echo "pre" >"$TEST_SNAPSHOT_PHASE"
   # Default fixture: a 2-phase AFK snapshot covering pre-implement
   # (ready-for-agent + AFK) and post-implement (in-review + AFK). Tests
-  # that drive the gate stage end-to-end use `install_afk_snapshots` to
-  # add a third post-gate phase; halt-stage tests use this default and
-  # halt propagation before the gate is reached.
+  # that drive the walk stage end-to-end use `install_afk_snapshots` to
+  # add a third post-review phase; halt-stage tests use this default and
+  # halt propagation before the walk is reached.
   take_snapshot() {
     local phase
     phase="$(cat "$TEST_SNAPSHOT_PHASE")"
@@ -1026,9 +941,9 @@ setup_dispatch_one_test() {
     return 0
   }
 
-  # Default mock: no-op gate. AFK gate-stage tests override
-  # run_gate_container to drive the desired gate verdict.
-  run_gate_container() {
+  # Default mock: no-op item dispatch. AFK walk-stage tests override
+  # run_item_container to drive the desired item verdict.
+  run_item_container() {
     return 0
   }
 
@@ -1036,16 +951,18 @@ setup_dispatch_one_test() {
   HOST_RUNS="$TEST_RUN_DIR"
   HOST_REPO="$BATS_TEST_TMPDIR"
   HOST_ABORT_DIR="$BATS_TEST_TMPDIR/aborted"
+  # Set the resolved manifest to the default one-item entry so the walk runs.
+  RESOLVED_MANIFEST="$(printf 'review\t%s\n' "$HERE/review-and-gate.md")"
 }
 
-# Helper: install a 3-phase snapshot mock for AFK gate tests. Phases:
+# Helper: install a 3-phase snapshot mock for AFK walk-stage tests. Phases:
 #   pre           → ready-for-agent + AFK
 #   post-implement → in-review + AFK
-#   post-gate      → $1 (the post-gate status — done|in-review|wontfix|…)
+#   post-review    → $1 (the post-item status — done|in-review|wontfix|…)
 install_afk_snapshots() {
-  local post_gate_status="$1"
+  local post_item_status="$1"
   echo "pre" >"$TEST_SNAPSHOT_PHASE"
-  TEST_POST_GATE_STATUS="$post_gate_status"
+  TEST_POST_ITEM_STATUS="$post_item_status"
   take_snapshot() {
     local phase
     phase="$(cat "$TEST_SNAPSHOT_PHASE")"
@@ -1055,12 +972,12 @@ install_afk_snapshots() {
         printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
         ;;
       post-implement)
-        echo "post-gate" >"$TEST_SNAPSHOT_PHASE"
+        echo "post-review" >"$TEST_SNAPSHOT_PHASE"
         printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
         ;;
-      post-gate)
+      post-review)
         printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"%s","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}' \
-          "$TEST_POST_GATE_STATUS"
+          "$TEST_POST_ITEM_STATUS"
         ;;
     esac
   }
@@ -1106,9 +1023,9 @@ install_afk_snapshots() {
   assert_output --partial "implement → halt → FAIL"
 }
 
-@test "dispatch_one — gate-stage propagation error emits a halt → gate-failed follow-up line" {
-  # Same regression at the gate stage. Gate-clean post-implement, then
-  # the post-gate propagation errors. Original `review → clean → done`
+@test "dispatch_one — walk-stage propagation error emits a halt → gate-failed follow-up line" {
+  # Same regression at the walk stage. Walk-clean post-implement, then
+  # the post-item propagation errors. Original `review → clean → done`
   # line stays for forensics; follow-up `review → halt → gate-failed`
   # line matches the SUMMARY.md row.
   setup_dispatch_one_test
@@ -1120,12 +1037,12 @@ install_afk_snapshots() {
     local n
     n="$(cat "$prop_count_file")"
     echo $((n + 1)) >"$prop_count_file"
-    # Post-implement propagation succeeds; post-gate halts.
+    # Post-implement propagation succeeds; post-item halts.
     [ "$n" -eq 0 ]
   }
-  # local-markdown-shaped gate commit so the HEAD delta triggers
-  # gate-stage propagation (the path under test).
-  run_gate_container() {
+  # local-markdown-shaped item commit so the HEAD delta triggers
+  # walk-stage propagation (the path under test).
+  run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: review f/01 → done"
     return 0
@@ -1166,8 +1083,8 @@ install_afk_snapshots() {
   [ "$post_sha" != "$pre_sha" ]
 }
 
-@test "dispatch_one — gate-stage propagation error sets RUN_STOP_REASON=propagation-error" {
-  # AC: Same on the gate stage: propagate_feature error from gate-stage
+@test "dispatch_one — walk-stage propagation error sets RUN_STOP_REASON=propagation-error" {
+  # AC: Same on the walk stage: propagate_feature error from walk-stage
   # propagation sets RUN_STOP_REASON="propagation-error", records gate-failed,
   # returns 1.
   setup_dispatch_one_test
@@ -1179,12 +1096,12 @@ install_afk_snapshots() {
     local n
     n="$(cat "$prop_count_file")"
     echo $((n + 1)) >"$prop_count_file"
-    # Post-implement propagation succeeds; post-gate halts.
+    # Post-implement propagation succeeds; post-item halts.
     [ "$n" -eq 0 ]
   }
-  # local-markdown-shaped gate commit so the HEAD delta triggers
-  # gate-stage propagation (the path under test).
-  run_gate_container() {
+  # local-markdown-shaped item commit so the HEAD delta triggers
+  # walk-stage propagation (the path under test).
+  run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: review f/01 → done"
     return 0
@@ -1606,7 +1523,7 @@ EOF
   [[ "${RUN_DISPATCHES[0]}" == *"|propagated → host" ]]
 }
 
-@test "dispatch_one — post-gate snapshot failure sets named stop reason and records iteration" {
+@test "dispatch_one — post-review snapshot failure sets named stop reason and records iteration" {
   setup_dispatch_one_test
   RUN_DISPATCHES=()
   RUN_STOP_REASON=""
@@ -1637,11 +1554,11 @@ EOF
   # Stub classify_outcome so the implement stage is classified as success
   # without requiring jq. The post_status jq call (for impl_label) will
   # produce an empty result, leaving impl_label=FAIL — acceptable here
-  # since this test is verifying the post-gate snapshot guard, not the label.
+  # since this test is verifying the post-review snapshot guard, not the label.
   classify_outcome() { echo "success"; }
 
   propagate_feature() { return 0; }
-  run_gate_container() { return 0; }
+  run_item_container() { return 0; }
 
   set +e
   dispatch_one "f" "01" "$TEST_RUN_DIR" 2>/dev/null
@@ -1649,7 +1566,7 @@ EOF
   set -e
 
   [ "$rc" -eq 1 ]
-  [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-gate" ]
+  [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-review" ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|FAIL|"* ]]
 }
@@ -1659,7 +1576,7 @@ EOF
 # Regression: dispatch_one had three early-return paths between the
 # implement commit and propagate_feature that bypassed propagation:
 #   1. post-implement snapshot failure
-#   2. post-gate snapshot failure
+#   2. post-review snapshot failure
 #   3. gate-failed / review-aborted verdict
 # When the dispatched container committed work to the runner-checkout,
 # these paths returned FAIL without ever calling propagate_feature — and
@@ -1806,10 +1723,10 @@ EOF
   [ ! -s "$TEST_PROPAGATE_CALLS" ]
 }
 
-@test "dispatch_one — post-gate snapshot failure with gate commits propagates before bailing" {
-  # AC: When the gate container committed and the post-gate snapshot
+@test "dispatch_one — post-review snapshot failure with item commits propagates before bailing" {
+  # AC: When the item container committed and the post-review snapshot
   # fails, propagate_feature runs (twice: once on the success-path
-  # post-implement step, once on the post-gate failure step) before
+  # post-implement step, once on the post-item failure step) before
   # FAIL is returned.
   setup_dispatch_one_test
   install_afk_snapshots done
@@ -1817,7 +1734,7 @@ EOF
   RUN_STOP_REASON=""
   RUNNER_INTERRUPTED=0
 
-  # Override the snapshot mock to fail on the post-gate (3rd) call only.
+  # Override the snapshot mock to fail on the post-review (3rd) call only.
   SNAP_CALL_FILE="$BATS_TEST_TMPDIR/snap-calls"
   echo 0 >"$SNAP_CALL_FILE"
   take_snapshot() {
@@ -1848,10 +1765,10 @@ EOF
     return 0
   }
 
-  # local-markdown-shaped gate: commits a `tracker:` row, so the post-gate
-  # HEAD delta is non-empty and gate-stage propagation must fire even
+  # local-markdown-shaped item: commits a `tracker:` row, so the post-review
+  # HEAD delta is non-empty and walk-stage propagation must fire even
   # though the snapshot fails right after.
-  run_gate_container() {
+  run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: review f/01 → done"
     return 0
@@ -1863,10 +1780,10 @@ EOF
   set -e
 
   [ "$rc" -eq 1 ]
-  [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-gate" ]
-  # Propagation was called twice (post-implement + post-gate-fail).
+  [ "$RUN_STOP_REASON" = "snapshot-failed-mid-dispatch:post-review" ]
+  # Propagation was called twice (post-implement + post-item-fail).
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
-  # The last propagation captured the post-gate tip — the gate commit is
+  # The last propagation captured the post-item tip — the item's commit is
   # reachable from the parking ref.
   local prop_head post_sha
   prop_head="$(cat "$TEST_PROPAGATE_HEAD")"
@@ -1876,13 +1793,13 @@ EOF
   [[ "${RUN_DISPATCHES[0]}" == *"|propagated → host" ]]
 }
 
-@test "dispatch_one — gate-failed verdict with gate commits propagates before bailing" {
-  # AC: When the gate container committed and the verdict is gate-failed
+@test "dispatch_one — gate-failed verdict with item commits propagates before bailing" {
+  # AC: When the item container committed and the verdict is gate-failed
   # (nonzero exit, non-transport log), propagate_feature runs on the
-  # gate-stage failure path before the gate-failed record is written.
-  # Under local-markdown the gate prompt commits a `tracker:` row on
-  # every gate outcome — including gate-failed — so this is the active
-  # data-loss path for that binding.
+  # walk-stage failure path before the gate-failed record is written.
+  # Under local-markdown the item prompt may commit a `tracker:` row on
+  # every outcome — including gate-failed — so this is the active data-loss
+  # path for that binding.
   setup_dispatch_one_test
   install_afk_snapshots in-review
   RUN_DISPATCHES=()
@@ -1899,12 +1816,12 @@ EOF
     return 0
   }
 
-  # Gate commits AND exits nonzero with a non-transport-crash log
+  # Item commits AND exits nonzero with a non-transport-crash log
   # (`Killed` — typical OOM kill output). The classifier sees exit_code
   # != 0 and not-a-transport-crash → verdict = gate-failed.
-  run_gate_container() {
+  run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
-      commit --allow-empty --quiet -m "tracker: review f/01 → blocked (gate notes)"
+      commit --allow-empty --quiet -m "tracker: review f/01 → gate-failed (notes)"
     echo "Killed" >"$2"
     return 137
   }
@@ -1915,10 +1832,10 @@ EOF
   set -e
 
   [ "$rc" -ne 0 ]
-  # Two propagations: post-implement (success path) and post-gate-failed
-  # (new failure-path propagation).
+  # Two propagations: post-implement (success path) and post-item-failed
+  # (failure-path propagation).
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
-  # Final propagate_feature captured the gate's commit tip.
+  # Final propagate_feature captured the item's commit tip.
   local prop_head post_sha
   prop_head="$(cat "$TEST_PROPAGATE_HEAD")"
   post_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
@@ -2196,7 +2113,7 @@ setup_eligibility_test() {
   }
   check_docker_daemon() { :; }
   ensure_image() { :; }
-  check_gate_prompt() { :; }
+  check_manifest() { :; }
   ensure_mvn_cache() { :; }
   ensure_network() { :; }
   retrieve_oauth_token() { :; }
@@ -2222,7 +2139,7 @@ setup_eligibility_test() {
   }
   # local-markdown-shaped gate: commits a `tracker:` row on clean and
   # blocked alike. The HEAD delta triggers gate-stage propagation.
-  run_gate_container() {
+  run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: review f/01 → done"
     return 0
@@ -2262,7 +2179,7 @@ setup_eligibility_test() {
   }
   # github-issues-shaped gate: state flip and comment go through API calls,
   # leaving the runner-checkout HEAD unchanged.
-  run_gate_container() {
+  run_item_container() {
     return 0
   }
 
@@ -2296,7 +2213,7 @@ setup_eligibility_test() {
   }
   # local-markdown-shaped gate: contracts to commit on clean and blocked
   # alike (the tracker mutation lands as a git commit, not an API call).
-  run_gate_container() {
+  run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: review f/01 → done"
     return 0
@@ -2329,7 +2246,7 @@ setup_eligibility_test() {
   }
   # local-markdown-shaped gate commit so the HEAD delta triggers
   # gate-stage propagation.
-  run_gate_container() {
+  run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: review f/01 → done"
     return 0
@@ -2344,7 +2261,7 @@ setup_eligibility_test() {
   [ "$(grep -c '^f$' "$TEST_PROPAGATE_ARGS")" = "2" ]
 }
 
-@test "dispatch_one — AFK Critical-finding review records blocked and propagates twice" {
+@test "dispatch_one — AFK Critical-finding review records left-for-human and propagates twice" {
   setup_dispatch_one_test
   install_afk_snapshots in-review
 
@@ -2354,12 +2271,11 @@ setup_eligibility_test() {
     echo "called" >>"$TEST_PROPAGATE_CALLS"
     return 0
   }
-  # local-markdown-shaped gate: commits a `tracker:` row even on blocked
-  # (the gate prompt contracts to commit on clean and blocked alike).
-  # The HEAD delta triggers gate-stage propagation.
-  run_gate_container() {
+  # local-markdown-shaped item: commits a `tracker:` row.
+  # The HEAD delta triggers walk-stage propagation.
+  run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
-      commit --allow-empty --quiet -m "tracker: review f/01 → blocked"
+      commit --allow-empty --quiet -m "tracker: review f/01 → left-for-human"
     return 0
   }
 
@@ -2370,9 +2286,9 @@ setup_eligibility_test() {
   set -e
 
   [ "$rc" -eq 0 ]
-  # Blocked is operationally clean — counter resets, no failure.
+  # left-for-human is operationally clean — no abort flag, no failure.
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y|"* ]]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|y|"* ]]
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
@@ -2386,7 +2302,7 @@ setup_eligibility_test() {
     echo "called" >>"$TEST_PROPAGATE_CALLS"
     return 0
   }
-  run_gate_container() {
+  run_item_container() {
     # Container crashed (OOM kill) — nonzero exit. We must write a non-whitespace
     # line to the log ($2) so is_transport_crash doesn't misclassify the empty log
     # as a transport crash and flip the verdict to review-aborted.
@@ -2408,13 +2324,17 @@ setup_eligibility_test() {
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
 }
 
-@test "dispatch_one — AFK off-mission post-gate status is gate-failed" {
+@test "dispatch_one — AFK wontfix post-item status is stop-success (done)" {
+  # Unlike the old gate classifier (which treated wontfix as off-mission /
+  # gate-failed), classify_item_action treats wontfix as a terminal state
+  # (stop-success → done). This matches the issue lifecycle: wontfix is a
+  # valid final resolution.
   setup_dispatch_one_test
   install_afk_snapshots wontfix
 
   propagate_feature() { return 0; }
-  run_gate_container() {
-    # Exit 0 but post-gate status is wontfix — classify as gate-failed.
+  run_item_container() {
+    # Exit 0 + post-item status is wontfix → classify_item_action → stop-success.
     return 0
   }
 
@@ -2424,15 +2344,15 @@ setup_eligibility_test() {
   local rc=$?
   set -e
 
-  [ "$rc" -ne 0 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
+  [ "$rc" -eq 0 ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
 }
 
-@test "dispatch_one — RUNNER_INTERRUPTED between implement and gate prevents gate dispatch" {
+@test "dispatch_one — RUNNER_INTERRUPTED between implement and walk prevents item dispatch" {
   # Simulates Ctrl-C arriving after run_dispatch_container returns (i.e.
-  # IN_FLIGHT_CID_FILE has been cleared) but before run_gate_container is
+  # IN_FLIGHT_CID_FILE has been cleared) but before run_item_container is
   # called. The fix must check RUNNER_INTERRUPTED and return before
-  # spawning the gate container.
+  # spawning the item container.
   setup_dispatch_one_test
   install_afk_snapshots done
 
@@ -2440,7 +2360,7 @@ setup_eligibility_test() {
 
   TEST_GATE_CALLED="$BATS_TEST_TMPDIR/gate-called"
   : >"$TEST_GATE_CALLED"
-  run_gate_container() {
+  run_item_container() {
     echo "called" >>"$TEST_GATE_CALLED"
     return 0
   }
@@ -2459,22 +2379,19 @@ setup_eligibility_test() {
   set -e
 
   [ "$rc" -eq 0 ]
-  # Gate must NOT have been dispatched.
+  # Item container must NOT have been dispatched.
   [ ! -s "$TEST_GATE_CALLED" ]
   # Implement label recorded (in-review since implement succeeded).
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|in-review|"* ]]
 }
 
-@test "dispatch_one — AFK gate blocked verdict survives dirty checkout" {
+@test "dispatch_one — AFK left-for-human verdict survives dirty checkout" {
   # Contract: an inherited working-tree leftover from a prior in-container
   # crash (here, a 0-byte kernel core dump at `framework/runner/tests/core`)
-  # does not override the classifier's verdict. The gate produces a clean
-  # `blocked` verdict; the runner propagates the gate's tracker commit to
-  # host so the maintainer sees the review's findings. The
-  # implement-stage warning at line ~1524 already reported the leak; the
-  # gate stage does not re-warn. The next iteration's
-  # `ensure_runner_checkout` clears the leftover via `git clean -fd`.
+  # does not override the classifier's verdict. The item produces a
+  # `left-for-human` verdict; the runner propagates the item's tracker
+  # commit to host so the maintainer sees the review's findings.
   setup_dispatch_one_test
   install_afk_snapshots in-review
 
@@ -2488,21 +2405,20 @@ setup_eligibility_test() {
     # Mirror issue 21's incident shape: the implement stage commits real
     # tracker work AND leaks an uncommitted file (a kernel core dump from
     # a crashed in-container subprocess; default `core_pattern=core` writes
-    # CWD-relative). The leftover persists into the gate stage's working
-    # tree without the gate having touched it.
+    # CWD-relative). The leftover persists into the walk item's working
+    # tree without the item dispatch having touched it.
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: f/01 (test)"
     mkdir -p "$HOST_CHECKOUT/framework/runner/tests"
     : >"$HOST_CHECKOUT/framework/runner/tests/core"
     return 0
   }
-  run_gate_container() {
-    # local-markdown-shaped gate: commits a `tracker:` row even on
-    # blocked. The classifier still sees status unchanged
-    # (in-review → in-review) and returns `blocked`; the HEAD delta
-    # triggers gate-stage propagation so the tracker commit reaches host.
+  run_item_container() {
+    # local-markdown-shaped item: commits a `tracker:` row. The classifier
+    # sees status unchanged (in-review → in-review), action=continue; the
+    # HEAD delta triggers walk-stage propagation so the commit reaches host.
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
-      commit --allow-empty --quiet -m "tracker: review f/01 → blocked"
+      commit --allow-empty --quiet -m "tracker: review f/01 → left-for-human"
     return 0
   }
 
@@ -2512,14 +2428,113 @@ setup_eligibility_test() {
   local rc=$?
   set -e
 
-  # Classifier verdict (`blocked`) propagates unchanged despite the dirty
-  # working tree.
+  # left-for-human verdict propagates unchanged despite the dirty working tree.
   [ "$rc" -eq 0 ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
-  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|blocked|"*"|y|"* ]]
-  # Both the post-implement and post-gate propagations ran — the gate's
-  # tracker commit reaches host.
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|y|"* ]]
+  # Both the post-implement and post-walk-item propagations ran.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
+}
+
+# === walk_post_implement_steps — default-equivalence ========================
+#
+# AC 3: A one-entry manifest walk over the fused review-and-gate prompt is
+# observationally identical to the old hardcoded gate stage for each
+# classification / propagation / abort-flag combination.
+#
+# This test is "red before the refactor" (function didn't exist) and "green
+# after" (function walks the default manifest and produces equivalent results).
+
+@test "walk_post_implement_steps — default equivalence: stop-success produces done (was: clean)" {
+  setup_dispatch_one_test
+  local manifest
+  manifest="$(printf 'review\t%s\n' "$HERE/review-and-gate.md")"
+  local post_implement_json
+  post_implement_json='{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+
+  # Item dispatch exits 0, post-item snapshot returns done → stop-success.
+  take_snapshot() {
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"done","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+  }
+  run_item_container() { return 0; }
+  propagate_feature() { return 0; }
+  RUN_DISPATCHES=()
+
+  walk_post_implement_steps \
+    "f" "01" "f/01" \
+    "$TEST_RUN_DIR" "$TEST_RUN_DIR" "01" \
+    "$post_implement_json" \
+    "in-review" 10 1 \
+    "$manifest"
+  local rc=$?
+
+  [ "$rc" -eq 0 ]
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|y|"* ]]
+}
+
+@test "walk_post_implement_steps — default equivalence: continue-exhausted produces left-for-human (was: blocked)" {
+  setup_dispatch_one_test
+  local manifest
+  manifest="$(printf 'review\t%s\n' "$HERE/review-and-gate.md")"
+  local post_implement_json
+  post_implement_json='{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+
+  # Item dispatch exits 0, post-item snapshot stays in-review → continue → exhausted.
+  take_snapshot() {
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+  }
+  run_item_container() { return 0; }
+  propagate_feature() { return 0; }
+  RUN_DISPATCHES=()
+
+  walk_post_implement_steps \
+    "f" "01" "f/01" \
+    "$TEST_RUN_DIR" "$TEST_RUN_DIR" "01" \
+    "$post_implement_json" \
+    "in-review" 10 1 \
+    "$manifest"
+  local rc=$?
+
+  # left-for-human: rc=0 (no failure), no abort flag.
+  [ "$rc" -eq 0 ]
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|y|"* ]]
+  [ ! -f "$HOST_ABORT_DIR/f/01" ]
+}
+
+@test "walk_post_implement_steps — default equivalence: fail produces gate-failed with abort flag (was: gate-failed)" {
+  setup_dispatch_one_test
+  local manifest
+  manifest="$(printf 'review\t%s\n' "$HERE/review-and-gate.md")"
+  local post_implement_json
+  post_implement_json='{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+
+  # Item dispatch exits 137, non-transport log → fail → gate-failed.
+  take_snapshot() {
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+  }
+  run_item_container() { echo "Killed" >"$2"; return 137; }
+  propagate_feature() { return 0; }
+  RUN_DISPATCHES=()
+
+  set +e
+  walk_post_implement_steps \
+    "f" "01" "f/01" \
+    "$TEST_RUN_DIR" "$TEST_RUN_DIR" "01" \
+    "$post_implement_json" \
+    "in-review" 10 1 \
+    "$manifest"
+  local rc=$?
+  set -e
+
+  # gate-failed: rc=1, abort flag written with dispatch: review (item label).
+  [ "$rc" -eq 1 ]
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|gate-failed|"*"|y|"* ]]
+  [ -f "$HOST_ABORT_DIR/f/01" ]
+  grep -q '^dispatch: review$' "$HOST_ABORT_DIR/f/01"
+  grep -q '^type: technical$' "$HOST_ABORT_DIR/f/01"
 }
 
 # === capture_dispatch_core_files ==========================================
@@ -2677,9 +2692,9 @@ setup_eligibility_test() {
   [ "$result" = "[09:14:09] afk-runner/06 review → clean → done (4s)" ]
 }
 
-@test "format_progress_outcome — review blocked" {
-  result="$(format_progress_outcome "09:14:09" "afk-runner/06" "review" "blocked" 4)"
-  [ "$result" = "[09:14:09] afk-runner/06 review → blocked (4s)" ]
+@test "format_progress_outcome — review left-for-human" {
+  result="$(format_progress_outcome "09:14:09" "afk-runner/06" "review" "left-for-human" 4)"
+  [ "$result" = "[09:14:09] afk-runner/06 review → left-for-human (4s)" ]
 }
 
 @test "format_progress_outcome — review gate-failed" {
@@ -2747,26 +2762,25 @@ afk-runner|02|afk-runner/02|FAIL|18|'
   echo "$result" | grep -qF '| afk-runner/02 | FAIL | 18s | - | [02.log](02.log) |' || { echo "$result"; false; }
 }
 
-@test "format_summary_md — gate-bearing rows include the review-log link" {
+@test "format_summary_md — walk-bearing rows include the review-log link" {
   input='afk-runner|01|afk-runner/01|done|42|y
-afk-runner|02|afk-runner/02|blocked|36|y
+afk-runner|02|afk-runner/02|left-for-human|36|y
 afk-runner|03|afk-runner/03|gate-failed|11|y
 afk-runner|04|afk-runner/04|in-review|17|
 afk-runner|05|afk-runner/05|FAIL|3|'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
-  # AFK rows (clean / blocked / gate-failed) carry both the dispatch
+  # AFK walk rows (done / left-for-human / gate-failed) carry both the dispatch
   # log and the review log. Propagation field absent → '-' indicator.
   echo "$result" | grep -qF '| afk-runner/01 | done | 42s | - | [01.log](01.log) [01-review.log](01-review.log) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/02 | blocked | 36s | - | [02.log](02.log) [02-review.log](02-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/02 | left-for-human | 36s | - | [02.log](02.log) [02-review.log](02-review.log) |' \
     || { echo "$result"; false; }
   echo "$result" | grep -qF '| afk-runner/03 | gate-failed | 11s | - | [03.log](03.log) [03-review.log](03-review.log) |' \
     || { echo "$result"; false; }
   # Interrupt-between-stages row (implement-step recorded `in-review`,
-  # interrupted before gate) and implement-FAIL row carry only the
-  # dispatch log.
+  # interrupted before walk) and implement-FAIL row carry only the dispatch log.
   echo "$result" | grep -qF '| afk-runner/04 | in-review | 17s | - | [04.log](04.log) |' \
     || { echo "$result"; false; }
   echo "$result" | grep -qF '| afk-runner/05 | FAIL | 3s | - | [05.log](05.log) |' \
@@ -3307,11 +3321,11 @@ setup_abort_test() {
   grep -q '^log: ' "$flag_file"
 }
 
-@test "write_abort_flag — gate dispatch stores dispatch: gate" {
+@test "write_abort_flag — review item dispatch stores dispatch: review" {
   setup_abort_test
   local flag_file="$HOST_ABORT_DIR/f/01"
-  write_abort_flag "f" "01" "gate" 0 "$HOST_REPO/.runner-state/runs/ts/01-review.log"
-  grep -q '^dispatch: gate$' "$flag_file"
+  write_abort_flag "f" "01" "review" 0 "$HOST_REPO/.runner-state/runs/ts/01-review.log"
+  grep -q '^dispatch: review$' "$flag_file"
 }
 
 @test "write_abort_flag — overwrite-on-repeat replaces prior content" {
@@ -3348,7 +3362,7 @@ setup_abort_test() {
 @test "write_abort_flag — type: transport written when 6th arg is transport" {
   setup_abort_test
   local flag_file="$HOST_ABORT_DIR/f/01"
-  write_abort_flag "f" "01" "gate" 1 "$HOST_REPO/.runner-state/runs/ts/01-review.log" "transport"
+  write_abort_flag "f" "01" "review" 1 "$HOST_REPO/.runner-state/runs/ts/01-review.log" "transport"
   grep -q '^type: transport$' "$flag_file"
 }
 
@@ -3405,13 +3419,13 @@ setup_abort_test() {
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
 }
 
-@test "dispatch_one — gate-failed writes abort flag with dispatch: gate" {
+@test "dispatch_one — gate-failed writes abort flag with dispatch: review" {
   setup_abort_test
   install_afk_snapshots in-review
 
   propagate_feature() { return 0; }
-  run_gate_container() {
-    # Non-transport gate failure (e.g. OOM kill). The log must carry a
+  run_item_container() {
+    # Non-transport item failure (e.g. OOM kill). The log must carry a
     # non-whitespace line so is_transport_crash doesn't misclassify the empty
     # log as a transport crash and flip the verdict to review-aborted.
     echo "Killed" >"$2"
@@ -3424,7 +3438,7 @@ setup_abort_test() {
   set -e
 
   [ -f "$HOST_ABORT_DIR/f/01" ]
-  grep -q '^dispatch: gate$' "$HOST_ABORT_DIR/f/01"
+  grep -q '^dispatch: review$' "$HOST_ABORT_DIR/f/01"
   # Pin the gate-failed (non-transport) verdict explicitly — without these the
   # test passes silently against the review-aborted path too.
   grep -q '^type: technical$' "$HOST_ABORT_DIR/f/01"
@@ -3504,7 +3518,7 @@ setup_abort_test() {
   setup_abort_test
   install_afk_snapshots in-review
   propagate_feature() { return 0; }
-  run_gate_container() {
+  run_item_container() {
     # Transport-signature log + nonzero exit — triggers is_transport_crash.
     echo "API Error: 503 " >"$2"
     return 1
@@ -3519,10 +3533,10 @@ setup_abort_test() {
   # Dispatch record carries review-aborted (not gate-failed).
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == *"|review-aborted|"* ]]
-  # Abort flag written with type: transport and dispatch: gate.
+  # Abort flag written with type: transport and dispatch: review (item label).
   [ -f "$HOST_ABORT_DIR/f/01" ]
   grep -q '^type: transport$' "$HOST_ABORT_DIR/f/01"
-  grep -q '^dispatch: gate$' "$HOST_ABORT_DIR/f/01"
+  grep -q '^dispatch: review$' "$HOST_ABORT_DIR/f/01"
 }
 
 @test "run_loop — aborted ref is skipped with rm recipe in stdout" {
@@ -5056,7 +5070,7 @@ EOF
 # `args_file` and `claude_subs_present` in the caller for assertions.
 #
 # Args: $1 = space-separated list of `.claude/<sub>` dirs to create on host
-#       $2 = wrapper to invoke (`run_sandbox_container` | `run_dispatch_container` | `run_gate_container`)
+#       $2 = wrapper to invoke (`run_sandbox_container` | `run_dispatch_container` | `run_item_container`)
 _setup_mount_capture() {
   local subs="$1" wrapper="${2:-run_sandbox_container}"
   HOST_REPO="$BATS_TEST_TMPDIR/host"
@@ -5068,9 +5082,9 @@ _setup_mount_capture() {
   TOKEN="test-token"
   RUNNER_INTERRUPTED=0
   IN_FLIGHT_CID_FILE=""
-  GATE_PROMPT_PATH="$BATS_TEST_TMPDIR/gate-prompt"
+  local item_prompt_file="$BATS_TEST_TMPDIR/item-prompt"
   mkdir -p "$HOST_REPO" "$HOST_CHECKOUT" "$HOST_RUNNER_STATE"
-  printf 'gate prompt\n' > "$GATE_PROMPT_PATH"
+  printf 'item prompt\n' > "$item_prompt_file"
 
   local sub
   for sub in $subs; do
@@ -5085,7 +5099,7 @@ _setup_mount_capture() {
 
   case "$wrapper" in
     run_dispatch_container) run_dispatch_container "f/01" "$BATS_TEST_TMPDIR/log" ;;
-    run_gate_container)     run_gate_container     "f/01" "$BATS_TEST_TMPDIR/log" ;;
+    run_item_container)     run_item_container     "f/01" "$BATS_TEST_TMPDIR/log" "$item_prompt_file" ;;
     *)                      run_sandbox_container "$BATS_TEST_TMPDIR/log" claude -p "/implement f/01" ;;
   esac
 }
@@ -5149,9 +5163,9 @@ _setup_mount_capture() {
   ! grep -qF -- "settings.local"      "$args_file"
 }
 
-# `run_dispatch_container` and `run_gate_container` both funnel through
-# `run_sandbox_container`, so the mount logic is implemented in one place — but
-# the brief asks for coverage at both invocation sites. Pin them.
+# `run_dispatch_container` and `run_item_container` both funnel through
+# `run_sandbox_container`, so the mount logic is implemented in one place —
+# pin both invocation sites.
 @test "run_dispatch_container — forwards .claude/{skills,agents,rules} mounts when host has them" {
   _setup_mount_capture "skills agents rules" run_dispatch_container
 
@@ -5160,8 +5174,8 @@ _setup_mount_capture() {
   grep -qFx -- "$HOST_REPO/.claude/rules:/repo/.claude/rules:ro" "$args_file"
 }
 
-@test "run_gate_container — forwards .claude/{skills,agents,rules} mounts when host has them" {
-  _setup_mount_capture "skills agents rules" run_gate_container
+@test "run_item_container — forwards .claude/{skills,agents,rules} mounts when host has them" {
+  _setup_mount_capture "skills agents rules" run_item_container
 
   grep -qFx -- "$HOST_REPO/.claude/skills:/repo/.claude/skills:ro" "$args_file"
   grep -qFx -- "$HOST_REPO/.claude/agents:/repo/.claude/agents:ro" "$args_file"
@@ -5245,26 +5259,26 @@ _setup_mount_capture() {
         printf '{"feature":"f","issues":[{"ref":"#42","nn":"42","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
         ;;
       post-implement)
-        echo "post-gate" >"$snap_phase_file"
+        echo "post-review" >"$snap_phase_file"
         printf '{"feature":"f","issues":[{"ref":"#42","nn":"42","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
         ;;
-      post-gate)
+      post-review)
         printf '{"feature":"f","issues":[{"ref":"#42","nn":"42","status":"done","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
         ;;
     esac
   }
 
-  # Capture the ref that run_dispatch_container and run_gate_container receive.
+  # Capture the ref that run_dispatch_container and run_item_container receive.
   TEST_DISPATCH_REF="$BATS_TEST_TMPDIR/dispatch-ref"
-  TEST_GATE_REF="$BATS_TEST_TMPDIR/gate-ref"
+  TEST_ITEM_REF="$BATS_TEST_TMPDIR/item-ref"
   run_dispatch_container() {
     printf '%s' "$1" >"$TEST_DISPATCH_REF"
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: #42 (test)"
     return 0
   }
-  run_gate_container() {
-    printf '%s' "$1" >"$TEST_GATE_REF"
+  run_item_container() {
+    printf '%s' "$1" >"$TEST_ITEM_REF"
     return 0
   }
   propagate_feature() { return 0; }
@@ -5278,7 +5292,7 @@ _setup_mount_capture() {
   [ "$rc" -eq 0 ]
   # The binding-native ref "#42" was forwarded to both dispatch stages.
   [ "$(cat "$TEST_DISPATCH_REF")" = "#42" ]
-  [ "$(cat "$TEST_GATE_REF")" = "#42" ]
+  [ "$(cat "$TEST_ITEM_REF")" = "#42" ]
   # record_dispatch carries feature, nn, and native ref "#42".
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|42|#42|done|"* ]]

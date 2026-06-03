@@ -46,15 +46,17 @@
 #         refused).
 #
 # The script is also sourceable; pure logic (`classify_outcome`,
-# `next_eligible_ref`, `next_eligible_feature`, `classify_gate_outcome`,
-# `classify_item_action`, `format_multi_feature_summary_md`) is exposed for
-# the bats suite. `main` only runs when the script is executed directly.
+# `next_eligible_ref`, `next_eligible_feature`, `classify_item_action`,
+# `walk_post_implement_steps`, `format_multi_feature_summary_md`) is exposed
+# for the bats suite. `main` only runs when the script is executed directly.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"
 # shellcheck source=validate-binding-env.sh
 source "$HERE/validate-binding-env.sh"
+# shellcheck source=resolve-manifest.sh
+source "$HERE/resolve-manifest.sh"
 
 # === Configuration =========================================================
 
@@ -126,56 +128,6 @@ next_eligible_ref() {
   local snapshot_json="$1"
   jq -r 'first(.issues[] | select(.eligible == true) | .ref) // empty' \
     <<<"$snapshot_json"
-}
-
-# Classify a gate-dispatch outcome. Inputs:
-#   $1 — pre-gate snapshot JSON (post-implement state — issue at in-review)
-#   $2 — post-gate snapshot JSON (after the gate session committed)
-#   $3 — canonical issue ref
-#   $4 — gate dispatch's exit code
-#   $5 — transport-crash boolean (default: false); when true, emits
-#         `review-aborted` instead of `gate-failed` on nonzero-exit path.
-#
-# Output (stdout): exactly one of `clean`, `blocked`, `gate-failed`, or
-# `review-aborted`.
-#
-#   clean          — exit 0 AND (post.status == done, OR ref absent from
-#                    snapshot — the github-issues binding closes on done, so
-#                    absence is the binding-native signal for done).
-#   blocked        — exit 0 AND post.status == in-review (unchanged from pre).
-#   gate-failed    — nonzero exit (no transport crash), or exit-0 with an
-#                    off-mission post-status.
-#   review-aborted — nonzero exit AND transport-crash == true.
-#
-# Pure logic — no I/O beyond stdin/stdout. Sourceable from bats.
-classify_gate_outcome() {
-  local pre_json="$1" post_json="$2" ref="$3" exit_code="$4" transport_crash="${5:-false}"
-
-  # pre.status must be in-review or done — anything else means the gate
-  # was dispatched against an issue in an unexpected state (argument-order
-  # swap, stale snapshot, etc.).
-  local pre_status
-  pre_status="$(jq -r --arg r "$ref" \
-    '(.issues[] | select(.ref == $r) | .status) // empty' <<<"$pre_json")"
-  case "$pre_status" in
-    in-review|done) ;;
-    *) echo "gate-failed"; return 0 ;;
-  esac
-
-  if [ "$exit_code" != "0" ]; then
-    [ "$transport_crash" = "true" ] && echo "review-aborted" || echo "gate-failed"
-    return 0
-  fi
-
-  local post_status
-  post_status="$(jq -r --arg r "$ref" \
-    '(.issues[] | select(.ref == $r) | .status) // empty' <<<"$post_json")"
-
-  case "$post_status" in
-    done|"")   echo "clean" ;;
-    in-review) echo "blocked" ;;
-    *)         echo "gate-failed" ;;
-  esac
 }
 
 # Classify the per-item control-flow action after a post-implement step runs.
@@ -359,27 +311,27 @@ now_clock() { date +"%H:%M:%S"; }
 # reads them live during a run and again after the fact in SUMMARY.md.
 #
 # Each iteration emits per-stage progress lines. AFK iterations produce
-# four lines (implement starting/outcome, review starting/outcome); HITL
-# iterations produce two (implement only — gate is skipped). When a
+# two lines per walk item (starting/outcome) plus two for implement.
+# HITL iterations produce two (implement only — walk is skipped). When a
 # parking-ref publish fails after a stage, a follow-up `halt → <recorded
 # outcome>` line is emitted so the operator's terminal record matches
 # the SUMMARY.md row.
 #
-# Stage names: `implement` for the /implement dispatch, `review` for the
-# post-implement review-and-gate dispatch.
+# Stage names: `implement` for the /implement dispatch; each walk-item
+# dispatch uses that item's manifest label (e.g. `review`).
 #
 # Outcome label vocabulary by stage:
-#   implement: in-review | done | dispatch-aborted | FAIL | halt → FAIL
-#   review:    clean → done | blocked | review-aborted | gate-failed | halt → gate-failed
+#   implement:   in-review | done | dispatch-aborted | FAIL | halt → FAIL
+#   <item-label>: clean → done | left-for-human | review-aborted | gate-failed | halt → gate-failed
 #
 # Combined per-iteration outcome (used in the end-of-run table and
-# SUMMARY.md row): `done | blocked | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL`.
-#   done             — AFK + clean review
-#   blocked          — AFK + Critical-finding review
-#   gate-failed      — AFK + gate dispatch errored or off-mission
-#   review-aborted   — AFK + gate subprocess transport-crashed (empty/5xx/429/network log)
+# SUMMARY.md row): `done | left-for-human | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL`.
+#   done             — AFK + walk item reached done/wontfix/absent (stop-success)
+#   left-for-human   — AFK + walk exhausted, issue still at in-review (no abort flag)
+#   gate-failed      — AFK + item dispatch errored or off-mission
+#   review-aborted   — AFK + item subprocess transport-crashed (empty/5xx/429/network log)
 #   dispatch-aborted — implement subprocess transport-crashed
-#   in-review        — interrupt between implement and gate (gate not run)
+#   in-review        — interrupt between implement and walk start (walk not run)
 #   FAIL             — implement-stage failure (classifier, propagation, container)
 
 # Convert integer seconds to a human-friendly string.
@@ -746,6 +698,7 @@ RUNNER_LOG_FIFO=""
 RUNNER_LAST_PROPAGATION=""   # 'propagated → host' | 'parked → runner/<branch>' | '' (set by propagate_feature)
 RUN_SWEPT_REFS=()     # parking refs deleted by sweep_stale_parking_refs; populated before dispatch
 DISCOVERY_JSON=""     # populated by check_discovery pre-flight invariant
+RESOLVED_MANIFEST=""  # populated by check_manifest pre-flight invariant; tab-delimited label<TAB>path pairs
 
 # Set RUN_TS / RUN_DIR / RUN_START_CLOCK and create the per-run dir under
 # `<host>/.runner-state/runs/<ts>/`. Idempotent within a run; no-op if
@@ -1372,16 +1325,23 @@ check_docker_daemon() {
   fi
 }
 
-# 4b. Gate prompt file exists. The post-implement review-and-gate dispatch
-#     reads this prompt at dispatch time, appends the issue ref, and hands
-#     the result to a fresh `claude -p` invocation. Slots in the framework-
-#     artifact pre-flight cluster, between the image and the per-feature
-#     mvn cache.
-check_gate_prompt() {
-  GATE_PROMPT_PATH="$HERE/$RUNNER_GATE_PROMPT_FILE"
-  if [ ! -f "$GATE_PROMPT_PATH" ]; then
-    fail_invariant "gate-prompt" \
-      "$GATE_PROMPT_PATH not found"
+# 4b. Consumer-owned post-implement manifest is present and valid. Resolves
+#     all referenced prompts; fails fast before any Dispatch if missing or
+#     malformed. Sets RESOLVED_MANIFEST to the tab-delimited label<TAB>path
+#     pairs for use by walk_post_implement_steps.
+check_manifest() {
+  local manifest_path="$HOST_REPO/$RUNNER_MANIFEST_FILE"
+  if [ ! -f "$manifest_path" ]; then
+    fail_invariant "manifest" \
+      "$manifest_path not found"
+  fi
+  local manifest_text
+  manifest_text="$(cat "$manifest_path")"
+  # Redirect resolve_manifest's stderr to stdout so failures are captured
+  # in RESOLVED_MANIFEST for the fail_invariant message; on success stdout
+  # holds only the valid tab-delimited pairs (stderr is empty).
+  if ! RESOLVED_MANIFEST="$(resolve_manifest "$manifest_text" "$HERE" "$HOST_REPO/runner" 2>&1)"; then
+    fail_invariant "manifest" "$RESOLVED_MANIFEST"
   fi
 }
 
@@ -1460,7 +1420,7 @@ preflight() {
   fi
   check_docker_daemon                    # invariant 3
   ensure_image                           # invariant 4
-  check_gate_prompt                      # invariant 4b (gate prompt)
+  check_manifest                         # invariant 4b (post-implement manifest)
   if [ "$RUN_MODE" != "drain" ]; then
     ensure_mvn_cache                     # invariant 5
   fi
@@ -1831,14 +1791,14 @@ run_dispatch_container() {
     claude -p "/implement $ref" --dangerously-skip-permissions
 }
 
-# Gate-dispatch wrapper: cats the gate prompt, appends the canonical
-# issue ref, and hands the result to a fresh `claude -p` in the sandbox
-# via the transport-retry layer. Tracker-snapshot delta + exit code drive
-# `classify_gate_outcome`.
-run_gate_container() {
-  local ref="$1" log_file="$2"
+# Item-dispatch wrapper: cats the manifest item's prompt, appends the
+# canonical issue ref, and hands the result to a fresh `claude -p` in
+# the sandbox via the transport-retry layer. Tracker-snapshot delta +
+# exit code drive `classify_item_action` in `walk_post_implement_steps`.
+run_item_container() {
+  local ref="$1" log_file="$2" prompt_path="$3"
   local prompt_text
-  prompt_text="$(cat "$GATE_PROMPT_PATH")"$'\n'"$ref"
+  prompt_text="$(cat "$prompt_path")"$'\n'"$ref"
   with_transport_retry "$log_file" run_sandbox_container \
     claude -p "$prompt_text" --dangerously-skip-permissions
 }
@@ -2160,6 +2120,214 @@ capture_dispatch_core_files() {
   done <<< "$dirty_list"
 }
 
+# Walk the resolved manifest items one by one after a successful implement.
+# For each item: dispatch in the sandbox, propagate committed work by commit
+# delta, snapshot, classify with classify_item_action, and react.
+#
+# The walk stops as soon as the issue reaches a terminal state (stop-success)
+# or a failure occurs. If the list is exhausted with the issue still at
+# in-review, the outcome is a neutral "left-for-human" with no abort flag.
+#
+# Args:
+#   $1  = feature
+#   $2  = nn
+#   $3  = ref (binding-native)
+#   $4  = run_dir
+#   $5  = log_dir
+#   $6  = log_basename (<NN> — item logs are <NN>-<label>.log)
+#   $7  = post_implement_json
+#   $8  = impl_label (in-review|done — used when manifest is empty)
+#   $9  = impl_duration (seconds, accumulated into iter_duration)
+#   $10 = impl_attempts
+#   $11 = resolved_manifest (tab-delimited label<TAB>path, one per line)
+#
+# Side effects: record_dispatch called exactly once; write_abort_flag on
+# gate-failed/review-aborted; RUN_STOP_REASON set on propagation-error;
+# RUNNER_LAST_PROPAGATION set by propagate_feature calls.
+#
+# Return: 0 on success (done or left-for-human), 1 on failure.
+# Sourceable from bats.
+walk_post_implement_steps() {
+  local feature="$1" nn="$2" ref="$3"
+  local run_dir="$4" log_dir="$5" log_basename="$6"
+  local post_implement_json="$7"
+  local impl_label="$8" impl_duration="$9" impl_attempts="${10}"
+  local resolved_manifest="${11}"
+
+  local total_item_seconds=0
+  local total_attempts="$impl_attempts"
+  local any_item_ran=0
+
+  while IFS=$'\t' read -r item_label item_path; do
+    [ -z "$item_label" ] && continue
+
+    any_item_ran=1
+    local item_log_file="$log_dir/$log_basename-$item_label.log"
+
+    # Emit the "starting" progress line for this item.
+    local item_start_clock
+    item_start_clock="$(now_clock)"
+    format_progress_start "$item_start_clock" "$ref" "$item_label"
+
+    # Capture HEAD before dispatch to detect a commit delta.
+    local pre_item_head
+    pre_item_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
+
+    local item_started_at
+    item_started_at=$(date +%s)
+
+    local item_rc=0
+    run_item_container "$ref" "$item_log_file" "$item_path" || item_rc=$?
+    local item_attempts="${TRANSPORT_RETRY_ATTEMPTS:-1}"
+    total_attempts="$item_attempts"
+
+    local post_item_head
+    post_item_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
+
+    local item_has_runner_commits=0
+    if [ -n "$pre_item_head" ] && [ -n "$post_item_head" ] \
+        && [ "$pre_item_head" != "$post_item_head" ]; then
+      item_has_runner_commits=1
+    fi
+
+    local item_transport_crash=false
+    if [ "$item_rc" != "0" ] && is_transport_crash "$item_log_file"; then
+      item_transport_crash=true
+    fi
+
+    # Snapshot failure takes precedence over the transport-crash signal.
+    # Park any committed work first so the next lazy-init doesn't wipe it.
+    local post_item_json
+    if ! post_item_json="$(take_snapshot "$feature")"; then
+      local snap_fail_at snap_item_duration snap_iter_duration
+      snap_fail_at=$(date +%s)
+      snap_item_duration=$(( snap_fail_at - item_started_at ))
+      snap_iter_duration=$(( impl_duration + total_item_seconds + snap_item_duration ))
+      echo "runner: walk_post_implement_steps: tracker-snapshot failed (post-$item_label) for ref '$ref'" >&2
+      if [ "$item_has_runner_commits" -eq 1 ]; then
+        if ! propagate_feature "$feature"; then
+          local halt_duration
+          halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds ))
+          RUN_STOP_REASON="propagation-error"
+          record_dispatch "$feature" "$nn" "$ref" "FAIL" "$halt_duration" "y" "$total_attempts"
+          return 1
+        fi
+      fi
+      RUN_STOP_REASON="snapshot-failed-mid-dispatch:post-$item_label"
+      record_dispatch "$feature" "$nn" "$ref" "FAIL" "$snap_iter_duration" "y" "$total_attempts"
+      return 1
+    fi
+
+    local item_ended_at item_duration iter_duration
+    item_ended_at=$(date +%s)
+    item_duration=$(( item_ended_at - item_started_at ))
+    total_item_seconds=$(( total_item_seconds + item_duration ))
+    iter_duration=$(( impl_duration + total_item_seconds ))
+
+    # Extract post-item status for classify_item_action.
+    local post_item_status
+    post_item_status="$(jq -r --arg r "$ref" \
+      '(.issues[] | select(.ref == $r) | .status) // empty' <<<"$post_item_json")"
+
+    local item_action
+    item_action="$(classify_item_action "$post_item_status" "$item_rc")"
+
+    case "$item_action" in
+      stop-success)
+        format_progress_outcome "$(now_clock)" "$ref" "$item_label" "clean → done" "$item_duration"
+        if [ "$item_has_runner_commits" -eq 1 ]; then
+          if ! propagate_feature "$feature"; then
+            local halt_duration
+            halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds - item_duration ))
+            format_progress_outcome "$(now_clock)" "$ref" "$item_label" "halt → gate-failed" "$item_duration"
+            record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$halt_duration" "y" "$total_attempts"
+            RUN_STOP_REASON="propagation-error"
+            return 1
+          fi
+        fi
+        record_dispatch "$feature" "$nn" "$ref" "done" "$iter_duration" "y" "$total_attempts"
+        return 0
+        ;;
+
+      fail)
+        local item_combined_label item_progress_label
+        if [ "$item_transport_crash" = "true" ]; then
+          item_progress_label="review-aborted"
+          item_combined_label="review-aborted"
+        else
+          item_progress_label="gate-failed"
+          item_combined_label="gate-failed"
+        fi
+        format_progress_outcome "$(now_clock)" "$ref" "$item_label" "$item_progress_label" "$item_duration"
+        local flag_type="technical"
+        [ "$item_transport_crash" = "true" ] && flag_type="transport"
+        write_abort_flag "$feature" "$nn" "$item_label" "$item_rc" "$item_log_file" "$flag_type"
+        if [ "$item_has_runner_commits" -eq 1 ]; then
+          if ! propagate_feature "$feature"; then
+            local halt_duration
+            halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds - item_duration ))
+            format_progress_outcome "$(now_clock)" "$ref" "$item_label" "halt → $item_combined_label" "$item_duration"
+            record_dispatch "$feature" "$nn" "$ref" "$item_combined_label" "$halt_duration" "y" "$total_attempts"
+            RUN_STOP_REASON="propagation-error"
+            return 1
+          fi
+        fi
+        record_dispatch "$feature" "$nn" "$ref" "$item_combined_label" "$iter_duration" "y" "$total_attempts"
+        return 1
+        ;;
+
+      terminate-run)
+        # Placeholder: the terminate-run run-halt is not yet implemented (#67).
+        # The step moved the issue back to ready-for-agent; this should halt
+        # the run but must NOT fall through to the fail arm or write an abort
+        # flag. For now, propagate any commits and treat as left-for-human.
+        format_progress_outcome "$(now_clock)" "$ref" "$item_label" "left-for-human" "$item_duration"
+        if [ "$item_has_runner_commits" -eq 1 ]; then
+          if ! propagate_feature "$feature"; then
+            local halt_duration
+            halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds - item_duration ))
+            RUN_STOP_REASON="propagation-error"
+            record_dispatch "$feature" "$nn" "$ref" "left-for-human" "$halt_duration" "y" "$total_attempts"
+            return 1
+          fi
+        fi
+        record_dispatch "$feature" "$nn" "$ref" "left-for-human" "$iter_duration" "y" "$total_attempts"
+        return 0
+        ;;
+
+      continue)
+        # Issue still at in-review; proceed to the next manifest item.
+        # Progress label deferred: if more items follow this will look like
+        # an intermediate step; if this is the last item the loop exits and
+        # the left-for-human record below fires instead.
+        format_progress_outcome "$(now_clock)" "$ref" "$item_label" "left-for-human" "$item_duration"
+        if [ "$item_has_runner_commits" -eq 1 ]; then
+          if ! propagate_feature "$feature"; then
+            local halt_duration
+            halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds - item_duration ))
+            format_progress_outcome "$(now_clock)" "$ref" "$item_label" "halt → gate-failed" "$item_duration"
+            record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$halt_duration" "y" "$total_attempts"
+            RUN_STOP_REASON="propagation-error"
+            return 1
+          fi
+        fi
+        ;;
+    esac
+  done <<< "$resolved_manifest"
+
+  # All manifest items exhausted with the issue still at in-review (or
+  # manifest was empty — implement-only run). The "left-for-human" outcome
+  # requires no abort flag; the issue stays at in-review for the maintainer.
+  if [ "$any_item_ran" -eq 1 ]; then
+    record_dispatch "$feature" "$nn" "$ref" "left-for-human" \
+      "$(( impl_duration + total_item_seconds ))" "y" "$total_attempts"
+  else
+    # Empty manifest: implement-only run. Record the implement outcome.
+    record_dispatch "$feature" "$nn" "$ref" "$impl_label" "$impl_duration" "" "$impl_attempts"
+  fi
+  return 0
+}
+
 # Dispatch one issue end-to-end inside the run dir at $3. Consumes a
 # (feature, nn) pair — never regex-parses the binding-native ref. The
 # binding-native ref is resolved via `binding_native_ref` from the pre-
@@ -2188,9 +2356,8 @@ dispatch_one() {
   fi
   local log_file="$log_dir/$log_basename.log"
   local exit_file="$log_dir/$log_basename.exit"
-  local review_log_file="$log_dir/$log_basename-review.log"
 
-  local pre_json post_implement_json post_gate_json
+  local pre_json post_implement_json
   if ! pre_json="$(take_snapshot "$feature")"; then
     echo "runner: dispatch_one: tracker-snapshot failed (pre stage) for feature '$feature' issue '$nn'" >&2
     RUN_STOP_REASON="snapshot-failed-mid-dispatch:pre"
@@ -2366,164 +2533,26 @@ dispatch_one() {
     return 1
   fi
 
-  # === Gate decision =======================================================
+  # === Post-implement walk =====================================================
   # The runner dispatches eligible AFK refs only — both single-dispatch
   # and loop mode enforce that gate before reaching `dispatch_one`. Every
-  # successful AFK implement proceeds to the review-and-gate dispatch.
+  # successful AFK implement proceeds to the manifest walk.
 
-  # Guard: a signal in the window between implement-finish and gate-start
+  # Guard: a signal in the window between implement-finish and walk-start
   # (while IN_FLIGHT_CID_FILE is empty) sets RUNNER_INTERRUPTED without
-  # reaching the gate container. Record what we have and exit cleanly so
-  # the loop's top-of-iteration check handles the stop.
+  # reaching the first item container. Record what we have and exit cleanly
+  # so the loop's top-of-iteration check handles the stop.
   if [ "$RUNNER_INTERRUPTED" -eq 1 ]; then
     record_dispatch "$feature" "$nn" "$ref" "$impl_label" "$impl_duration" "" "$impl_attempts"
     return 0
   fi
 
-  # === Review-and-gate stage ==============================================
-  local gate_start_clock
-  gate_start_clock="$(now_clock)"
-  format_progress_start "$gate_start_clock" "$ref" "review"
-
-  # Capture the runner-checkout's HEAD around the gate dispatch on the same
-  # principle as the implement stage above: the post-gate advance signals
-  # whether the gate produced commits. Under local-markdown the gate prompt
-  # contracts to commit on clean and blocked alike, so HEAD advances and the
-  # post-gate propagation fires. Under github-issues the gate's comment and
-  # set-state land as API calls, HEAD is unchanged, and there is no commit
-  # to publish — gating on the delta keeps us from publishing a no-op to the
-  # parking ref and (when the maintainer is on the target branch) from
-  # recording a misleading `parked → runner/<feature>` ledger entry.
-  local pre_gate_head
-  pre_gate_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
-
-  local gate_started_at
-  gate_started_at=$(date +%s)
-  local gate_rc=0
-  run_gate_container "$ref" "$review_log_file" || gate_rc=$?
-  local gate_attempts="${TRANSPORT_RETRY_ATTEMPTS:-1}"
-
-  local post_gate_head
-  post_gate_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
-
-  local gate_has_runner_commits=0
-  if [ -n "$pre_gate_head" ] && [ -n "$post_gate_head" ] \
-      && [ "$pre_gate_head" != "$post_gate_head" ]; then
-    gate_has_runner_commits=1
-  fi
-
-  local gate_transport_crash=false
-  if [ "$gate_rc" != "0" ] && is_transport_crash "$review_log_file"; then
-    gate_transport_crash=true
-  fi
-
-  # As on the implement path: snapshot failure takes precedence over the
-  # transport-crash signal captured in gate_transport_crash. No abort flag.
-  # Park any committed gate work to the parking ref before bailing — same
-  # rationale as the post-implement snapshot-failure path above.
-  if ! post_gate_json="$(take_snapshot "$feature")"; then
-    local snap_fail_at snap_gate_duration snap_iter_duration
-    snap_fail_at=$(date +%s)
-    snap_gate_duration=$(( snap_fail_at - gate_started_at ))
-    snap_iter_duration=$(( impl_duration + snap_gate_duration ))
-    echo "runner: dispatch_one: tracker-snapshot failed (post-gate stage) for ref '$ref'" >&2
-    if [ "$gate_has_runner_commits" -eq 1 ]; then
-      if ! propagate_feature "$feature"; then
-        local gate_halt_duration iter_halt_duration
-        gate_halt_duration=$(( $(date +%s) - gate_started_at ))
-        iter_halt_duration=$(( impl_duration + gate_halt_duration ))
-        RUN_STOP_REASON="propagation-error"
-        record_dispatch "$feature" "$nn" "$ref" "FAIL" "$iter_halt_duration" "y" "$gate_attempts"
-        return 1
-      fi
-    fi
-    RUN_STOP_REASON="snapshot-failed-mid-dispatch:post-gate"
-    record_dispatch "$feature" "$nn" "$ref" "FAIL" "$snap_iter_duration" "y" "$gate_attempts"
-    return 1
-  fi
-
-  local gate_ended_at gate_duration iter_duration
-  gate_ended_at=$(date +%s)
-  gate_duration=$(( gate_ended_at - gate_started_at ))
-  iter_duration=$(( impl_duration + gate_duration ))
-
-  local gate_verdict
-  gate_verdict="$(classify_gate_outcome "$post_implement_json" "$post_gate_json" "$ref" "$gate_rc" "$gate_transport_crash")"
-
-  local review_label combined_label
-  case "$gate_verdict" in
-    clean)
-      review_label="clean → done"
-      combined_label="done"
-      ;;
-    blocked)
-      review_label="blocked"
-      combined_label="blocked"
-      ;;
-    review-aborted)
-      review_label="review-aborted"
-      combined_label="review-aborted"
-      ;;
-    *)
-      review_label="gate-failed"
-      combined_label="gate-failed"
-      ;;
-  esac
-
-  format_progress_outcome "$(now_clock)" "$ref" "review" "$review_label" "$gate_duration"
-
-  if [ "$gate_verdict" = "gate-failed" ] || [ "$gate_verdict" = "review-aborted" ]; then
-    local gate_flag_type="technical"
-    [ "$gate_verdict" = "review-aborted" ] && gate_flag_type="transport"
-    write_abort_flag "$feature" "$nn" "gate" "$gate_rc" "$review_log_file" "$gate_flag_type"
-    # Park any committed gate work to the parking ref before bailing. Under
-    # local-markdown the gate prompt commits a `tracker:` row on every gate
-    # outcome (including gate-failed and review-aborted), so HEAD has
-    # advanced and the work must reach the host parking ref. Under
-    # github-issues the gate's tracker mutations are API calls producing no
-    # commit; `gate_has_runner_commits` stays 0 and this branch is a no-op.
-    if [ "$gate_has_runner_commits" -eq 1 ]; then
-      if ! propagate_feature "$feature"; then
-        local gate_halt_duration iter_halt_duration
-        gate_halt_duration=$(( $(date +%s) - gate_started_at ))
-        iter_halt_duration=$(( impl_duration + gate_halt_duration ))
-        format_progress_outcome "$(now_clock)" "$ref" "review" "halt → $combined_label" "$gate_halt_duration"
-        record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_halt_duration" "y" "$gate_attempts"
-        RUN_STOP_REASON="propagation-error"
-        return 1
-      fi
-    fi
-    record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_duration" "y" "$gate_attempts"
-    return 1
-  fi
-
-  # Propagate the gate's commit to the host — same commit-delta gate as the
-  # implement stage. Under local-markdown the gate prompt contracts to
-  # commit on clean and blocked alike, so the branch advances and this
-  # fires; under github-issues the gate's tracker mutations are API calls
-  # producing no commit, the branch tip is unchanged, and this is a no-op.
-  # The classifier itself only checks exit code and status delta, so the
-  # local-markdown commit invariant is a prompt-level concern, not enforced
-  # here. A parking-ref publish failure (error) halts the loop — same as
-  # the implement-stage path above.
-  if [ "$gate_has_runner_commits" -eq 1 ]; then
-    if ! propagate_feature "$feature"; then
-      # As in the implement stage: the review outcome line above already
-      # showed the gate verdict (clean → done / blocked). Emit a follow-up
-      # `halt → gate-failed` line so the visible record matches the
-      # SUMMARY.md row.
-      local gate_halt_duration iter_halt_duration
-      gate_halt_duration=$(( $(date +%s) - gate_started_at ))
-      iter_halt_duration=$(( impl_duration + gate_halt_duration ))
-      format_progress_outcome "$(now_clock)" "$ref" "review" "halt → gate-failed" "$gate_halt_duration"
-      record_dispatch "$feature" "$nn" "$ref" "gate-failed" "$iter_halt_duration" "y" "$gate_attempts"
-      RUN_STOP_REASON="propagation-error"
-      return 1
-    fi
-  fi
-
-  record_dispatch "$feature" "$nn" "$ref" "$combined_label" "$iter_duration" "y" "$gate_attempts"
-  return 0
+  walk_post_implement_steps \
+    "$feature" "$nn" "$ref" \
+    "$run_dir" "$log_dir" "$log_basename" \
+    "$post_implement_json" \
+    "$impl_label" "$impl_duration" "$impl_attempts" \
+    "$RESOLVED_MANIFEST"
 }
 
 # === Run entry points ======================================================

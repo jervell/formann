@@ -85,6 +85,10 @@ _Avoid_: "shadow branch", "runner branch"
 The local git remote named `runner` in the **Consumer**'s repo, pointing at `.runner-state/checkout/`. Registered lazily on the **Runner**'s first invocation. The **Parking ref**s live under this remote (`refs/remotes/runner/<feature>`).
 _Avoid_: "runner clone" (that's the **Runner-checkout** at `.runner-state/checkout/`, a separate concept).
 
+**Post-implement phase**:
+The ordered sequence of **Dispatch**es the **Runner** executes after a successful `/implement`. Driven by a **Consumer**-owned manifest (`runner/manifest.md`) resolved at pre-flight; each manifest entry maps a label to a framework- or consumer-supplied prompt. The **Runner** walks the manifest one item at a time: dispatch → propagate → snapshot → classify → react. The default manifest contains exactly one entry running the fused `review-and-gate` prompt, reproducing the original hardcoded gate stage. An issue left at `in-review` after all items are exhausted is recorded as `left-for-human` (no abort flag). A **Dispatch** error in any item writes an abort flag keyed by the item's label.
+_Avoid_: "gate stage", "review phase" (those describe specific prompts, not the configurable walk structure)
+
 ### Installer
 
 **Installer**:

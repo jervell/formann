@@ -55,8 +55,9 @@ RUNNER_ABORT_PATH="$RUNNER_STATE_DIR/aborted"
 # operates against this working tree.
 RUNNER_CONTAINER_REPO_PATH="/repo"
 
-# Filename of the post-implement review-and-gate prompt. Lives next to
-# this lib.sh in `framework/runner/`; the runner reads it at dispatch time
-# and hands it to a second `claude -p` invocation. A pre-flight invariant
-# verifies the file's presence before the loop starts.
-RUNNER_GATE_PROMPT_FILE="review-and-gate.md"
+# Consumer-repo-relative path to the post-implement steps manifest.
+# The manifest lists ordered post-implement Dispatches; the runner resolves
+# it at pre-flight and walks the entries after each successful /implement.
+# A pre-flight invariant verifies the file's presence and validity before
+# the loop starts.
+RUNNER_MANIFEST_FILE="runner/manifest.md"
