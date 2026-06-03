@@ -26,10 +26,12 @@
 #   - `completed`             — every discovery slug considered.
 #   - `interrupted`           — Ctrl-C during the outer loop.
 #   - `propagation-error`     — parking-ref publish failed inside a feature loop.
+#   - `runaway-halt (<ref>)`  — post-implement step pushed issue back to eligible.
 #   - `preflight-abort: discovery` — `tracker-snapshot --list` failed.
 #
 # Stop reasons (narrowed modes):
 #   - `queue-empty` / `interrupted` / `snapshot-failed` / `propagation-error`.
+#   - `runaway-halt (<ref>)`  — post-implement step pushed issue back to eligible.
 #   - `feature-restricted (refused: <reason>)` (--feature).
 #   - `single-dispatch (success|failure|refused: <reason>)` (--issue).
 #
@@ -39,8 +41,8 @@
 #         as 0).
 #   1  — single dispatch failed (status didn't flip to in-review/done); or
 #         loop mode aborted because tracker-snapshot crashed mid-loop
-#         (`snapshot-failed`) or a propagation error halted the loop
-#         (`propagation-error`).
+#         (`snapshot-failed`), a propagation error halted the loop
+#         (`propagation-error`), or the runaway guard fired (`runaway-halt`).
 #   2  — pre-flight failed; the line printed before exit names which
 #         invariant tripped; or refusal (feature-restricted, single-dispatch
 #         refused).
@@ -322,10 +324,10 @@ now_clock() { date +"%H:%M:%S"; }
 #
 # Outcome label vocabulary by stage:
 #   implement:   in-review | done | dispatch-aborted | FAIL | halt → FAIL
-#   <item-label>: clean → done | left-for-human | review-aborted | gate-failed | halt → gate-failed
+#   <item-label>: clean → done | left-for-human | review-aborted | gate-failed | halt → gate-failed | halt → runaway
 #
 # Combined per-iteration outcome (used in the end-of-run table and
-# SUMMARY.md row): `done | left-for-human | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL`.
+# SUMMARY.md row): `done | left-for-human | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL | halt → runaway`.
 #   done             — AFK + walk item reached done/wontfix/absent (stop-success)
 #   left-for-human   — AFK + walk exhausted, issue still at in-review (no abort flag)
 #   gate-failed      — AFK + item dispatch errored or off-mission
@@ -333,6 +335,7 @@ now_clock() { date +"%H:%M:%S"; }
 #   dispatch-aborted — implement subprocess transport-crashed
 #   in-review        — interrupt between implement and walk start (walk not run)
 #   FAIL             — implement-stage failure (classifier, propagation, container)
+#   halt → runaway   — AFK + post-implement step pushed issue back to ready-for-agent (run halted)
 
 # Convert integer seconds to a human-friendly string.
 # Rules: <60 → Xs; 60..3599 → Xm Ys; ≥3600 → Xh Ym (seconds dropped).
@@ -2300,22 +2303,22 @@ walk_post_implement_steps() {
         ;;
 
       terminate-run)
-        # Placeholder: the terminate-run run-halt is not yet implemented (#67).
-        # The step moved the issue back to ready-for-agent; this should halt
-        # the run but must NOT fall through to the fail arm or write an abort
-        # flag. For now, propagate any commits and treat as left-for-human.
-        format_progress_outcome "$(now_clock)" "$ref" "$item_label" "left-for-human" "$item_duration"
+        # The post-implement step pushed the issue back to ready-for-agent
+        # (eligible). This is a misconfigured manifest — halt the entire run.
+        # Do NOT write an abort flag: the issue is eligible, not stuck.
+        format_progress_outcome "$(now_clock)" "$ref" "$item_label" "halt → runaway" "$item_duration"
         if [ "$item_has_runner_commits" -eq 1 ]; then
           if ! propagate_feature "$feature"; then
             local halt_duration
             halt_duration=$(( $(date +%s) - item_started_at + impl_duration + total_item_seconds - item_duration ))
             RUN_STOP_REASON="propagation-error"
-            record_dispatch "$feature" "$nn" "$ref" "left-for-human" "$halt_duration" "$step_logs" "$total_attempts"
+            record_dispatch "$feature" "$nn" "$ref" "halt → runaway" "$halt_duration" "$step_logs" "$total_attempts"
             return 1
           fi
         fi
-        record_dispatch "$feature" "$nn" "$ref" "left-for-human" "$iter_duration" "$step_logs" "$total_attempts"
-        return 0
+        RUN_STOP_REASON="runaway-halt ($ref)"
+        record_dispatch "$feature" "$nn" "$ref" "halt → runaway" "$iter_duration" "$step_logs" "$total_attempts"
+        return 1
         ;;
 
       continue)
@@ -2736,6 +2739,14 @@ run_loop() {
       return 1
     fi
 
+    # Runaway guard: a post-implement step pushed the issue back to an eligible
+    # state. Halt immediately to prevent unbounded re-dispatch.
+    case "$RUN_STOP_REASON" in
+      runaway-halt*)
+        echo "[$(now_clock)] runner: runaway guard fired — halting loop"
+        return 1 ;;
+    esac
+
     # Make `set -e` happy — dispatch_rc is consumed, not propagated.
     : "$dispatch_rc"
   done
@@ -2785,6 +2796,13 @@ run_drain() {
       echo "[$(now_clock)] runner: propagation error halting drain"
       return 1
     fi
+
+    # Runaway guard from any feature's loop halts the entire drain.
+    case "$RUN_STOP_REASON" in
+      runaway-halt*)
+        echo "[$(now_clock)] runner: runaway guard halting drain"
+        return 1 ;;
+    esac
 
     if [ "$RUNNER_INTERRUPTED" -eq 1 ]; then
       echo "[$(now_clock)] runner: interrupted during $feature drain; exiting"
@@ -2862,6 +2880,11 @@ drain_one_feature() {
       # (the iteration's FAIL row already tells the story) and override
       # the restored saved value so the outer drain sees it.
       RUN_STOP_REASON="propagation-error"
+      ;;
+    runaway-halt*)
+      # Runaway guard fired inside this feature's loop. Leak the stop reason
+      # through to run_drain so the outer drain halts immediately.
+      RUN_STOP_REASON="$inner_reason"
       ;;
     snapshot-failed)
       # Mid-feature snapshot crash. Brief AC: "A feature whose

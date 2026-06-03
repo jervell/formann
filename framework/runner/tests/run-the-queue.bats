@@ -1203,6 +1203,41 @@ install_afk_snapshots() {
   [ "$(cat "$checkout_call_file" | wc -l | tr -d ' ')" = "1" ]
 }
 
+@test "run_loop — runaway-halt from dispatch halts the loop; second issue not dispatched" {
+  # AC: When dispatch_one sets RUN_STOP_REASON=runaway-halt and returns 1,
+  # run_loop must halt immediately — the next eligible issue (f/02) must never
+  # be dispatched, and RUN_STOP_REASON must still carry the runaway-halt token.
+  setup_loop_test
+  plant_queue 01 02
+
+  dispatch_one() {
+    local feature="$1" nn="$2"
+    echo "$feature/$nn" >>"$TEST_DISPATCHED_FILE"
+    local rest
+    rest="$(tail -n +2 "$TEST_QUEUE_FILE" 2>/dev/null || true)"
+    printf '%s\n' "$rest" >"$TEST_QUEUE_FILE"
+    [ -s "$TEST_QUEUE_FILE" ] || : >"$TEST_QUEUE_FILE"
+    # Simulate the walk returning runaway-halt for f/01 only.
+    if [ "$nn" = "01" ]; then
+      RUN_STOP_REASON="runaway-halt ($feature/$nn)"
+      return 1
+    fi
+    return 0
+  }
+
+  RUN_STOP_REASON=""
+  set +e
+  run_loop
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [[ "$RUN_STOP_REASON" == runaway-halt* ]]
+  # Only f/01 dispatched; f/02 never reached.
+  [ "$(dispatched_count)" = "1" ]
+  [ "$(dispatched_nth 1)" = "f/01" ]
+}
+
 @test "run_drain — propagation-error from first feature halts drain; second feature not considered" {
   # AC: In drain mode, propagation-error raised inside any feature's
   # run_loop halts the outer run_drain: no subsequent feature is
@@ -1233,6 +1268,34 @@ install_afk_snapshots() {
   [ "$(drained_features_count)" = "1" ]
   # No feature outcome row for alpha (the iteration's FAIL row tells the story).
   [ "$(drain_outcomes_count)" = "0" ]
+}
+
+@test "run_drain — runaway-halt from first feature halts drain; second feature not considered" {
+  # AC: In drain mode, runaway-halt raised inside any feature's run_loop halts
+  # the outer run_drain: no subsequent feature is considered.
+  setup_drain_test
+  DISCOVERY_JSON='["alpha","beta"]'
+  git -C "$HOST_REPO" branch alpha
+  git -C "$HOST_REPO" branch beta
+
+  run_loop() {
+    echo "$TARGET_FEATURE" >>"$DRAIN_DRAINED_FILE"
+    if [ "$TARGET_FEATURE" = "alpha" ]; then
+      RUN_STOP_REASON="runaway-halt (alpha/01)"
+      return 1
+    fi
+    RUN_STOP_REASON="queue-empty"
+    return 0
+  }
+
+  RUN_STOP_REASON=""
+  local rc=0
+  run_drain || rc=$?
+
+  [ "$rc" -ne 0 ]
+  [[ "$RUN_STOP_REASON" == runaway-halt* ]]
+  # alpha was processed; beta was not considered.
+  [ "$(drained_features_count)" = "1" ]
 }
 
 # === collect_binding_env — sandbox-env hook ================================
@@ -2570,6 +2633,49 @@ setup_eligibility_test() {
   [ -f "$HOST_ABORT_DIR/f/01" ]
   grep -q '^dispatch: review$' "$HOST_ABORT_DIR/f/01"
   grep -q '^type: technical$' "$HOST_ABORT_DIR/f/01"
+}
+
+# === dispatch_one / walk — terminate-run (runaway guard) ====================
+#
+# When a post-implement step pushes the issue back to ready-for-agent, the
+# walk must halt the entire run immediately (runaway guard). No abort flag is
+# written — the issue is eligible, not stuck; the fault is the manifest.
+
+@test "dispatch_one — terminate-run: step pushes to ready-for-agent sets runaway-halt stop reason" {
+  setup_dispatch_one_test
+  install_afk_snapshots ready-for-agent
+
+  propagate_feature() { return 0; }
+  run_item_container() { return 0; }
+
+  RUN_DISPATCHES=()
+  RUN_STOP_REASON=""
+
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  local rc=$?
+  set -e
+
+  # Run halts (rc=1) with runaway-halt stop reason.
+  [ "$rc" -eq 1 ]
+  [[ "$RUN_STOP_REASON" == runaway-halt* ]]
+  # Dispatch record carries the halt → runaway combined outcome.
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|halt → runaway|"*"|01-review|"* ]]
+}
+
+@test "dispatch_one — terminate-run: no abort flag written" {
+  setup_dispatch_one_test
+  install_afk_snapshots ready-for-agent
+
+  propagate_feature() { return 0; }
+  run_item_container() { return 0; }
+
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  set -e
+
+  [ ! -f "$HOST_ABORT_DIR/f/01" ]
 }
 
 # === capture_dispatch_core_files ==========================================
