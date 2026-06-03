@@ -340,7 +340,7 @@ now_clock() { date +"%H:%M:%S"; }
 #   gate-failed      — AFK + gate dispatch errored or off-mission
 #   review-aborted   — AFK + gate subprocess transport-crashed (empty/5xx/429/network log)
 #   dispatch-aborted — implement subprocess transport-crashed
-#   in-review        — HITL (gate skipped)
+#   in-review        — interrupt between implement and gate (gate not run)
 #   FAIL             — implement-stage failure (classifier, propagation, container)
 
 # Convert integer seconds to a human-friendly string.
@@ -2256,7 +2256,7 @@ dispatch_one() {
 
   # Implement stage outcome label: in-review|done from the post-snapshot
   # on classifier success, dispatch-aborted on transport crash, FAIL otherwise.
-  # /implement normally lands at in-review; HITL or maintainer-adjusted briefs
+  # /implement normally lands at in-review; a maintainer-adjusted brief
   # may land at done.
   local impl_label="FAIL"
   if [ "$classifier_verdict" = "success" ]; then
