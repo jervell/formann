@@ -1,7 +1,7 @@
 # Post-implement steps manifest.
 # Each non-blank, non-comment line is a prompt path relative to the prompt roots.
 # Resolution searches the consumer root (runner/) first, then the framework root
-# (framework/runner/steps/); the first match wins. Consumer files shadow framework
+# (.formann/runner/steps/); the first match wins. Consumer files shadow framework
 # prompts of the same relative path.
 #
 # The step label shown in output is the filename without its .md extension.

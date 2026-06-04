@@ -171,7 +171,7 @@ _run_installer() {
 @test "runner/manifest.md contains the default review-and-gate entry" {
   run _run_installer
   assert_success
-  grep -q "framework:review-and-gate.md" "$CONSUMER/runner/manifest.md"
+  grep -qx "review-and-gate.md" "$CONSUMER/runner/manifest.md"
 }
 
 @test "installer leaves real manifest.md alone (does not clobber consumer override)" {
