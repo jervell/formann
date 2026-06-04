@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-04
+
 ### Added
 - Installer runs each binding's optional install-time setup hook after binding selection. For the `github-issues` binding, the hook seeds the `formann:*` label namespace and prompts for the GH-token macOS Keychain entry when missing. Local-markdown ships no hook; that path is unchanged.
 - `build-image.sh --fresh` rebuilds the runner image with every bundled tool — including the Claude CLI — re-resolved to its current published version, instead of reusing the versions baked into the cached image.
