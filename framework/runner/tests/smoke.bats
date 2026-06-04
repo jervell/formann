@@ -138,7 +138,7 @@ assert_run_artifacts() {
   [ -f "${RUN_DIR}runner.log" ]
   [ -f "${RUN_DIR}SUMMARY.md" ]
   [ -f "${RUN_DIR}smoke/01.log" ]
-  [ -f "${RUN_DIR}smoke/01-review.log" ]
+  [ -f "${RUN_DIR}smoke/01-01-review.log" ]
 }
 
 @test "smoke — propagated → host (park=main)" {
