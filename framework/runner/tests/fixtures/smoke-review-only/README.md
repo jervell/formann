@@ -87,13 +87,19 @@ cp -R framework/runner/tests/fixtures/smoke-review-only/issues \
 ### Verify
 
 ```sh
+# The runner propagates to the feature-branch ref; the host working tree stays
+# on `main`. Inspect the propagated `smoke-review-only` branch, not the
+# checked-out files (which still show the pre-dispatch scaffold).
+
 # Issue stays at in-review.
-grep '^status:' "$ws/.features/smoke-review-only/issues/01-stamp-marker.md"
+git -C "$ws" show smoke-review-only:.features/smoke-review-only/issues/01-stamp-marker.md | grep '^status:'
 # → status: in-review
 
-# A findings comment was posted (local-markdown: check .features/… comments dir or issue body).
-# The step log exists.
-ls "$ws/.runner-state/runs/"*/01-01-review.log
+# A findings comment was posted (review-issue output under a "Review (AFK runner)" heading).
+git -C "$ws" show smoke-review-only:.features/smoke-review-only/issues/01-stamp-marker.md | grep -F '### Review (AFK runner)'
+
+# The step log exists (drain mode nests logs under the feature slug).
+ls "$ws/.runner-state/runs/"*/smoke-review-only/01-01-review.log
 
 # SUMMARY.md shows left-for-human.
 grep 'left-for-human' "$ws/.runner-state/runs/"*/SUMMARY.md

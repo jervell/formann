@@ -89,13 +89,17 @@ cp -R framework/runner/tests/fixtures/smoke-review-gate/issues \
 ### Verify
 
 ```sh
+# The runner propagates to the feature-branch ref; the host working tree stays
+# on `main`. Inspect the propagated `smoke-review-gate` branch, not the
+# checked-out files (which still show the pre-dispatch scaffold).
+
 # Clean path: issue promoted to done.
-grep '^status:' "$ws/.features/smoke-review-gate/issues/01-stamp-marker.md"
+git -C "$ws" show smoke-review-gate:.features/smoke-review-gate/issues/01-stamp-marker.md | grep '^status:'
 # → status: done
 
-# Both step logs exist.
-ls "$ws/.runner-state/runs/"*/01-01-review.log
-ls "$ws/.runner-state/runs/"*/01-02-gate.log
+# Both step logs exist (drain mode nests logs under the feature slug).
+ls "$ws/.runner-state/runs/"*/smoke-review-gate/01-01-review.log
+ls "$ws/.runner-state/runs/"*/smoke-review-gate/01-02-gate.log
 
 # SUMMARY.md shows done.
 grep 'done' "$ws/.runner-state/runs/"*/SUMMARY.md

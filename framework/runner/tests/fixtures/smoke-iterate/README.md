@@ -90,14 +90,19 @@ cp -R framework/runner/tests/fixtures/smoke-iterate/issues \
 ### Verify
 
 ```sh
+# The runner propagates to the feature-branch ref; the host working tree stays
+# on `main`. Inspect the propagated `smoke-iterate` branch, not the checked-out
+# files (which still show the pre-dispatch scaffold).
+
 # Issue reached done (early-exit at first clean gate).
-grep '^status:' "$ws/.features/smoke-iterate/issues/01-stamp-marker.md"
+git -C "$ws" show smoke-iterate:.features/smoke-iterate/issues/01-stamp-marker.md | grep '^status:'
 # → status: done
 
 # Only the first step's log exists; steps 2 and 3 were skipped.
-ls "$ws/.runner-state/runs/"*/01-01-review-and-gate.log  # present
-ls "$ws/.runner-state/runs/"*/01-02-fix.log 2>/dev/null   # absent
-ls "$ws/.runner-state/runs/"*/01-03-review-and-gate.log 2>/dev/null  # absent
+# (drain mode nests logs under the feature slug.)
+ls "$ws/.runner-state/runs/"*/smoke-iterate/01-01-review-and-gate.log  # present
+ls "$ws/.runner-state/runs/"*/smoke-iterate/01-02-fix.log 2>/dev/null   # absent
+ls "$ws/.runner-state/runs/"*/smoke-iterate/01-03-review-and-gate.log 2>/dev/null  # absent
 
 # SUMMARY.md shows done.
 grep 'done' "$ws/.runner-state/runs/"*/SUMMARY.md
