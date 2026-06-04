@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Installer suppresses the CLAUDE.md snippet banner when the consumer's root `CLAUDE.md` already contains the snippet verbatim; emits one stderr confirmation line instead.
 
 ### Fixed
+- **`/implement` no longer marks an operator-attended acceptance criterion as verified** — a criterion whose check can't run in the dispatch environment (Docker-in-Docker, a credential, a manual or operator-attended step), or whose test was skipped, is now classified `[human]` and left for the maintainer instead of ticked off as done.
 - **AFK runner dispatches under the github-issues binding no longer run without GitHub auth** — the binding's `GH_TOKEN`/`GH_REPO` env failed to reach the sandbox container, so every dispatch ran but aborted with `gh` unauthenticated.
 - **`/triage` no longer fails on sub-issues under the github-issues binding** — Previously refused with a missing-slug error before transitioning to `ready-for-agent`.
 
