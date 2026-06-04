@@ -248,6 +248,24 @@ The runner classifies each step's outcome from the post-step snapshot and the di
 
 Why a separate dispatch (not a slash command, not part of `/implement`)? Independence. The same `claude` session that just shipped the work would have a strong continuity bias toward declaring it good. A fresh session, with no implementation context, reading only the committed state, exercises closer-to-cold-eyes judgment. The Docker isolation makes "fresh session" cheap.
 
+### Building-block steps
+
+For workflows the fused `review-and-gate` step can't express, the framework ships three single-purpose **building-block steps** a Consumer composes into a custom manifest:
+
+- **`review` (`framework:review.md`)** — spawns the `review-issue` agent and posts the severity-tagged findings comment. Changes no issue state.
+- **`gate` (`framework:gate.md`)** — reads the **latest** findings comment and thresholds on `🔴 Critical`: promotes to `done` only when none are present, otherwise leaves the issue at `in-review`. Runs no review of its own.
+- **`fix` (`framework:fix.md`)** — reads the latest findings comment and produces commits. Posts no comment and changes no issue state.
+
+`review` and `gate` split the fused default along its single seam: `review-and-gate` reviews *and* decides in one dispatch, whereas the pair lets a Consumer swap in their own review (or their own gate) on either side. The handoff is the **review↔gate contract** — because the two steps are separate dispatches sharing no stdout or filesystem, the gate keys on the severity markers (`🔴 Critical` / `🟡 Important` / `🟢 Minor`) carried in the latest findings comment on the tracker, not on a fixed heading. Any review that emits that convention interoperates with the framework `gate`; a custom review that cannot ships its own gate.
+
+Three compositions follow:
+
+- **`[review]`** — review-without-gate: findings are posted, the issue stays at `in-review` for the maintainer.
+- **`[review, gate]`** — reproduces the default's promote-on-clean decision while letting the review half be replaced.
+- **`[review-and-gate, fix, review-and-gate, …]`** — an unrolled iterate loop. The walk early-exits the moment a gate reaches `done`, because loop control reads the snapshot status (terminal → stop) and never the dispatch output — a clean gate spends no further dispatches.
+
+GLOSSARY.md (*Building-block step*, *Review↔gate contract*) holds the term definitions.
+
 ## Outcome classification
 
 Two pure functions in `run-the-queue.sh`. Both take JSON snapshots and return a string verdict.
@@ -464,6 +482,7 @@ framework/
     ├── retrieve-secret.sh                    ← vendored Keychain reader
     ├── retrieve-token.sh                     ← OAuth token wrapper
     ├── review-and-gate.md                    ← default post-implement step prompt
+    ├── review.md / gate.md / fix.md          ← building-block step prompts (custom manifests)
     ├── demo-dispatch.sh + demo-fixture/      ← end-to-end shake-out
     └── tests/                                ← bats suite (pure logic) + smoke fixture
 

@@ -134,7 +134,7 @@ type: transport
 dispatch: review
 at: 2026-05-16T19:58:37Z
 exit: 1
-log: .runner-state/runs/20260516-195837/f/01-review.log
+log: .runner-state/runs/20260516-195837/f/01-01-review.log
 ```
 
 The `dispatch` field carries the manifest item's label (e.g. `review` for the default single-entry manifest). An interrupted dispatch (Ctrl-C or SIGTERM during an active implement or item run) does not write an abort flag — the maintainer's intent is to stop, not to mark the issue as stuck. The next run re-dispatches the issue normally without any `rm` recipe required.
@@ -162,12 +162,13 @@ rm .runner-state/aborted/<feature>/<NN>
 
 After removal, the next `run-the-queue.sh` invocation will see the ref as eligible again. Typical workflow: read the abort flag to find the log, diagnose the failure (wrong brief, expired token, infra issue), fix the underlying cause, then `rm` the flag and restart the runner.
 
-## Review-and-gate dispatch (AFK)
+## Post-implement walk (AFK)
 
-After a successful AFK `/implement` shipping, the runner spawns a
-second sandbox container that runs an independent review of the just-
-shipped commits. The gate prompt — at `review-and-gate.md`, sibling to
-this README — instructs the dispatched claude session to:
+After a successful AFK `/implement` shipping, the runner walks a
+Consumer-owned **post-implement manifest** of follow-on steps, each
+dispatched in its own fresh sandbox container. The default manifest is a
+single step running the review-and-gate prompt at `review-and-gate.md`
+(sibling to this README), which instructs the dispatched claude session to:
 
 1. Read the issue file.
 2. Spawn the `review-issue` agent for an independent review.
@@ -175,6 +176,19 @@ this README — instructs the dispatched claude session to:
 4. Comment with Review (AFK gate) on the issue, with the findings verbatim.
 5. On a clean verdict only, set the state to `done`.
 6. Land a single `tracker:` commit and emit a `verdict:` line on stdout.
+
+A Consumer can replace the default with a custom manifest composed from the
+framework's single-purpose **building-block steps** — `review.md` (review and
+post findings, no state change), `gate.md` (read the latest findings and
+promote on no-Critical, runs no review of its own), and `fix.md` (read the
+latest findings and commit fixes). Compose them for review-without-gate
+(`[review]`), a separate review reusing the framework gate (`[review, gate]`),
+or an unrolled iterate loop (`[review-and-gate, fix, review-and-gate, …]`).
+The review→gate handoff is the severity-marker convention in the posted
+findings comment, so any review that emits it interoperates with the
+framework `gate`. See `afk-runner.md` for the walk model and the
+building-block steps, and GLOSSARY.md (*Building-block step*, *Review↔gate
+contract*) for the term definitions.
 
 The runner classifies the step's outcome from the snapshot delta and the
 dispatch exit code (`classify_item_action` in `run-the-queue.sh`, called

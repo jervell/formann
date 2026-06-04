@@ -766,7 +766,7 @@ stop_runner_log_capture() {
 
 # Append a `feature|nn|ref|label|duration|step_logs|attempt_count|propagation`
 # record to RUN_DISPATCHES. `label` is the iteration's combined outcome — one of
-# `done | blocked | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL`.
+# `done | left-for-human | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL | halt → runaway`.
 # `step_logs` is a colon-separated list of walk-step log suffixes produced by
 # `walk_post_implement_steps` (e.g. `01-review` for a single "review" step;
 # `01-review-and-gate:02-fix:03-review-and-gate` for an unrolled iterate
