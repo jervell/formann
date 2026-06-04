@@ -6,10 +6,16 @@
 
 # resolve_manifest: parse and validate a post-implement step manifest.
 #
-# Each non-comment, non-blank line must have the form:
-#   <label> → <namespace>:<name>
-# where the separator is the Unicode right arrow (U+2192), <namespace> is
-# either "framework" or "consumer", and <name> is the prompt filename.
+# Each non-comment, non-blank line is a path relative to a prompt root.
+# Resolution searches the consumer root first, then the framework root;
+# the first match wins. Consumer files shadow framework prompts of the
+# same relative path. The step label is derived from the filename without
+# its `.md` extension.
+#
+# Validation rules:
+#   - Leading `/` is rejected (absolute paths not allowed).
+#   - Path segments containing `..` are rejected (no traversal).
+#   - A path that resolves in neither root is an unresolved-reference error.
 #
 # All errors are collected before returning; if any errors are found, no
 # output is emitted to stdout and the function exits 1. This ensures the
@@ -27,7 +33,7 @@
 #         1 when any validation error was found.
 resolve_manifest() {
   local manifest_text="$1" fw_root="$2" consumer_root="$3"
-  local errors=0 line label ref namespace name resolved_path
+  local errors=0 line ref resolved_path label
   # Collect validated output lines; flushed to stdout only if errors == 0.
   local output_buf=""
 
@@ -37,60 +43,38 @@ resolve_manifest() {
     # Strip blank / whitespace-only lines.
     [[ "$line" =~ ^[[:space:]]*$ ]] && continue
 
-    # Require the → (U+2192) separator.
-    if [[ "$line" != *"→"* ]]; then
-      printf 'resolve_manifest: malformed entry (no → separator): %s\n' "$line" >&2
+    # Trim leading/trailing whitespace to get the path reference.
+    ref="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+    # Validate: no leading /.
+    if [[ "$ref" == /* ]]; then
+      printf 'resolve_manifest: invalid reference (absolute path not allowed): %s\n' "$ref" >&2
       errors=$((errors + 1))
       continue
     fi
 
-    # Split on the first →; trim surrounding whitespace from each part.
-    label="$(printf '%s' "${line%%→*}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    ref="$(printf '%s'   "${line#*→}"  | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-
-    if [ -z "$label" ]; then
-      printf 'resolve_manifest: malformed entry (empty label): %s\n' "$line" >&2
+    # Validate: no .. segments (path traversal).
+    if [[ "$ref" == ".." ]] || [[ "$ref" == "../"* ]] \
+        || [[ "$ref" == *"/.." ]] || [[ "$ref" == *"/../"* ]]; then
+      printf 'resolve_manifest: invalid reference (.. segment not allowed): %s\n' "$ref" >&2
       errors=$((errors + 1))
       continue
     fi
 
-    if [ -z "$ref" ]; then
-      printf 'resolve_manifest: malformed entry (empty reference): %s\n' "$line" >&2
+    # Resolution: consumer root first, then framework root.
+    if [ -f "$consumer_root/$ref" ]; then
+      resolved_path="$consumer_root/$ref"
+    elif [ -f "$fw_root/$ref" ]; then
+      resolved_path="$fw_root/$ref"
+    else
+      printf 'resolve_manifest: unresolved reference "%s": not found in consumer or framework root\n' "$ref" >&2
       errors=$((errors + 1))
       continue
     fi
 
-    # Resolve namespace prefix.
-    case "$ref" in
-      framework:*)
-        namespace="framework"
-        name="${ref#framework:}"
-        resolved_path="$fw_root/$name"
-        ;;
-      consumer:*)
-        namespace="consumer"
-        name="${ref#consumer:}"
-        resolved_path="$consumer_root/$name"
-        ;;
-      *)
-        printf 'resolve_manifest: malformed entry (unknown namespace in "%s"): %s\n' "$ref" "$line" >&2
-        errors=$((errors + 1))
-        continue
-        ;;
-    esac
-
-    if [ -z "$name" ]; then
-      printf 'resolve_manifest: malformed entry (empty prompt name after "%s:"): %s\n' "$namespace" "$line" >&2
-      errors=$((errors + 1))
-      continue
-    fi
-
-    # Existence check.
-    if [ ! -f "$resolved_path" ]; then
-      printf 'resolve_manifest: unresolved reference "%s": %s not found\n' "$ref" "$resolved_path" >&2
-      errors=$((errors + 1))
-      continue
-    fi
+    # Label: basename of the path, without the .md extension.
+    label="${ref##*/}"
+    label="${label%.md}"
 
     # Buffer the validated pair.
     output_buf="${output_buf}${label}	${resolved_path}"$'\n'

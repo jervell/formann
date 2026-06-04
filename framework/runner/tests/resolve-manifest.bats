@@ -15,11 +15,12 @@ setup() {
   FW_ROOT="$(mktemp -d)"
   CONSUMER_ROOT="$(mktemp -d)"
 
-  # Pre-create prompt files referenced by the tests below.
+  # Framework-root prompt files (the framework's building-block steps).
   touch "$FW_ROOT/review-and-gate.md"
   touch "$FW_ROOT/review.md"
   touch "$FW_ROOT/gate.md"
   touch "$FW_ROOT/fix.md"
+  # Consumer-root prompt files.
   touch "$CONSUMER_ROOT/custom-review.md"
   touch "$CONSUMER_ROOT/my-check.md"
 }
@@ -28,7 +29,7 @@ teardown() {
   rm -rf "$FW_ROOT" "$CONSUMER_ROOT"
 }
 
-# === AC6: empty manifest =====================================================
+# === AC1: empty manifest =====================================================
 
 @test "resolve_manifest — empty string manifest produces no output and exits 0" {
   run resolve_manifest "" "$FW_ROOT" "$CONSUMER_ROOT"
@@ -42,7 +43,7 @@ teardown() {
   assert_output ""
 }
 
-# === AC2: comments and blank lines ===========================================
+# === AC1: comments and blank lines ===========================================
 
 @test "resolve_manifest — comment-only manifest produces no output and exits 0" {
   manifest=$'# this is a comment\n# another comment'
@@ -52,88 +53,111 @@ teardown() {
 }
 
 @test "resolve_manifest — blank lines between entries are ignored" {
-  manifest=$'review → framework:review-and-gate.md\n\nfix → framework:fix.md'
+  manifest=$'review-and-gate.md\n\nfix.md'
   run resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_line --index 0 "review	$FW_ROOT/review-and-gate.md"
+  assert_line --index 0 "review-and-gate	$FW_ROOT/review-and-gate.md"
   assert_line --index 1 "fix	$FW_ROOT/fix.md"
 }
 
 @test "resolve_manifest — inline comments between entries are ignored" {
-  manifest=$'# header\nreview → framework:review-and-gate.md\n# between\nfix → framework:fix.md\n# tail'
+  manifest=$'# header\nreview-and-gate.md\n# between\nfix.md\n# tail'
   run resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_line --index 0 "review	$FW_ROOT/review-and-gate.md"
+  assert_line --index 0 "review-and-gate	$FW_ROOT/review-and-gate.md"
   assert_line --index 1 "fix	$FW_ROOT/fix.md"
   [ "${#lines[@]}" -eq 2 ]
 }
 
 @test "resolve_manifest — indented comment line is ignored" {
-  manifest=$'  # indented comment\nreview → framework:review-and-gate.md'
+  manifest=$'  # indented comment\nreview-and-gate.md'
   run resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_line --index 0 "review	$FW_ROOT/review-and-gate.md"
+  assert_line --index 0 "review-and-gate	$FW_ROOT/review-and-gate.md"
   [ "${#lines[@]}" -eq 1 ]
 }
 
-# === AC3: namespace resolution ===============================================
+# === AC2: framework-root resolution ==========================================
 
-@test "resolve_manifest — framework: reference resolves to framework root" {
-  run resolve_manifest "review → framework:review-and-gate.md" "$FW_ROOT" "$CONSUMER_ROOT"
+@test "resolve_manifest — path resolves against framework root when absent from consumer root" {
+  run resolve_manifest "review-and-gate.md" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_output "review	$FW_ROOT/review-and-gate.md"
+  assert_output "review-and-gate	$FW_ROOT/review-and-gate.md"
 }
 
-@test "resolve_manifest — consumer: reference resolves to consumer root" {
-  run resolve_manifest "custom → consumer:custom-review.md" "$FW_ROOT" "$CONSUMER_ROOT"
+@test "resolve_manifest — label is the filename without .md" {
+  run resolve_manifest "review.md" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_output "custom	$CONSUMER_ROOT/custom-review.md"
+  assert_output "review	$FW_ROOT/review.md"
 }
 
-@test "resolve_manifest — mixed framework and consumer references" {
-  manifest=$'step1 → framework:review-and-gate.md\nstep2 → consumer:my-check.md'
+@test "resolve_manifest — label for fix.md is fix" {
+  run resolve_manifest "fix.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_success
+  assert_output "fix	$FW_ROOT/fix.md"
+}
+
+# === AC2: consumer-first resolution ==========================================
+
+@test "resolve_manifest — consumer root is searched before framework root" {
+  run resolve_manifest "custom-review.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_success
+  assert_output "custom-review	$CONSUMER_ROOT/custom-review.md"
+}
+
+@test "resolve_manifest — consumer file shadows framework file of same name" {
+  touch "$CONSUMER_ROOT/review.md"
+  run resolve_manifest "review.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_success
+  assert_output "review	$CONSUMER_ROOT/review.md"
+}
+
+@test "resolve_manifest — mixed consumer and framework entries" {
+  manifest=$'review-and-gate.md\ncustom-review.md'
   run resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_line --index 0 "step1	$FW_ROOT/review-and-gate.md"
-  assert_line --index 1 "step2	$CONSUMER_ROOT/my-check.md"
+  assert_line --index 0 "review-and-gate	$FW_ROOT/review-and-gate.md"
+  assert_line --index 1 "custom-review	$CONSUMER_ROOT/custom-review.md"
 }
 
-@test "resolve_manifest — label with spaces is preserved verbatim" {
-  run resolve_manifest "review and gate → framework:review-and-gate.md" "$FW_ROOT" "$CONSUMER_ROOT"
+# === AC3: label derived from filename ========================================
+
+@test "resolve_manifest — label for review-and-gate.md is review-and-gate" {
+  run resolve_manifest "review-and-gate.md" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_output "review and gate	$FW_ROOT/review-and-gate.md"
+  assert_output "review-and-gate	$FW_ROOT/review-and-gate.md"
 }
 
-@test "resolve_manifest — leading and trailing whitespace around label and ref is trimmed" {
-  run resolve_manifest "  review  →  framework:review-and-gate.md  " "$FW_ROOT" "$CONSUMER_ROOT"
+@test "resolve_manifest — leading and trailing whitespace around path is trimmed" {
+  run resolve_manifest "  review-and-gate.md  " "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_output "review	$FW_ROOT/review-and-gate.md"
+  assert_output "review-and-gate	$FW_ROOT/review-and-gate.md"
 }
 
-# === AC1: order and repeated entries =========================================
+# === AC3: order and repeated entries =========================================
 
 @test "resolve_manifest — entries are returned in manifest order" {
-  manifest=$'step1 → framework:review-and-gate.md\nstep2 → framework:fix.md\nstep3 → framework:gate.md'
+  manifest=$'review-and-gate.md\nfix.md\ngate.md'
   run resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_line --index 0 "step1	$FW_ROOT/review-and-gate.md"
-  assert_line --index 1 "step2	$FW_ROOT/fix.md"
-  assert_line --index 2 "step3	$FW_ROOT/gate.md"
+  assert_line --index 0 "review-and-gate	$FW_ROOT/review-and-gate.md"
+  assert_line --index 1 "fix	$FW_ROOT/fix.md"
+  assert_line --index 2 "gate	$FW_ROOT/gate.md"
   [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "resolve_manifest — repeated entries are preserved (iterate loop uses repeats)" {
-  manifest=$'review → framework:review-and-gate.md\nfix → framework:fix.md\nreview → framework:review-and-gate.md'
+  manifest=$'review-and-gate.md\nfix.md\nreview-and-gate.md'
   run resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
-  assert_line --index 0 "review	$FW_ROOT/review-and-gate.md"
+  assert_line --index 0 "review-and-gate	$FW_ROOT/review-and-gate.md"
   assert_line --index 1 "fix	$FW_ROOT/fix.md"
-  assert_line --index 2 "review	$FW_ROOT/review-and-gate.md"
+  assert_line --index 2 "review-and-gate	$FW_ROOT/review-and-gate.md"
   [ "${#lines[@]}" -eq 3 ]
 }
 
-@test "resolve_manifest — same label repeated many times is preserved" {
-  manifest=$'gate → framework:gate.md\ngate → framework:gate.md\ngate → framework:gate.md'
+@test "resolve_manifest — same entry repeated many times is preserved" {
+  manifest=$'gate.md\ngate.md\ngate.md'
   run resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_success
   [ "${#lines[@]}" -eq 3 ]
@@ -142,105 +166,114 @@ teardown() {
   assert_line --index 2 "gate	$FW_ROOT/gate.md"
 }
 
-# === AC4: unresolved reference ===============================================
+# === AC4: subfolder paths ====================================================
 
-@test "resolve_manifest — non-existent framework prompt exits 1" {
-  run resolve_manifest "step → framework:nonexistent.md" "$FW_ROOT" "$CONSUMER_ROOT"
+@test "resolve_manifest — subfolder path resolves in consumer root" {
+  mkdir -p "$CONSUMER_ROOT/custom"
+  touch "$CONSUMER_ROOT/custom/my-prompt.md"
+  run resolve_manifest "custom/my-prompt.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_success
+  assert_output "my-prompt	$CONSUMER_ROOT/custom/my-prompt.md"
+}
+
+@test "resolve_manifest — subfolder path resolves in framework root" {
+  mkdir -p "$FW_ROOT/extra"
+  touch "$FW_ROOT/extra/special.md"
+  run resolve_manifest "extra/special.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_success
+  assert_output "special	$FW_ROOT/extra/special.md"
+}
+
+@test "resolve_manifest — subfolder label is basename only, without .md" {
+  mkdir -p "$FW_ROOT/sub"
+  touch "$FW_ROOT/sub/my-check.md"
+  run resolve_manifest "sub/my-check.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_success
+  assert_output "my-check	$FW_ROOT/sub/my-check.md"
+}
+
+# === AC4: validation rejects .. segments =====================================
+
+@test "resolve_manifest — bare .. exits 1" {
+  run resolve_manifest ".." "$FW_ROOT" "$CONSUMER_ROOT"
   assert_failure
 }
 
-@test "resolve_manifest — non-existent framework prompt names the offending reference in stderr" {
-  local stderr_file
-  stderr_file="$BATS_TEST_TMPDIR/stderr.txt"
-  resolve_manifest "step → framework:nonexistent.md" "$FW_ROOT" "$CONSUMER_ROOT" 2>"$stderr_file" || true
-  grep -q "framework:nonexistent.md" "$stderr_file"
-}
-
-@test "resolve_manifest — non-existent consumer prompt exits 1" {
-  run resolve_manifest "step → consumer:missing.md" "$FW_ROOT" "$CONSUMER_ROOT"
+@test "resolve_manifest — leading ../ exits 1" {
+  run resolve_manifest "../secret.md" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_failure
 }
 
-@test "resolve_manifest — non-existent consumer prompt names the offending reference in stderr" {
+@test "resolve_manifest — mid-path .. exits 1" {
+  run resolve_manifest "steps/../secret.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_failure
+}
+
+@test "resolve_manifest — trailing /.. exits 1" {
+  run resolve_manifest "steps/.." "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_failure
+}
+
+@test "resolve_manifest — .. validation names the offending reference in stderr" {
   local stderr_file
   stderr_file="$BATS_TEST_TMPDIR/stderr.txt"
-  resolve_manifest "step → consumer:missing.md" "$FW_ROOT" "$CONSUMER_ROOT" 2>"$stderr_file" || true
-  grep -q "consumer:missing.md" "$stderr_file"
+  resolve_manifest "../secret.md" "$FW_ROOT" "$CONSUMER_ROOT" 2>"$stderr_file" || true
+  [ -s "$stderr_file" ]
+}
+
+# === AC4: validation rejects leading / =======================================
+
+@test "resolve_manifest — leading / exits 1" {
+  run resolve_manifest "/absolute/path.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_failure
+}
+
+@test "resolve_manifest — leading / produces a validation error in stderr" {
+  local stderr_file
+  stderr_file="$BATS_TEST_TMPDIR/stderr.txt"
+  resolve_manifest "/absolute/path.md" "$FW_ROOT" "$CONSUMER_ROOT" 2>"$stderr_file" || true
+  [ -s "$stderr_file" ]
+}
+
+# === AC6: unresolved reference ===============================================
+
+@test "resolve_manifest — non-existent prompt exits 1" {
+  run resolve_manifest "nonexistent.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  assert_failure
+}
+
+@test "resolve_manifest — non-existent prompt names the offending reference in stderr" {
+  local stderr_file
+  stderr_file="$BATS_TEST_TMPDIR/stderr.txt"
+  resolve_manifest "nonexistent.md" "$FW_ROOT" "$CONSUMER_ROOT" 2>"$stderr_file" || true
+  grep -q "nonexistent.md" "$stderr_file"
 }
 
 @test "resolve_manifest — non-existent prompt produces no valid output lines" {
-  run --separate-stderr resolve_manifest "step → framework:nonexistent.md" "$FW_ROOT" "$CONSUMER_ROOT"
+  run --separate-stderr resolve_manifest "nonexistent.md" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_failure
   assert_output ""
 }
 
 @test "resolve_manifest — only valid entries appear in output when mixed with missing" {
-  manifest=$'good → framework:review-and-gate.md\nmissing → framework:nonexistent.md'
+  manifest=$'review-and-gate.md\nnonexistent.md'
   run --separate-stderr resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_failure
   # The valid entry MUST NOT appear — the whole manifest fails validation.
-  # (All errors are collected; exit 1 suppresses partial output.)
   assert_output ""
 }
 
-# === AC5: malformed entries ==================================================
+# === AC6: multiple errors collected ==========================================
 
-@test "resolve_manifest — entry with no separator exits 1" {
-  run resolve_manifest "no-separator-here" "$FW_ROOT" "$CONSUMER_ROOT"
-  assert_failure
-}
-
-@test "resolve_manifest — entry with no separator produces a validation error in stderr" {
-  local stderr_file
-  stderr_file="$BATS_TEST_TMPDIR/stderr.txt"
-  resolve_manifest "no-separator-here" "$FW_ROOT" "$CONSUMER_ROOT" 2>"$stderr_file" || true
-  [ -s "$stderr_file" ]
-}
-
-@test "resolve_manifest — entry with empty label exits 1" {
-  run resolve_manifest " → framework:review-and-gate.md" "$FW_ROOT" "$CONSUMER_ROOT"
-  assert_failure
-}
-
-@test "resolve_manifest — entry with empty reference exits 1" {
-  run resolve_manifest "step → " "$FW_ROOT" "$CONSUMER_ROOT"
-  assert_failure
-}
-
-@test "resolve_manifest — unknown namespace exits 1" {
-  run resolve_manifest "step → unknown:something.md" "$FW_ROOT" "$CONSUMER_ROOT"
-  assert_failure
-}
-
-@test "resolve_manifest — unknown namespace names the bad namespace in stderr" {
-  local stderr_file
-  stderr_file="$BATS_TEST_TMPDIR/stderr.txt"
-  resolve_manifest "step → unknown:something.md" "$FW_ROOT" "$CONSUMER_ROOT" 2>"$stderr_file" || true
-  grep -q "unknown" "$stderr_file"
-}
-
-@test "resolve_manifest — namespace with no prompt name exits 1" {
-  run resolve_manifest "step → framework:" "$FW_ROOT" "$CONSUMER_ROOT"
-  assert_failure
-}
-
-@test "resolve_manifest — consumer namespace with no prompt name exits 1" {
-  run resolve_manifest "step → consumer:" "$FW_ROOT" "$CONSUMER_ROOT"
-  assert_failure
-}
-
-# === Multiple errors collected ===============================================
-
-@test "resolve_manifest — multiple malformed entries all produce errors (all collected)" {
-  manifest=$'bad1\nbad2 → unknown:x\nbad3 → framework:missing.md'
+@test "resolve_manifest — multiple invalid entries all produce errors (all collected)" {
+  manifest=$'../bad1.md\n/bad2.md\nnonexistent.md'
   run --separate-stderr resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT"
   assert_failure
-  # No valid output on stdout.
   assert_output ""
 }
 
 @test "resolve_manifest — error in one entry does not block reporting errors in others" {
-  manifest=$'step1 → framework:nonexistent1.md\nstep2 → framework:nonexistent2.md'
+  manifest=$'nonexistent1.md\nnonexistent2.md'
   local stderr_file
   stderr_file="$BATS_TEST_TMPDIR/stderr.txt"
   resolve_manifest "$manifest" "$FW_ROOT" "$CONSUMER_ROOT" 2>"$stderr_file" || true

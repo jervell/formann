@@ -166,9 +166,14 @@ After removal, the next `run-the-queue.sh` invocation will see the ref as eligib
 
 After a successful AFK `/implement` shipping, the runner walks a
 Consumer-owned **post-implement manifest** of follow-on steps, each
-dispatched in its own fresh sandbox container. The default manifest is a
-single step running the review-and-gate prompt at `review-and-gate.md`
-(sibling to this README), which instructs the dispatched claude session to:
+dispatched in its own fresh sandbox container. The manifest lives at
+`runner/manifest.md`; each non-blank, non-comment line is a prompt path
+resolved against the consumer root (`runner/`) first, then the framework root
+(`framework/runner/steps/`). The step label is the filename without `.md`.
+
+The default manifest is a single entry `review-and-gate.md`, which runs the
+fused review-and-gate prompt at `framework/runner/steps/review-and-gate.md`.
+That prompt instructs the dispatched claude session to:
 
 1. Read the issue file.
 2. Spawn the `review-issue` agent for an independent review.
@@ -178,12 +183,13 @@ single step running the review-and-gate prompt at `review-and-gate.md`
 6. Land a single `tracker:` commit and emit a `verdict:` line on stdout.
 
 A Consumer can replace the default with a custom manifest composed from the
-framework's single-purpose **building-block steps** — `review.md` (review and
-post findings, no state change), `gate.md` (read the latest findings and
-promote on no-Critical, runs no review of its own), and `fix.md` (read the
-latest findings and commit fixes). Compose them for review-without-gate
-(`[review]`), a separate review reusing the framework gate (`[review, gate]`),
-or an unrolled iterate loop (`[review-and-gate, fix, review-and-gate, …]`).
+framework's single-purpose **building-block steps** in `framework/runner/steps/`
+— `review.md` (review and post findings, no state change), `gate.md` (read the
+latest findings and promote on no-Critical, runs no review of its own), and
+`fix.md` (read the latest findings and commit fixes). Compose them for
+review-without-gate (`[review.md]`), a separate review reusing the framework
+gate (`[review.md, gate.md]`), or an unrolled iterate loop
+(`[review-and-gate.md, fix.md, review-and-gate.md, …]`).
 The review→gate handoff is the severity-marker convention in the posted
 findings comment, so any review that emits it interoperates with the
 framework `gate`. See `afk-runner.md` for the walk model and the

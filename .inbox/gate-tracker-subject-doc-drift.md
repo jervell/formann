@@ -5,7 +5,7 @@ local-markdown, "lands as a single `tracker:` commit
 (`tracker: review <ref> → done` or `tracker: review <ref> → blocked`)."
 
 The actual gate doesn't emit that subject. The gate prompt
-(`framework/runner/review-and-gate.md`) doesn't lock a subject
+(`framework/runner/steps/review-and-gate.md`) doesn't lock a subject
 template, so the agent picks the phrasing. Observed in two smoke runs
 on 2026-05-26 (`framework/runner/tests/smoke.bats` propagated +
 parked scenarios): `tracker: smoke/01 review (AFK gate) — clean; set done`.

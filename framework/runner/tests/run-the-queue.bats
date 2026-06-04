@@ -512,14 +512,14 @@ _setup_retry_test() {
 @test "check_manifest — valid manifest sets RESOLVED_MANIFEST" {
   HOST_REPO="$BATS_TEST_TMPDIR/with-manifest"
   mkdir -p "$HOST_REPO/runner"
-  # Default one-entry manifest using the real HERE/review-and-gate.md.
-  printf 'review → framework:review-and-gate.md\n' >"$HOST_REPO/$RUNNER_MANIFEST_FILE"
+  # Default one-entry manifest using the real HERE/steps/review-and-gate.md.
+  printf 'review-and-gate.md\n' >"$HOST_REPO/$RUNNER_MANIFEST_FILE"
   trap - EXIT
 
   check_manifest
   # RESOLVED_MANIFEST must be non-empty and contain the label and path.
   [ -n "$RESOLVED_MANIFEST" ]
-  [[ "$RESOLVED_MANIFEST" == *"review"*"review-and-gate.md"* ]]
+  [[ "$RESOLVED_MANIFEST" == *"review-and-gate"*"review-and-gate.md"* ]]
 }
 
 @test "check_manifest — malformed manifest entry fails with the manifest invariant message" {
@@ -536,7 +536,7 @@ _setup_retry_test() {
 @test "check_manifest — unresolved prompt reference fails with the manifest invariant message" {
   HOST_REPO="$BATS_TEST_TMPDIR/missing-ref"
   mkdir -p "$HOST_REPO/runner"
-  printf 'review → framework:nonexistent-prompt.md\n' >"$HOST_REPO/$RUNNER_MANIFEST_FILE"
+  printf 'nonexistent-prompt.md\n' >"$HOST_REPO/$RUNNER_MANIFEST_FILE"
   trap - EXIT
 
   run check_manifest

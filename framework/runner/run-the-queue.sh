@@ -1356,7 +1356,7 @@ check_manifest() {
   # Redirect resolve_manifest's stderr to stdout so failures are captured
   # in RESOLVED_MANIFEST for the fail_invariant message; on success stdout
   # holds only the valid tab-delimited pairs (stderr is empty).
-  if ! RESOLVED_MANIFEST="$(resolve_manifest "$manifest_text" "$HERE" "$HOST_REPO/$RUNNER_CONSUMER_PROMPTS_DIR" 2>&1)"; then
+  if ! RESOLVED_MANIFEST="$(resolve_manifest "$manifest_text" "$HERE/steps" "$HOST_REPO/$RUNNER_CONSUMER_PROMPTS_DIR" 2>&1)"; then
     fail_invariant "manifest" "$RESOLVED_MANIFEST"
   fi
 }

@@ -228,13 +228,13 @@ The runner makes no assumptions about *how* the dispatch ships the work. It asks
 
 ## The post-implement walk
 
-After a successful AFK implement, the runner walks the **post-implement manifest** — a Consumer-owned list at `<consumer>/runner/manifest.md`, resolved once at pre-flight (invariant 4b) into ordered `<label> → <prompt-path>` items and held in `RESOLVED_MANIFEST`. Each manifest line names a label (used for the step's log suffix and abort-flag `dispatch` field) and a prompt reference (`framework:<name>` or `consumer:<name>`). The walk dispatches each step in its own fresh sandbox container, classifies the post-step snapshot with `classify_item_action`, propagates any committed work, and reacts — stopping on a terminal status, advancing on `in-review`, failing on a step error, or halting the run if a step pushes the issue back to `ready-for-agent`. An empty manifest is valid: the implement-only run records `left-for-human` immediately.
+After a successful AFK implement, the runner walks the **post-implement manifest** — a Consumer-owned list at `<consumer>/runner/manifest.md`, resolved once at pre-flight (invariant 4b) into ordered `<label><TAB><prompt-path>` items and held in `RESOLVED_MANIFEST`. Each manifest line is a prompt path resolved against the consumer root (`runner/`) first, then the framework root (`framework/runner/steps/`); consumer files shadow framework prompts of the same relative path. The step label is the filename without `.md`. The walk dispatches each step in its own fresh sandbox container, classifies the post-step snapshot with `classify_item_action`, propagates any committed work, and reacts — stopping on a terminal status, advancing on `in-review`, failing on a step error, or halting the run if a step pushes the issue back to `ready-for-agent`. An empty manifest is valid: the implement-only run records `left-for-human` immediately.
 
-The default manifest ships a single step: `review → framework:review-and-gate.md`.
+The default manifest ships a single step: `review-and-gate.md`.
 
 ### The default review-and-gate step
 
-The review-and-gate prompt at `framework/runner/review-and-gate.md` instructs `claude` to:
+The review-and-gate prompt at `framework/runner/steps/review-and-gate.md` instructs `claude` to:
 
 1. Read the issue file in full.
 2. Spawn the `review-issue` agent (via the `Agent` tool) for an independent review of the just-shipped commits.
@@ -250,19 +250,19 @@ Why a separate dispatch (not a slash command, not part of `/implement`)? Indepen
 
 ### Building-block steps
 
-For workflows the fused `review-and-gate` step can't express, the framework ships three single-purpose **building-block steps** a Consumer composes into a custom manifest:
+For workflows the fused `review-and-gate` step can't express, the framework ships three single-purpose **building-block steps** in `framework/runner/steps/` a Consumer composes into a custom manifest:
 
-- **`review` (`framework:review.md`)** — spawns the `review-issue` agent and posts the severity-tagged findings comment. Changes no issue state.
-- **`gate` (`framework:gate.md`)** — reads the **latest** findings comment and thresholds on `🔴 Critical`: promotes to `done` only when none are present, otherwise leaves the issue at `in-review`. Runs no review of its own.
-- **`fix` (`framework:fix.md`)** — reads the latest findings comment and produces commits. Posts no comment and changes no issue state.
+- **`review.md`** — spawns the `review-issue` agent and posts the severity-tagged findings comment. Changes no issue state.
+- **`gate.md`** — reads the **latest** findings comment and thresholds on `🔴 Critical`: promotes to `done` only when none are present, otherwise leaves the issue at `in-review`. Runs no review of its own.
+- **`fix.md`** — reads the latest findings comment and produces commits. Posts no comment and changes no issue state.
 
-`review` and `gate` split the fused default along its single seam: `review-and-gate` reviews *and* decides in one dispatch, whereas the pair lets a Consumer swap in their own review (or their own gate) on either side. The handoff is the **review↔gate contract** — because the two steps are separate dispatches sharing no stdout or filesystem, the gate keys on the severity markers (`🔴 Critical` / `🟡 Important` / `🟢 Minor`) carried in the latest findings comment on the tracker, not on a fixed heading. Any review that emits that convention interoperates with the framework `gate`; a custom review that cannot ships its own gate.
+`review.md` and `gate.md` split the fused default along its single seam: `review-and-gate.md` reviews *and* decides in one dispatch, whereas the pair lets a Consumer swap in their own review (or their own gate) on either side. The handoff is the **review↔gate contract** — because the two steps are separate dispatches sharing no stdout or filesystem, the gate keys on the severity markers (`🔴 Critical` / `🟡 Important` / `🟢 Minor`) carried in the latest findings comment on the tracker, not on a fixed heading. Any review that emits that convention interoperates with the framework `gate`; a custom review that cannot ships its own gate.
 
 Three compositions follow:
 
-- **`[review]`** — review-without-gate: findings are posted, the issue stays at `in-review` for the maintainer.
-- **`[review, gate]`** — reproduces the default's promote-on-clean decision while letting the review half be replaced.
-- **`[review-and-gate, fix, review-and-gate, …]`** — an unrolled iterate loop. The walk early-exits the moment a gate reaches `done`, because loop control reads the snapshot status (terminal → stop) and never the dispatch output — a clean gate spends no further dispatches.
+- **`[review.md]`** — review-without-gate: findings are posted, the issue stays at `in-review` for the maintainer.
+- **`[review.md, gate.md]`** — reproduces the default's promote-on-clean decision while letting the review half be replaced.
+- **`[review-and-gate.md, fix.md, review-and-gate.md, …]`** — an unrolled iterate loop. The walk early-exits the moment a gate reaches `done`, because loop control reads the snapshot status (terminal → stop) and never the dispatch output — a clean gate spends no further dispatches.
 
 GLOSSARY.md (*Building-block step*, *Review↔gate contract*) holds the term definitions.
 

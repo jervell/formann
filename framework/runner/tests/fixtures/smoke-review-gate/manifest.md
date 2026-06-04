@@ -1,2 +1,2 @@
-review → framework:review.md
-gate → framework:gate.md
+review.md
+gate.md

@@ -56,10 +56,10 @@ RUNNER_ABORT_PATH="$RUNNER_STATE_DIR/aborted"
 RUNNER_CONTAINER_REPO_PATH="/repo"
 
 # Consumer-repo-relative directory that holds the post-implement manifest
-# and any consumer-supplied prompts referenced by it. The installer seeds
+# and any consumer-supplied prompt files referenced by it. The installer seeds
 # runner/Dockerfile and runner/manifest.md into this directory; consumer
-# prompts added here are reachable via the `consumer:` namespace in the
-# manifest. Fixed by convention; the resolver is pointed at this root.
+# prompts placed here shadow framework prompts of the same relative path.
+# Fixed by convention; the resolver uses this directory as the consumer root.
 RUNNER_CONSUMER_PROMPTS_DIR="runner"
 
 # Consumer-repo-relative path to the post-implement steps manifest.
