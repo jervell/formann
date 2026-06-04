@@ -241,7 +241,7 @@ The review-and-gate prompt at `framework/runner/steps/review-and-gate.md` instru
 3. Classify the agent's findings by highest severity — anything at `🔴 Critical` (or equivalent) → `blocked`; `🟡 Important` or below or no findings → `clean`.
 4. Comment with Review (AFK gate) on the issue, with the agent's findings verbatim (including its Verification summary) and the AI-generated disclaimer.
 5. **On `clean` only**, set the state to `done`.
-6. Record the outcome via BINDING.md verbs: "set the state to `done`" (clean only) and "comment with `Review (AFK gate)`". Under local-markdown this lands as a single `tracker:` commit (`tracker: review <ref> → done` or `tracker: review <ref> → blocked`); under GitHub Issues it is one or two API calls with no resulting commit.
+6. Record the outcome via BINDING.md verbs: "set the state to `done`" (clean only) and "comment with `Review (AFK gate)`". Under local-markdown this lands as a `tracker:` commit (the binding fixes only the `tracker:` prefix; the rest of the subject is the agent's phrasing); under GitHub Issues it is one or two API calls with no resulting commit.
 7. Emit the review-issue agent's output verbatim on stdout, followed by a `verdict: clean|blocked` line.
 
 The runner classifies each step's outcome from the post-step snapshot and the dispatch exit code (`classify_item_action`) — it does not parse the verdict line. The verdict line exists for the human reading the step's log (`<NN>-<step>-<label>.log`) after the fact.
