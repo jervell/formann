@@ -2158,8 +2158,10 @@ capture_dispatch_core_files() {
 #   $11 = resolved_manifest (tab-delimited label<TAB>path, one per line)
 #
 # Side effects: record_dispatch called exactly once; write_abort_flag on
-# gate-failed/review-aborted; RUN_STOP_REASON set on propagation-error;
-# RUNNER_LAST_PROPAGATION set by propagate_feature calls.
+# gate-failed/review-aborted; RUN_STOP_REASON set on propagation-error or
+# runaway-halt (<ref>) (propagation-error wins if a runaway item's commits
+# also fail to propagate); RUNNER_LAST_PROPAGATION set by propagate_feature
+# calls.
 #
 # Return: 0 on success (done or left-for-human), 1 on failure.
 # Sourceable from bats.
@@ -2362,7 +2364,10 @@ walk_post_implement_steps() {
 # `parked → runner/<branch>` on the success path (empty on failure or
 # when no propagation occurred). Return code: 0 = success, 1 = failure.
 # On a parking-ref publish error, also sets
-# RUN_STOP_REASON="propagation-error" so run_loop breaks the loop.
+# RUN_STOP_REASON="propagation-error" so run_loop breaks the loop; a
+# post-implement step that pushes the issue back to an eligible state sets
+# RUN_STOP_REASON="runaway-halt (<ref>)" (or "propagation-error" if that
+# item's runner commits also fail to propagate).
 #
 # Args: $1=feature  $2=nn  $3=run_dir
 dispatch_one() {

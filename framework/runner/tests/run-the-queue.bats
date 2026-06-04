@@ -2737,6 +2737,49 @@ setup_eligibility_test() {
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
 }
 
+@test "dispatch_one — terminate-run: propagation failure on the runaway item surfaces propagation-error" {
+  # When the runaway item also carries un-published runner commits and that
+  # propagation fails, the data-loss condition (stranded commits the next
+  # sync would wipe) takes the run's stop reason — exactly as the stop-success
+  # and fail arms do. The per-item dispatch record still reads `halt → runaway`
+  # (that is why the item halted); the stop reason and the item label
+  # legitimately differ here, as on every propagation-failure path.
+  setup_dispatch_one_test
+  install_afk_snapshots ready-for-agent
+
+  local prop_count_file="$BATS_TEST_TMPDIR/prop-count-runaway"
+  echo 0 >"$prop_count_file"
+  propagate_feature() {
+    local n
+    n="$(cat "$prop_count_file")"
+    echo $((n + 1)) >"$prop_count_file"
+    # Post-implement propagation succeeds; the runaway item's propagation fails.
+    [ "$n" -eq 0 ]
+  }
+  # Runner commit on the walk step so item_has_runner_commits=1 and the
+  # terminate-run arm reaches its propagate_feature call.
+  run_item_container() {
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "tracker: review f/01 → ready-for-agent"
+    return 0
+  }
+
+  RUN_DISPATCHES=()
+  RUN_STOP_REASON=""
+
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR"
+  local rc=$?
+  set -e
+
+  # Run halts on the data-loss condition, not on runaway.
+  [ "$rc" -eq 1 ]
+  [ "$RUN_STOP_REASON" = "propagation-error" ]
+  # Per-item record still reflects why the item halted: runaway.
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|halt → runaway|"* ]]
+}
+
 # === capture_dispatch_core_files ==========================================
 
 @test "capture_dispatch_core_files — copies root-level core to run-state dir" {
