@@ -2236,7 +2236,7 @@ setup_eligibility_test() {
     return 0
   }
   # local-markdown-shaped gate: commits a `tracker:` row on clean and
-  # blocked alike. The HEAD delta triggers gate-stage propagation.
+  # blocked alike. The HEAD delta triggers the walk step's propagation.
   run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: review f/01 → done"
@@ -2253,16 +2253,16 @@ setup_eligibility_test() {
   # One record, combined label `done`, step-log suffix present.
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|01-review|"* ]]
-  # Two propagations: post-implement and post-gate.
+  # Two propagations: post-implement and post-walk-step.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "2" ]
 }
 
-@test "dispatch_one — gate that produces no commits skips post-gate propagation" {
-  # Regression: the gate-stage propagate_feature call was unconditional,
+@test "dispatch_one — walk step that produces no commits skips post-walk propagation" {
+  # Regression: the walk-step propagate_feature call was unconditional,
   # mirroring the local-markdown binding's "gate prompt always commits"
   # contract. Under the github-issues binding the gate's comment + set-state
   # are API calls — no runner-checkout commit. The implement stage already
-  # gates propagation on the HEAD delta; the gate stage must do the same so
+  # gates propagation on the HEAD delta; the walk step must do the same so
   # a no-commit gate dispatch does not produce a redundant parking-ref
   # publish (and, on an on-branch maintainer, a spurious "parked → runner"
   # ledger entry telling the maintainer to pull nothing).
@@ -2290,16 +2290,16 @@ setup_eligibility_test() {
   [ "$rc" -eq 0 ]
   [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|01-review|"* ]]
-  # Only the implement-stage propagate ran; the gate-stage call was gated
+  # Only the implement-stage propagate ran; the walk-step call was gated
   # out by the empty HEAD delta.
   [ "$(wc -l <"$TEST_PROPAGATE_CALLS" | tr -d ' ')" = "1" ]
 }
 
-@test "dispatch_one — gate that commits still propagates twice" {
-  # Companion to the above: under local-markdown the gate commits a
-  # `tracker:` row, so the post-gate HEAD delta is non-empty and the
-  # gate-stage propagation must still fire. This pins the local-markdown
-  # path's invariant after the gate-stage commit-delta gate is added.
+@test "dispatch_one — walk step that commits still propagates twice" {
+  # Companion to the above: under local-markdown the walk step commits a
+  # `tracker:` row, so the post-walk HEAD delta is non-empty and the
+  # walk-step propagation must still fire. This pins the local-markdown
+  # path's invariant after the walk-step commit-delta gate is added.
   setup_dispatch_one_test
   install_afk_snapshots done
 
@@ -2343,7 +2343,7 @@ setup_eligibility_test() {
     return 0
   }
   # local-markdown-shaped gate commit so the HEAD delta triggers
-  # gate-stage propagation.
+  # the walk step's propagation.
   run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: review f/01 → done"
@@ -2423,8 +2423,7 @@ setup_eligibility_test() {
 }
 
 @test "dispatch_one — AFK wontfix post-item status is stop-success (done)" {
-  # Unlike the old gate classifier (which treated wontfix as off-mission /
-  # gate-failed), classify_item_action treats wontfix as a terminal state
+  # classify_item_action treats wontfix as a terminal state
   # (stop-success → done). This matches the issue lifecycle: wontfix is a
   # valid final resolution.
   setup_dispatch_one_test
@@ -2543,7 +2542,7 @@ setup_eligibility_test() {
 # This test is "red before the refactor" (function didn't exist) and "green
 # after" (function walks the default manifest and produces equivalent results).
 
-@test "walk_post_implement_steps — default equivalence: stop-success produces done (was: clean)" {
+@test "walk_post_implement_steps — default equivalence: stop-success produces done" {
   setup_dispatch_one_test
   local manifest
   manifest="$(printf 'review\t%s\n' "$HERE/review-and-gate.md")"
@@ -2571,7 +2570,7 @@ setup_eligibility_test() {
   [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|01-review|"* ]]
 }
 
-@test "walk_post_implement_steps — default equivalence: continue-exhausted produces left-for-human (was: blocked)" {
+@test "walk_post_implement_steps — default equivalence: continue-exhausted produces left-for-human" {
   setup_dispatch_one_test
   local manifest
   manifest="$(printf 'review\t%s\n' "$HERE/review-and-gate.md")"
@@ -2601,7 +2600,7 @@ setup_eligibility_test() {
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
 }
 
-@test "walk_post_implement_steps — default equivalence: fail produces gate-failed with abort flag (was: gate-failed)" {
+@test "walk_post_implement_steps — default equivalence: fail produces gate-failed with abort flag" {
   setup_dispatch_one_test
   local manifest
   manifest="$(printf 'review\t%s\n' "$HERE/review-and-gate.md")"
@@ -2633,6 +2632,66 @@ setup_eligibility_test() {
   [ -f "$HOST_ABORT_DIR/f/01" ]
   grep -q '^dispatch: review$' "$HOST_ABORT_DIR/f/01"
   grep -q '^type: technical$' "$HOST_ABORT_DIR/f/01"
+}
+
+# === walk_post_implement_steps — multi-item manifest ========================
+#
+# AC 1: a walk over a multi-entry manifest dispatches each item in order. When
+# an item leaves the issue at in-review (classify_item_action → continue), the
+# walk advances to the next item; the combined outcome is whatever the final
+# item produces. The single-entry default-equivalence tests above never cover
+# this cycle — only the multi-item path does.
+
+@test "walk_post_implement_steps — multi-item manifest: continue advances to the next item, whose stop-success wins" {
+  setup_dispatch_one_test
+  local manifest
+  manifest="$(printf 'review\t%s\ngate\t%s\n' "$HERE/review-and-gate.md" "$HERE/gate.md")"
+  local post_implement_json
+  post_implement_json='{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+
+  # Stateful snapshot: after item 1 (review) the issue is still in-review
+  # (classify_item_action → continue), so the walk must advance to item 2
+  # (gate); after item 2 the issue is done (stop-success), ending the walk.
+  local phase_file="$BATS_TEST_TMPDIR/walk-phase"
+  echo "after-item-1" >"$phase_file"
+  take_snapshot() {
+    local phase; phase="$(cat "$phase_file")"
+    if [ "$phase" = "after-item-1" ]; then
+      echo "after-item-2" >"$phase_file"
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+    else
+      printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"done","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+    fi
+  }
+
+  # Record each item dispatch (the prompt path is $3) so both runs and their
+  # order are observable.
+  local item_calls="$BATS_TEST_TMPDIR/item-calls"
+  : >"$item_calls"
+  run_item_container() { printf '%s\n' "$3" >>"$item_calls"; return 0; }
+  propagate_feature() { return 0; }
+  RUN_DISPATCHES=()
+
+  walk_post_implement_steps \
+    "f" "01" "f/01" \
+    "$TEST_RUN_DIR" "$TEST_RUN_DIR" "01" \
+    "$post_implement_json" \
+    "in-review" 10 1 \
+    "$manifest"
+  local rc=$?
+
+  [ "$rc" -eq 0 ]
+  # Both items dispatched, in manifest order (review then gate).
+  [ "$(wc -l <"$item_calls" | tr -d ' ')" = "2" ]
+  [ "$(sed -n 1p "$item_calls")" = "$HERE/review-and-gate.md" ]
+  [ "$(sed -n 2p "$item_calls")" = "$HERE/gate.md" ]
+  # A single combined record. Outcome `done` is reachable only by advancing to
+  # item 2 — had the walk stopped after item 1's `continue`, it would have
+  # exhausted to `left-for-human`. The step-log list carries both steps.
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|done|"*"|01-review:02-gate|"* ]]
+  # Terminal success: no abort flag.
+  [ ! -f "$HOST_ABORT_DIR/f/01" ]
 }
 
 # === dispatch_one / walk — terminate-run (runaway guard) ====================
@@ -2972,7 +3031,7 @@ afk-runner|05|afk-runner/05|FAIL|3|'
 }
 
 @test "format_summary_md — dispatch-aborted and review-aborted render as outcome labels" {
-  # dispatch-aborted has no step logs; review-aborted does (gate stage ran).
+  # dispatch-aborted has no step logs; review-aborted does (a walk step ran).
   input='afk-runner|01|afk-runner/01|dispatch-aborted|12|
 afk-runner|02|afk-runner/02|review-aborted|38|01-review'
   result="$(printf '%s\n' "$input" | format_summary_md \
@@ -3667,11 +3726,11 @@ setup_abort_test() {
   grep -q '^dispatch: implement$' "$HOST_ABORT_DIR/f/01"
 }
 
-@test "dispatch_one — transport crash on gate sets review-aborted and transport abort flag" {
-  # Behavioural guarantee for AC #8 (gate path): is_transport_crash fires on
-  # the review log, classify_gate_outcome returns review-aborted, and
-  # write_abort_flag records type: transport. The dispatch record carries
-  # review-aborted, not gate-failed.
+@test "dispatch_one — transport crash on a walk step sets review-aborted and transport abort flag" {
+  # Behavioural guarantee for AC #8 (review step): is_transport_crash fires on
+  # the review log, walk_post_implement_steps maps the failed item to
+  # review-aborted, and write_abort_flag records type: transport. The dispatch
+  # record carries review-aborted, not gate-failed.
   setup_abort_test
   install_afk_snapshots in-review
   propagate_feature() { return 0; }

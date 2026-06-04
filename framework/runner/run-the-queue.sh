@@ -654,7 +654,7 @@ fail_invariant() {
 # The maintainer removes the flag with `rm` to re-include the ref.
 # Flag format (plain text, no parser needed):
 #   type: technical|transport
-#   dispatch: implement|gate
+#   dispatch: implement|<item-label>
 #   at: <ISO-8601 UTC>
 #   exit: <container exit code>
 #   log: <repo-relative path to dispatch log>
@@ -662,7 +662,7 @@ fail_invariant() {
 # `type` distinguishes transport-class failures (API 5xx/429, network errors,
 # empty log) from genuine technical failures (model error, bad brief, etc.).
 #
-# Args: $1=feature  $2=nn  $3=dispatch(implement|gate)  $4=exit_code  $5=log_file
+# Args: $1=feature  $2=nn  $3=dispatch(implement|<item-label>)  $4=exit_code  $5=log_file
 #       [$6=type (default: technical)]
 write_abort_flag() {
   local feature="$1" nn="$2" dispatch="$3" exit_code="$4" log_file="$5" \
@@ -2150,7 +2150,7 @@ capture_dispatch_core_files() {
 #   $3  = ref (binding-native)
 #   $4  = run_dir
 #   $5  = log_dir
-#   $6  = log_basename (<NN> — item logs are <NN>-<label>.log)
+#   $6  = log_basename (<NN> — item logs are <NN>-<step>-<label>.log)
 #   $7  = post_implement_json
 #   $8  = impl_label (in-review|done — used when manifest is empty)
 #   $9  = impl_duration (seconds, accumulated into iter_duration)
@@ -2323,9 +2323,10 @@ walk_post_implement_steps() {
 
       continue)
         # Issue still at in-review; proceed to the next manifest item.
-        # Progress label deferred: if more items follow this will look like
-        # an intermediate step; if this is the last item the loop exits and
-        # the left-for-human record below fires instead.
+        # Emit this item's progress line now ("left-for-human" reflects the
+        # issue's current state). Only the combined-outcome record_dispatch is
+        # deferred to after the loop — that's where we know whether more items
+        # followed or this was the last.
         format_progress_outcome "$(now_clock)" "$ref" "$item_label" "left-for-human" "$item_duration"
         if [ "$item_has_runner_commits" -eq 1 ]; then
           if ! propagate_feature "$feature"; then

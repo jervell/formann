@@ -119,7 +119,7 @@ When a dispatch fails and leaves an issue stuck (eligible status unchanged, or g
 | `$HOST_REPO/runner/Dockerfile`               | Sandbox image — JDK + Maven + git + the `claude` CLI. Non-root user, workdir `/repo`. Entrypoint inlined. |
 | `framework/runner/setup-network.sh`          | Custom Docker bridge with RFC1918-deny outbound. Public internet stays open.                 |
 | `$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot` | Binding-supplied JSON interface, reached via the role surface. Drives eligibility selection and outcome classification. |
-| `framework/runner/review-and-gate.md`        | Prompt for the post-implement gate dispatch — runs `review-issue`, classifies, commits.      |
+| `framework/runner/review-and-gate.md`        | Prompt for the default post-implement step (review-and-gate) — runs `review-issue`, classifies, commits.      |
 | `.runner-state/checkout/`                  | Separate git clone; the sandbox mounts this, never the host repo.                            |
 | `.runner-state/runs/<ts>/`                 | Per-run logs, per-issue exit codes, end-of-run `SUMMARY.md`.                                 |
 
@@ -141,7 +141,7 @@ loop iteration ─► tracker-snapshot ─► first eligible ref
                               tracker-snapshot ─► classify ─► fast-forward host
                                           │
                                           ▼
-                              outcome: done | blocked | gate-failed | in-review | FAIL
+                              outcome: done | left-for-human | gate-failed | in-review | FAIL
 ```
 
 Both dispatches run in fresh sandbox containers with bypass permissions; the trust boundary is the Docker isolation, not per-tool allowlists. Successful work fast-forwards onto the host's branch immediately. The runner never pushes to a remote — the maintainer keeps full control over what reaches GitHub.

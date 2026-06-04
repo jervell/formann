@@ -12,28 +12,31 @@ If you want to *use* the runner, start with the README. If you want to *understa
 
 The maintainer triages many issues as `ready-for-agent + AFK` — work that has been pre-authorized to run unattended. Advancing each one to `in-review` requires a manual `/implement` invocation, observation of the result, and dispatch of the next. The bottleneck is the maintainer's time at the keyboard for work that, by definition, doesn't need their judgment in the loop.
 
-The runner replaces the keystroke. Given a feature, it sequentially drains the eligible queue, dispatching each issue inside an isolated sandbox container, classifying outcomes from a structured tracker delta, and propagating any commits the dispatch lands to the host repo. After a successful AFK implement, an independent **review-and-gate** dispatch decides whether to auto-accept to `done` or surface the findings for the maintainer's return.
+The runner replaces the keystroke. Given a feature, it sequentially drains the eligible queue, dispatching each issue inside an isolated sandbox container, classifying outcomes from a structured tracker delta, and propagating any commits the dispatch lands to the host repo. After a successful AFK implement, the runner walks a Consumer-owned **post-implement manifest** of follow-on steps; the default manifest is a single independent **review-and-gate** step that decides whether to auto-accept to `done` or surface the findings for the maintainer's return.
 
 ## Where it fits in the lifecycle
 
 The runner sits between **triage** (which sets `ready-for-agent + AFK`) and **verify** (the maintainer's `/triage <#> done`-or-rework decision):
 
 ```
-…triage ─► ready-for-agent + AFK ─► [runner: implement + gate] ─► done | in-review (with findings)
+…triage ─► ready-for-agent + AFK ─► [runner: implement + post-implement walk] ─► done | in-review (with findings)
 ```
 
 It does not change the pipeline or the state machine. It only automates which keystroke moves an issue through a stretch of states the maintainer has already authorized.
 
 The runner dispatches **eligible AFK refs only** — both loop and single-dispatch modes share that gate. Loop mode enforces it via the snapshot's `eligible` flag at selection time; single-dispatch (`--issue <ref>`) reads the same flag for the named ref before dispatching and refuses with exit 2 if the ref is HITL, has the wrong status, has unmet blockers, or is missing from the feature snapshot. HITL refs are not the runner's mandate — the maintainer's manual verify is the contract there, and `/implement <ref>` invoked locally lands the same `in-review` outcome without paying the sandbox/checkout overhead.
 
-**On failure, the runner doesn't rewrite state — neither outcome takes the issue back to `ready-for-agent` automatically.** What happens to the issue depends on which stage failed:
+**On failure, the runner doesn't rewrite state — it never takes an issue back to `ready-for-agent` itself.** What happens to the issue depends on what failed:
 
 - **Implement-stage FAIL** (classifier verdict or container error) — two sub-cases:
   - **Logical bail** — `/implement` posted an explanation and flipped status to `needs-info`. The status change makes the issue ineligible on its own; no abort flag is needed. To resume, the maintainer revises the brief and runs `/triage <ref> ready-for-agent`. Under local-markdown, the bail comment lands as a `tracker:` commit; under GitHub Issues, it is an API call that produces no commit. Either way, the abort-flag logic is unaffected — it is a runner-internal file (`.runner-state/aborted/<feature>/<NN>`), independent of the binding.
   - **Technical failure** (container died before any tracker write) — status is still `ready-for-agent`, so the runner writes an abort flag to prevent re-dispatch.
-- **Gate-failed** — `/implement` succeeded; the issue sits at `in-review` and is no longer eligible. The runner writes an abort flag for unified "what is the runner stuck on" visibility.
+- **`gate-failed` / `review-aborted`** — `/implement` succeeded, but a post-implement step's dispatch errored (nonzero exit, or a transport-class crash) or left the issue on an off-mission status. The issue sits at `in-review` and is no longer eligible; the runner writes an abort flag for unified "what is the runner stuck on" visibility. (A step that merely surfaces findings without erroring is **not** a failure — see `left-for-human` below.)
+- **`halt → runaway`** — a misconfigured post-implement step drove the issue *back* to `ready-for-agent` (eligible). Left alone the runner would re-dispatch it forever, so the runner halts the entire run immediately. No abort flag is written — the issue is eligible, not stuck; the fault is the manifest, which the maintainer fixes.
 
-The failed `/implement` already posted its own comment; the runner adds nothing. The abort-flag mechanism — file location, format, and recovery recipe — is detailed under [Abort flags](#abort-flags) below.
+A non-failing walk that simply runs out of steps with the issue still at `in-review` is recorded as **`left-for-human`** (no abort flag): the work shipped, a step left findings for the maintainer, and the issue waits for the human's verify on return.
+
+The failed `/implement` (or step) already posted its own comment; the runner adds nothing. The abort-flag mechanism — file location, format, and recovery recipe — is detailed under [Abort flags](#abort-flags) below.
 
 ## Binding portability
 
@@ -48,7 +51,7 @@ It does **not** mean:
 
 - Rewriting `run-the-queue.sh`.
 - Forking a parallel runner.
-- Changing the dispatch loop, classifier, gate prompt, or the host-propagation step.
+- Changing the dispatch loop, classifier, post-implement walk, or the host-propagation step.
 
 The runner's coupling to git is to **code transport**, not to the tracker. The host repo, the runner-checkout, and propagation are all about landing the dispatched container's code commits on the host's branch — universal across bindings, since code lives in git regardless of where tracker state lives.
 
@@ -68,10 +71,10 @@ The orchestrator. A bash script structured as:
    - **Single-dispatch mode** (`--issue <feature>/<NN>`) — dispatches a single ref; refuses loudly on eligibility gate failures.
 2. **Pre-flight** — fail-fast invariants (see below). The set differs by mode: drain mode defers runner-checkout sync and mvn-cache to the per-feature loop; narrowed modes materialise them up front.
 3. **Outer drain loop** (drain mode only) — one iteration per feature: evaluate per-feature gate; if `drain`, run the per-issue loop scoped to that feature; if `skip:<reason>`, record a SUMMARY row and continue.
-4. **Per-issue dispatch loop** — one iteration per issue inside a drained feature: snapshot, pick, implement, classify, propagate, (optionally) gate, classify again, propagate.
+4. **Per-issue dispatch loop** — one iteration per issue inside a drained feature: snapshot, pick, implement, classify, propagate, then walk the post-implement manifest (dispatch each step, classify, propagate per step).
 5. **EXIT trap** — writes `SUMMARY.md`, prints the end-of-run table, releases the pidfile lock.
 
-Pure logic (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_gate_outcome`, formatters) is sourceable; `main` runs only when the script is executed directly. The `bats` suite under `runner/tests/` exercises that logic with synthetic inputs.
+Pure logic (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_item_action`, `resolve_manifest`, `walk_post_implement_steps`, formatters) is sourceable; `main` runs only when the script is executed directly. The `bats` suite under `runner/tests/` exercises that logic with synthetic inputs.
 
 ### Sandbox container
 
@@ -129,9 +132,9 @@ The runner consumes the issue tracker through a single binding-supplied executab
 The runner uses snapshots for two purposes:
 
 - **Selection** — at the start of each iteration the loop iterates the snapshot's `eligible: true` refs in source order and picks the first one that doesn't have an abort flag (see "Abort flags" below). Recomputed every iteration so an issue unblocked mid-run by an earlier success becomes selectable without restarting. The pure-logic `next_eligible_ref` helper exposes the "first eligible ref" half of this selection for the bats suite (`first(.issues[] | select(.eligible == true) | .ref)`); the runtime path uses the same `select(.eligible == true)` predicate but streams the matching refs (drops the `first(...)` wrapper) so it can iterate and skip flagged refs in turn.
-- **Outcome classification** — pre-dispatch and post-dispatch snapshots feed the classifier (`classify_outcome` for implement, `classify_gate_outcome` for the gate). The two classifiers treat the dispatch exit code differently:
+- **Outcome classification** — pre-dispatch and post-dispatch snapshots feed the classifier (`classify_outcome` for implement, `classify_item_action` for each post-implement step). The two classifiers treat the dispatch exit code differently:
   - **Implement** — status delta is the source of truth; the exit code is captured to `<NN>.exit` for forensics but never reaches the classifier. `/implement` has no "non-zero on failure" contract and claude may exit 0 from a session that didn't ship, so the committed `tracker:` flip is the only trustworthy signal.
-  - **Gate** — delta and exit code together drive the verdict. The gate prompt explicitly contracts "exit non-zero if you can't classify; don't record a half-baked result", so a nonzero exit short-circuits to `gate-failed` regardless of the delta. See the truth tables below.
+  - **Post-implement step** — the post-item status and exit code together drive the per-item action. A step prompt is expected to "exit non-zero if you can't classify; don't record a half-baked result" (the review-and-gate prompt contracts exactly this), so a nonzero exit short-circuits to `fail` regardless of the status delta. See the truth tables below.
 
 Snapshots are taken against the runner-checkout's **HEAD** (i.e. committed state), not the working tree. Fast-forward propagation only lands committed history on the host, so an apparent status flip living only in the working tree (because `/implement` skipped its `tracker:` commit) would never reach the host. Reading from HEAD makes the classifier's verdict match what actually propagates.
 
@@ -207,10 +210,13 @@ One iteration, end to end:
 4. **Implement dispatch** — capture the runner-checkout's HEAD, then run `claude -p "/implement <ref>" --dangerously-skip-permissions` in a fresh sandbox container. Output captured to `<run-dir>/<NN>.log`, exit code to `<NN>.exit`. Capture HEAD again afterwards.
 5. **Classify implement** — pre/post snapshots feed `classify_outcome`. `success` requires status to flip from `ready-for-agent` to `in-review` or `done`.
 6. **Propagate (any committed runner-checkout change)** — if the runner-checkout's HEAD advanced during the dispatch (the runner produced commits), publish them to the per-feature parking ref on host (`refs/remotes/runner/<branch>`, force-updated), then attempt a best-effort fast-forward of host's branch ref (no `--update-head-ok`). The propagation gate is the commit delta, not the classifier verdict. Under local-markdown, a `/implement` bail commits an explanatory `tracker:` comment without flipping status; that commit must reach the parking ref before the next iteration's sync moves on. Under GitHub Issues, a bail makes an API call that produces no commit — propagation is a no-op, which is correct. A genuine technical failure (container died before any tracker write) leaves HEAD unchanged and the runner skips propagation. Git's refusal of the host fast-forward (HEAD-on-target or non-ff) is an expected `parked-only` outcome and the iteration is recorded as success; only the parking-ref publish failing — a rare runner bug — records FAIL. If the classifier verdict is `failure` (independent of whether propagation ran), iteration also ends here with `FAIL`.
-7. **Gate decision** — every successful AFK implement proceeds to the review-and-gate dispatch. Both run modes refuse non-AFK refs before reaching this point (loop via the snapshot's `eligible` filter, single-dispatch via the same flag in `run_single`), so `dispatch_one` never sees a non-AFK ref.
-8. **Review-and-gate dispatch** — `claude -p "<gate-prompt>\n<ref>" --dangerously-skip-permissions` in another fresh sandbox container. Output captured to `<NN>-review.log`.
-9. **Classify gate** — pre/post snapshots, the dispatch exit code, and a transport-crash flag feed `classify_gate_outcome`. Verdict is `clean`, `blocked`, `gate-failed`, or `review-aborted` (the last when the gate subprocess transport-crashed).
-10. **Propagate (if gate succeeded and produced commits)** — same publish-then-fast-forward sequence as step 6, gated on the runner-checkout HEAD delta across the gate dispatch. Under local-markdown the gate prompt's `tracker:` commit advances HEAD and this fires; under github-issues the gate's API-only mutations leave HEAD unchanged and this is a no-op.
+7. **Post-implement walk** — every successful AFK implement proceeds to the manifest walk (`walk_post_implement_steps`). Both run modes refuse non-AFK refs before reaching this point (loop via the snapshot's `eligible` filter, single-dispatch via the same flag in `run_single`), so `dispatch_one` never sees a non-AFK ref. The walk iterates the resolved manifest items in order; for each item:
+   - **Dispatch the step** — `claude -p "<step-prompt>\n<ref>" --dangerously-skip-permissions` in a fresh sandbox container. Output captured to `<NN>-<step>-<label>.log`.
+   - **Snapshot + classify** — the post-item status and the dispatch exit code feed `classify_item_action`, which returns one of `stop-success`, `continue`, `fail`, or `terminate-run`.
+   - **Propagate** — same publish-then-fast-forward sequence as step 6, gated on the runner-checkout HEAD delta across the step dispatch. Under local-markdown a step's `tracker:` commit advances HEAD and this fires; under github-issues the step's API-only mutations leave HEAD unchanged and this is a no-op.
+   - **React** — `stop-success` (a terminal status like `done`) records `done` and ends the walk; `continue` (still `in-review`) advances to the next item; `fail` records `gate-failed` (or `review-aborted` on a transport crash), writes an abort flag, and ends the walk; `terminate-run` (issue pushed back to `ready-for-agent`) records `halt → runaway` and halts the whole run. When the items are exhausted with the issue still at `in-review`, the walk records `left-for-human` (no abort flag).
+
+The default manifest is a single `review` step running the review-and-gate prompt, so the common case is observationally identical to a one-shot gate: implement, then one review-and-gate dispatch ending in `done` or `left-for-human`.
 
 Per-issue failures don't stop the queue — they're logged, the runner moves to the next eligible issue. The failed `/implement` already posts its own comment on the issue; the runner adds nothing beyond the abort flag written on stuck failures (see "Failure handling" below).
 
@@ -220,9 +226,15 @@ The implement dispatch is a regular `/implement` invocation, just spawned non-in
 
 The runner makes no assumptions about *how* the dispatch ships the work. It asks the binding via snapshot whether the status flipped — that's it.
 
-## Review-and-gate dispatch
+## The post-implement walk
 
-After a successful AFK implement, the runner spawns a second sandbox container running the gate prompt at `framework/runner/review-and-gate.md`. The prompt instructs `claude` to:
+After a successful AFK implement, the runner walks the **post-implement manifest** — a Consumer-owned list at `<consumer>/runner/manifest.md`, resolved once at pre-flight (invariant 4b) into ordered `<label> → <prompt-path>` items and held in `RESOLVED_MANIFEST`. Each manifest line names a label (used for the step's log suffix and abort-flag `dispatch` field) and a prompt reference (`framework:<name>` or `consumer:<name>`). The walk dispatches each step in its own fresh sandbox container, classifies the post-step snapshot with `classify_item_action`, propagates any committed work, and reacts — stopping on a terminal status, advancing on `in-review`, failing on a step error, or halting the run if a step pushes the issue back to `ready-for-agent`. An empty manifest is valid: the implement-only run records `left-for-human` immediately.
+
+The default manifest ships a single step: `review → framework:review-and-gate.md`.
+
+### The default review-and-gate step
+
+The review-and-gate prompt at `framework/runner/review-and-gate.md` instructs `claude` to:
 
 1. Read the issue file in full.
 2. Spawn the `review-issue` agent (via the `Agent` tool) for an independent review of the just-shipped commits.
@@ -232,7 +244,7 @@ After a successful AFK implement, the runner spawns a second sandbox container r
 6. Record the outcome via BINDING.md verbs: "set the state to `done`" (clean only) and "comment with `Review (AFK gate)`". Under local-markdown this lands as a single `tracker:` commit (`tracker: review <ref> → done` or `tracker: review <ref> → blocked`); under GitHub Issues it is one or two API calls with no resulting commit.
 7. Emit the review-issue agent's output verbatim on stdout, followed by a `verdict: clean|blocked` line.
 
-The runner classifies the gate's outcome from the snapshot delta and the dispatch exit code — it does not parse the verdict line. The verdict line exists for the human reading `<NN>-review.log` after the fact.
+The runner classifies each step's outcome from the post-step snapshot and the dispatch exit code (`classify_item_action`) — it does not parse the verdict line. The verdict line exists for the human reading the step's log (`<NN>-<step>-<label>.log`) after the fact.
 
 Why a separate dispatch (not a slash command, not part of `/implement`)? Independence. The same `claude` session that just shipped the work would have a strong continuity bias toward declaring it good. A fresh session, with no implementation context, reading only the committed state, exercises closer-to-cold-eyes judgment. The Docker isolation makes "fresh session" cheap.
 
@@ -253,36 +265,34 @@ Inputs: pre-dispatch snapshot, post-dispatch snapshot, ref, and a transport-cras
 
 A missing entry in either snapshot counts as "anything else". The pre-status guard catches argument-order swaps and stale snapshots, and fires before the transport-crash check — a pre-status that isn't `ready-for-agent` is always `failure`.
 
-### `classify_gate_outcome` — gate stage
+### `classify_item_action` — post-implement step
 
-Inputs: pre-gate snapshot (post-implement state), post-gate snapshot, ref, gate dispatch exit code, and a transport-crash boolean (true when the gate subprocess crashed on a transport-class failure — see [`runner/README.md`](runner/README.md)).
+Inputs: the post-item status and the step's dispatch exit code. Unlike the implement classifier it needs no pre-status — the walk only runs after a successful implement, so the issue is already at `in-review`. It returns the *action* the walk takes for that item:
 
-The function evaluates a sequence of guards and returns on the first match. Reading the table as guards-in-order rather than as combinations matches the code at run-the-queue.sh:151-179 and is inherently complete:
+| #  | Guard (evaluated in order)                | Action          |
+| -- | ----------------------------------------- | --------------- |
+| 1  | exit code is nonzero                      | `fail`          |
+| 2  | post status ∈ {`done`, `wontfix`, absent} | `stop-success`  |
+| 3  | post status == `in-review`                | `continue`      |
+| 4  | post status == `ready-for-agent`          | `terminate-run` |
+| 5  | post status is anything else              | `fail`          |
 
-| #  | Guard (evaluated in order)                          | Verdict          |
-| -- | --------------------------------------------------- | ---------------- |
-| 1  | pre status ∉ {`in-review`, `done`}                  | `gate-failed`    |
-| 2  | exit code is nonzero, transport-crash               | `review-aborted` |
-| 3  | exit code is nonzero, no transport-crash            | `gate-failed`    |
-| 4  | post status == `done`, or ref absent from snapshot  | `clean`          |
-| 5  | post status == `in-review`                          | `blocked`        |
-| 6  | post status is anything else (present but unexpected) | `gate-failed`  |
+An **absent** ref (guard 2) is `stop-success`, not a failure: the github-issues binding closes the issue on `done`, so the issue dropping out of the snapshot is that binding's native "done" signal. `wontfix` is also terminal — a valid final resolution.
 
-Pre status of `done` is admitted alongside `in-review` because `/implement` can legitimately land at either (a maintainer-adjusted brief may direct the dispatch straight to `done`); the later guards do not differentiate which of the two pre states reached them. An **absent** ref (guard 4) is `clean`, not a failure: the github-issues binding closes the issue on `done`, so the issue dropping out of the snapshot is that binding's native "done" signal.
-
-`clean` and `blocked` both return 0 from `dispatch_one` — operational health is fine, the verdict is independent. `gate-failed` and `review-aborted` both return 1 and write an abort flag (`type: technical` and `type: transport` respectively).
+`classify_item_action` itself knows nothing about transport crashes or abort flags — those are `walk_post_implement_steps`' job. The walk maps each action to a combined outcome: `stop-success` → `done` (return 0); `continue` → advance to the next item, or `left-for-human` if it was the last (return 0, no abort flag); `fail` → `gate-failed`, or `review-aborted` when the step subprocess transport-crashed (return 1, abort flag `type: technical` / `type: transport` respectively); `terminate-run` → `halt → runaway`, halting the whole run (return 1, no abort flag — the issue is eligible, not stuck).
 
 ### Combined per-iteration outcome
 
 | Outcome            | Meaning                                                                                      |
 | ------------------ | -------------------------------------------------------------------------------------------- |
-| `done`             | AFK iteration; gate found no Critical findings and flipped status to `done`.                |
-| `blocked`          | AFK iteration; gate found ≥1 Critical; findings appended as a comment, status stays `in-review`. |
-| `gate-failed`      | AFK iteration; gate dispatch errored or off-mission. Runner writes a `type: technical` abort flag and continues. |
-| `review-aborted`   | AFK iteration; the gate subprocess transport-crashed (empty log, API 5xx/429, network error) and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
+| `done`             | AFK iteration; a post-implement step drove the issue to a terminal status (`done`/`wontfix`). For the default review-and-gate step, the review found no Critical findings and flipped status to `done`. |
+| `left-for-human`   | AFK iteration; the walk ran out of steps with the issue still at `in-review` (e.g. the review step found ≥1 Critical and appended findings as a comment). No abort flag — the maintainer verifies on return. |
+| `gate-failed`      | AFK iteration; a post-implement step's dispatch errored or left the issue on an off-mission status. Runner writes a `type: technical` abort flag and continues. |
+| `review-aborted`   | AFK iteration; a step subprocess transport-crashed (empty log, API 5xx/429, network error) and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
 | `dispatch-aborted` | The implement subprocess transport-crashed and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
-| `in-review`        | AFK iteration interrupted between the implement and gate stages — implement landed `in-review`, the interrupt pre-empted the gate, and the iteration is recorded at its implement outcome. |
+| `in-review`        | AFK iteration interrupted between implement-finish and the start of the post-implement walk — implement landed `in-review`, the interrupt pre-empted the first step, and the iteration is recorded at its implement outcome. |
 | `FAIL`             | Implement-stage failure (classifier verdict, container error, or parking-ref publish failure). Runner writes an abort flag where applicable and continues. |
+| `halt → runaway`   | A post-implement step drove the issue back to `ready-for-agent` (a misconfigured manifest). The runner halts the entire run immediately. No abort flag — the issue is eligible, not stuck. |
 
 ## Pre-flight invariants
 
@@ -296,7 +306,7 @@ Fail-fast checks run before the loop starts. A failure prints `runner: <invarian
 | 2b | `runner-checkout`  | Runner-checkout is sync'd to the target branch tip. **Drain mode**: deferred to the per-feature loop. |
 | 3  | `docker-daemon`    | `docker info` succeeds.                                                                         |
 | 4  | `runner-image`     | The sandbox image exists or builds.                                                             |
-| 4b | `gate-prompt`      | `review-and-gate.md` exists next to `run-the-queue.sh`.                                        |
+| 4b | `manifest`         | `runner/manifest.md` (Consumer-owned) exists and `resolve_manifest` validates every entry's label + prompt path. |
 | 5  | `mvn-cache`        | Per-feature Docker volume exists (created on first use). **Drain mode**: deferred to the per-feature loop — features the runner skips don't get a cache volume. |
 | 6  | `sandbox-network`  | Custom Docker bridge + RFC1918-deny rules in place.                                            |
 | 7  | `oauth-token`      | Keychain retrieval succeeds; the token is captured into a shell variable.                      |
@@ -304,7 +314,7 @@ Fail-fast checks run before the loop starts. A failure prints `runner: <invarian
 
 The runner is independent of the host's current branch and working-tree state — no invariant inspects either. Feature validation (unknown slug) runs as a CLI-input gate after the runner-checkout clone-existence check (2a) and immediately before branch-sync (2b) (`check_feature_eligibility`, **narrowed modes only**); on refusal the runner exits 2 with a `feature-restricted (refused: <reason>)` / `single-dispatch (refused: <reason>)` stop reason, not a `preflight-abort:`. The gate sits before branch-sync so an unknown slug surfaces the AC-mandated refusal instead of an opaque `git fetch origin <slug>` failure.
 
-Drain mode (bare invocation) skips `check_feature_eligibility`, runner-checkout **branch-sync (2b)**, and `mvn-cache` at pre-flight: there's no single target feature to validate up front, and branch-sync / mvn-cache are scoped per-drained-feature inside the outer loop. The runner-checkout clone-existence check (2a) still runs unconditionally — the clone is global; only the per-branch sync is per-feature. `drain_one_feature`'s gate cascade records the analogous skips at iteration time (`skip:fetch-failed`, `feature-snapshot-failed`, `skip:queue-empty`). The remaining global invariants (`discovery`, `runner-remote`, runner-checkout clone-existence, `docker-daemon`, `runner-image`, `gate-prompt`, `sandbox-network`, `oauth-token`, `no-other-runner`) still gate the whole run — they're infrastructure-level concerns, not feature-specific.
+Drain mode (bare invocation) skips `check_feature_eligibility`, runner-checkout **branch-sync (2b)**, and `mvn-cache` at pre-flight: there's no single target feature to validate up front, and branch-sync / mvn-cache are scoped per-drained-feature inside the outer loop. The runner-checkout clone-existence check (2a) still runs unconditionally — the clone is global; only the per-branch sync is per-feature. `drain_one_feature`'s gate cascade records the analogous skips at iteration time (`skip:fetch-failed`, `feature-snapshot-failed`, `skip:queue-empty`). The remaining global invariants (`discovery`, `runner-remote`, runner-checkout clone-existence, `docker-daemon`, `runner-image`, `manifest`, `sandbox-network`, `oauth-token`, `no-other-runner`) still gate the whole run — they're infrastructure-level concerns, not feature-specific.
 
 Per-run dir creation, log capture, and trap installation happen earlier in `main()` — before `preflight()` runs. A concurrent invocation therefore does mint a per-run dir before its lock acquisition fails, and that dir gets a `preflight-abort: no-other-runner` SUMMARY.md.
 
@@ -345,7 +355,7 @@ Every invocation that parses cleanly — including pre-flight aborts — creates
 | `discovery.json`  | The JSON array returned by `tracker-snapshot --list`. Written immediately after the `discovery` invariant passes; same lifecycle as `runner.log`. |
 | `<NN>.log` (narrowed) / `<feature>/<NN>.log` (drain) | Full per-issue implement-dispatch output (stdout + stderr from the container). Drain mode uses a per-feature subdir so per-issue artifacts don't collide across features that share `<NN>`. |
 | `<NN>.exit` / `<feature>/<NN>.exit` | Per-issue implement-dispatch exit code. Same flat / nested layout as the log file. |
-| `<NN>-review.log` / `<feature>/<NN>-review.log` | Full per-issue review-and-gate dispatch output. Present for iterations that reached the gate stage; absent for implement-stage failures. |
+| `<NN>-<step>-<label>.log` / `<feature>/<NN>-<step>-<label>.log` | Full per-step output for each post-implement walk step (e.g. `01-01-review.log`). One per step that ran; absent for implement-stage failures (the walk never started). |
 | `SUMMARY.md`      | End-of-run Markdown summary. Narrowed modes: feature heading + flat per-issue table. Drain mode: `# AFK runner — multi-feature drain` heading + per-feature sections (`## <feature> — drained` with the same nested per-issue table, or `## <feature> — skipped: <reason>` / `## <feature> — feature-snapshot-failed` one-liner). |
 
 Live stdout uses per-stage progress lines. A typical iteration produces four — implement starting/outcome and review starting/outcome:
@@ -382,10 +392,10 @@ exit: 137
 log: .runner-state/runs/20260507-142133/03.log
 ```
 
-The `dispatch` field is `implement` for implement-stage failures and `gate` for gate-stage failures. The flag is written in two cases:
+The `dispatch` field is `implement` for implement-stage failures and the manifest item's label (e.g. `review`) for post-implement step failures. The flag is written in two cases:
 
 1. **Implement classifier `failure` + post-status still eligible** — the genuine "stuck" case. The snapshot's `eligible: true` would re-pick it on the next iteration or next run. A logical bail where `/implement` flipped status to `needs-info` is already ineligible and does not trigger a flag — the status change itself prevents re-dispatch.
-2. **Gate-failed** — the issue is at `in-review` (non-eligible), so the snapshot filter already excludes it. The flag is still written as a unified "what is the runner stuck on" surface.
+2. **`gate-failed` / `review-aborted`** — a post-implement step erred or transport-crashed; the issue is at `in-review` (non-eligible), so the snapshot filter already excludes it. The flag is still written as a unified "what is the runner stuck on" surface.
 
 A parking-ref publish error (rare — a genuine runner bug rather than an expected outcome) records the iteration as FAIL and sets `RUN_STOP_REASON="propagation-error"`, halting the loop. The runner-checkout retains the un-published commits so the operator can recover via `git -C $HOST_REPO fetch $HOST_CHECKOUT +<branch>:refs/remotes/runner/<branch>`. No abort flag is written; once the parking ref is repaired, the next run re-picks the issue through the normal eligibility path. In drain mode, `propagation-error` from any feature's loop halts the entire drain (no subsequent feature is considered).
 
@@ -453,7 +463,7 @@ framework/
     ├── ensure-mvn-cache.sh                   ← per-feature volume helper
     ├── retrieve-secret.sh                    ← vendored Keychain reader
     ├── retrieve-token.sh                     ← OAuth token wrapper
-    ├── review-and-gate.md                    ← gate dispatch prompt
+    ├── review-and-gate.md                    ← default post-implement step prompt
     ├── demo-dispatch.sh + demo-fixture/      ← end-to-end shake-out
     └── tests/                                ← bats suite (pure logic) + smoke fixture
 

@@ -19,7 +19,7 @@ Conventions:
 | Docker daemon                                | Image `afk-runner-sandbox`, network `afk-runner-sandbox` (with RFC1918-deny rules), volume `runner-mvn-cache-<feature>` (created lazily per drained feature). |
 | `.runner-state/checkout/`                    | Separate clone of the host repo. Created on first run; **branch-switched** per drained feature inside the outer loop (drain mode) or sync'd once up front (narrowed modes). |
 | `$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot` | Binding-supplied executable, reached via the role surface. `--list` returns active feature slugs (drain mode discovery); `<slug>` returns per-issue JSON with computed `eligible` flag. |
-| `framework/runner/review-and-gate.md`          | Prompt for the post-implement gate dispatch.                                                                |
+| `framework/runner/review-and-gate.md`          | Prompt for the default post-implement step (review-and-gate).                                               |
 
 ## Top-level flow
 
@@ -103,7 +103,7 @@ Rows in evaluation order. `no-other-runner` runs first (lock acquisition gates e
 | 2b | `runner-checkout`         | Runner-checkout sync'd to the target branch's tip on host.                                          | per-feature (lazy) |
 | 3 | `docker-daemon`            | `docker info` succeeds.                                                                            | global      |
 | 4 | `runner-image`             | `afk-runner-sandbox` exists (else built from `Dockerfile`).                                        | global      |
-| 4b | `gate-prompt`             | `framework/runner/review-and-gate.md` is present.                                                    | global      |
+| 4b | `manifest`                | `runner/manifest.md` (Consumer-owned) exists and `resolve_manifest` validates every entry.           | global      |
 | 5 | `mvn-cache`                | Volume `runner-mvn-cache-<feature>` exists or is created and chowned `1000:1000`.                  | per-feature (lazy) |
 | 6 | `sandbox-network`          | `afk-runner-sandbox` bridge + iptables RFC1918-deny rules in place.                                | global      |
 | 7 | `oauth-token`              | Keychain returns a non-empty token; held in `TOKEN` for the rest of the run.                       | global      |
@@ -275,7 +275,7 @@ Abort flags persist across runs (files on disk). The eligibility skip log line i
  failure / dispatch-aborted        success
    │                                 │
    ▼                                 ▼
-   [post_impl eligible?]     (continue to gate stage)
+   [post_impl eligible?]     (success → post-implement walk)
    ┌──────┴──────┐
   yes           no
    │             │
@@ -297,7 +297,7 @@ The runner dispatches eligible AFK refs only — both loop mode (snapshot
 `eligible` filter at selection) and single-dispatch (`run_single`'s
 fresh-snapshot read for the named ref) refuse non-AFK or otherwise
 ineligible refs before reaching `dispatch_one`. The post-implement
-success path therefore proceeds straight to the gate stage.
+success path therefore proceeds straight to the walk.
 
 The `has_commits` gate makes propagation reachable from the non-success
 branch: a `/implement` bail commits an explanatory `tracker:` comment
@@ -317,10 +317,10 @@ precedence over that signal — an unreadable snapshot leaves the issue's
 state unknown, so the iteration parks any committed work and bails before
 the classifier runs.
 
-### Gate stage
+### Post-implement walk
 
 ```
-   [RUNNER_INTERRUPTED?]
+   [RUNNER_INTERRUPTED?]                  (checked in dispatch_one, before the walk)
         │
    ┌────┴────┐
   yes       no
@@ -332,72 +332,73 @@ the classifier runs.
  success     │
  return 0    │
              ▼
-   pre_gate_head = git rev-parse HEAD (runner-checkout)
-   run_gate_container(prompt + ref)              ─► writes <NN>-review.log
-   post_gate_head = git rev-parse HEAD (runner-checkout)
-   gate_has_commits = (pre_gate_head != post_gate_head)
-   gate_transport_crash = (gate_rc != 0 && is_transport_crash(<NN>-review.log))
+   walk_post_implement_steps(RESOLVED_MANIFEST)
+             │
+   ┌─ next manifest item ───────────────────────────────────────────────────┐
+   │                                                                         │
+   │   pre_item_head = git rev-parse HEAD (runner-checkout)                  │
+   │   run_item_container(item prompt + ref) ─► writes <NN>-<step>-<label>.log │
+   │   post_item_head = git rev-parse HEAD (runner-checkout)                 │
+   │   item_has_commits = (pre_item_head != post_item_head)                  │
+   │   item_transport_crash = (item_rc != 0 && is_transport_crash(log))      │
+   │             │                                                           │
+   │             ▼                                                           │
+   │   post = take_snapshot(feature)                                         │
+   │             │                                                           │
+   │   [post-item snapshot ok?]                                              │
+   │        ├─ no ─► park committed work (when item_has_commits):            │
+   │        │          • park error    → RUN_STOP_REASON = propagation-error;│
+   │        │                            record FAIL; ret 1                  │
+   │        │          • park ok / none → RUN_STOP_REASON =                  │
+   │        │                            snapshot-failed-mid-dispatch:post-<label>; │
+   │        │                            record FAIL; ret 1                  │
+   │        ▼ yes                                                            │
+   │   action = classify_item_action(post status, item_rc)                  │
+   │        (status + exit code only; nonzero exit ─► fail)                  │
+   │             │                                                           │
+   │        [action?]                                                        │
+   │        │                                                                │
+   │        ├─ stop-success ─► propagate (when item_has_commits; park error  │
+   │        │                   ─► record gate-failed, propagation-error,    │
+   │        │                   ret 1); record done; ret 0                   │
+   │        │                                                                │
+   │        ├─ fail ─► write_abort_flag(<label>; type=transport on review-   │
+   │        │          aborted, else technical); propagate (when commits;    │
+   │        │          park error ─► propagation-error); record gate-failed  │
+   │        │          / review-aborted; ret 1                              │
+   │        │                                                                │
+   │        ├─ terminate-run ─► propagate (when commits); RUN_STOP_REASON =  │
+   │        │                   runaway-halt(<ref>); record halt → runaway;  │
+   │        │                   ret 1   (no abort flag — issue is eligible)  │
+   │        │                                                                │
+   │        └─ continue ─► propagate (when commits; park error ─► record     │
+   │             gate-failed, propagation-error, ret 1); next manifest item  │
+   │                                                                         │
+   └─ items exhausted, issue still in-review ───────────────────────────────┘
              │
              ▼
-   post_gate = take_snapshot(feature)
-             │
-   [post-gate snapshot ok?]
-        │
-        ├─ no ─► park committed gate work to parking ref (when gate_has_commits):
-        │           • park error    → RUN_STOP_REASON = propagation-error;
-        │                             record FAIL; ret 1
-        │           • park ok / none → RUN_STOP_REASON =
-        │                             snapshot-failed-mid-dispatch:post-gate;
-        │                             record FAIL; ret 1
-        │
-        ▼ yes
-   v_gate = classify_gate_outcome(post_impl, post_gate, ref, gate_rc,
-                                  gate_transport_crash)
-   (5 args — snapshot delta AND exit code are primary; a transport crash on a
-    nonzero exit flips gate-failed to review-aborted)
-             │
-             ▼
-        [v_gate?]
-        │
-        ├─ gate-failed / review-aborted ─►
-        │     write_abort_flag(gate; type=transport on review-aborted)
-        │     park committed gate work (when gate_has_commits):
-        │       • park error    → RUN_STOP_REASON = propagation-error
-        │       • park ok / none → (no stop reason)
-        │     record gate-failed / review-aborted; ret 1
-        │
-        └─ clean / blocked ─► propagate_feature  (publish to parking ref;
-              │                                   best-effort host ff)
-           [error?]
-           ┌───┴────┐
-          yes       no
-           │         │
-           ▼         ▼
-   RUN_STOP_REASON   record (done if v_gate=clean, else blocked)
-   = propagation-    return 0
-     error
-   record gate-failed
-   ret 1
+   record left-for-human; ret 0   (no abort flag)
 ```
 
 ### Per-iteration verdict reference
 
 | Path                                                                          | Recorded outcome | `dispatch_one` rc | `RUN_STOP_REASON` set?   | Abort flag written? |
 | ----------------------------------------------------------------------------- | ---------------- | ----------------- | ------------------------ | ------------------- |
-| Snapshot fails mid-dispatch (`pre` / `post-implement` / `post-gate`); committed work, if any, parks ok | `FAIL` | 1 | `snapshot-failed-mid-dispatch:<stage>` | no |
-| Snapshot fails `post-implement`/`post-gate`, committed work, park error | `FAIL` | 1 | `propagation-error` | no |
+| Snapshot fails mid-dispatch (`pre` / `post-implement` / `post-step`); committed work, if any, parks ok | `FAIL` | 1 | `snapshot-failed-mid-dispatch:<stage>` | no |
+| Snapshot fails `post-implement`/`post-step`, committed work, park error | `FAIL` | 1 | `propagation-error` | no |
 | Implement classifier `failure`, no committed change | `FAIL` | 1 | no | yes (`implement`) |
 | Implement classifier `failure`, committed change, propagate ok, post eligible | `FAIL` | 1 | no | yes (`implement`) |
 | Implement classifier `failure`, committed change, propagate ok, post non-eligible | `FAIL` | 1 | no | no |
 | Implement classifier `dispatch-aborted`, post eligible | `dispatch-aborted` | 1 | no | yes (`implement`, `transport`) |
 | Implement classifier `dispatch-aborted`, post non-eligible | `dispatch-aborted` | 1 | no | no |
 | Implement, committed change, propagate error (any classifier verdict) | `FAIL` | 1 | `propagation-error` | no |
-| Gate classifier `gate-failed` (no gate commit, or parked ok) | `gate-failed` | 1 | no | yes (`gate`) |
-| Gate classifier `review-aborted` (no gate commit, or parked ok) | `review-aborted` | 1 | no | yes (`gate`, `transport`) |
-| Gate `gate-failed`/`review-aborted`, committed gate work, park error | `gate-failed`/`review-aborted` | 1 | `propagation-error` | yes (`gate`) |
-| Gate `clean`/`blocked`, propagate error | `gate-failed` | 1 | `propagation-error` | no |
-| Gate `clean`, propagate ok | `done` | 0 | no | no |
-| Gate `blocked`, propagate ok | `blocked` | 0 | no | no |
+| Step `fail` → `gate-failed` (no step commit, or parked ok) | `gate-failed` | 1 | no | yes (`<label>`) |
+| Step `fail` → `review-aborted` (transport crash; no step commit, or parked ok) | `review-aborted` | 1 | no | yes (`<label>`, `transport`) |
+| Step `fail`, committed step work, park error | `gate-failed`/`review-aborted` | 1 | `propagation-error` | yes (`<label>`) |
+| Step `stop-success`/`continue`, propagate error | `gate-failed` | 1 | `propagation-error` | no |
+| Step `stop-success`, propagate ok | `done` | 0 | no | no |
+| Walk exhausted (issue still `in-review`) | `left-for-human` | 0 | no | no |
+| Step `terminate-run` (issue back to `ready-for-agent`) | `halt → runaway` | 1 | `runaway-halt (<ref>)` | no |
 
 The two snapshot-failure rows bail before the classifier runs — an unreadable snapshot leaves the issue's state unknown — parking any committed work first so the next iteration's reset can't lose it. `snapshot-failed-mid-dispatch:<stage>` is transient: `run_single` overwrites it with `single-dispatch (…)`, and in loop / drain mode the next iteration re-snapshots and re-classifies, so it shows up in the per-iteration record but not in the terminal Stop reasons list below.
 
@@ -405,7 +406,7 @@ The "no committed change" row writes the implement abort flag unconditionally be
 
 The `dispatch-aborted` / `review-aborted` rows are the transport-crash variants — the container died for an infrastructure reason. Control flow matches the corresponding `failure` / `gate-failed` row, but the abort flag carries `type=transport` and the recorded label changes.
 
-The "propagate error" rows cover a parking-ref publish failure; `RUN_STOP_REASON="propagation-error"` causes `run_loop` to break immediately, preserving the un-published commits on the runner-checkout for operator recovery. No abort flag is written — except on the gate `gate-failed`/`review-aborted` row, which writes its flag *before* attempting the park, making it the one path where an abort flag and `propagation-error` coincide.
+The "propagate error" rows cover a parking-ref publish failure; `RUN_STOP_REASON="propagation-error"` causes `run_loop` to break immediately, preserving the un-published commits on the runner-checkout for operator recovery. No abort flag is written — except on the step `fail` row (`gate-failed`/`review-aborted`), which writes its flag *before* attempting the park, making it the one path where an abort flag and `propagation-error` coincide.
 
 ## Outputs
 
@@ -417,7 +418,7 @@ The "propagate error" rows cover a parking-ref publish failure; `RUN_STOP_REASON
 | `discovery.json`  | Always for runs that pass the `discovery` pre-flight invariant.            | Pretty-printed JSON array returned by `tracker-snapshot --list`. |
 | `<NN>.log` (narrowed) / `<feature>/<NN>.log` (drain) | Per implement dispatch. | Container stdout + stderr from `claude -p "/implement <ref>"`. Drain mode nests under a feature subdir so per-issue artifacts don't collide across features. |
 | `<NN>.exit` / `<feature>/<NN>.exit` | Per implement dispatch. | Container exit code (forensics only — classifier ignores it). |
-| `<NN>-review.log` / `<feature>/<NN>-review.log` | Per gate dispatch (iterations that reached the gate stage). | Container stdout + stderr from gate dispatch. |
+| `<NN>-<step>-<label>.log` / `<feature>/<NN>-<step>-<label>.log` | Per post-implement step dispatch (one per walk step that ran; e.g. `01-01-review.log`). | Container stdout + stderr from the step dispatch. |
 | `SUMMARY.md`      | Always (written by `finalize_run` from EXIT trap).                         | Narrowed modes: feature heading + flat per-issue table. Drain mode: per-feature sections (`## <feature> — drained` with nested table, or `## <feature> — skipped: <reason>` / `## <feature> — feature-snapshot-failed` one-liner). Pre-flight aborts replace the table with a single line naming the invariant. When any dispatch parked work to a parking ref, a `## Unpulled parked work` section (one `git pull runner <feature>` recipe per parked feature) follows the table; when `finalize_run` swept any stale parking ref, a `## Swept parking refs` section is appended after the body. |
 
 ### Files written under `.runner-state/aborted/<feature>/`
@@ -460,7 +461,7 @@ The "propagate error" rows cover a parking-ref publish failure; `RUN_STOP_REASON
 
 ### Side effects (success path only)
 
-- Host repo's target branch fast-forwarded with `/implement` and gate `tracker:` commits — observable via `git log` on the host.
+- Host repo's target branch fast-forwarded with `/implement` and post-implement step `tracker:` commits — observable via `git log` on the host.
 - Issue tracker state advanced in committed history (issue files updated; visible to the next `tracker-snapshot`).
 - Per-feature mvn cache populated/updated for the next run.
 - Pidfile `.runner-state/lock` released by `finalize_run`.

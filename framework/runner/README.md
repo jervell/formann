@@ -24,7 +24,7 @@ at `.runner-state/runs/<YYYYMMDD-HHMMSS>/` containing:
 | `discovery.json` | The JSON array returned by `tracker-snapshot --list`. Written immediately after the `discovery` pre-flight invariant passes; same lifecycle as `runner.log`. Forensics for "why didn't the runner consider feature X?". |
 | `<NN>.log` (narrowed) / `<feature>/<NN>.log` (drain) | Full per-issue implement-dispatch output (stdout + stderr from the container). Drain mode nests under a per-feature subdir so per-issue artifacts don't collide across features that share `<NN>`. |
 | `<NN>.exit` / `<feature>/<NN>.exit` | Per-issue implement-dispatch exit code. |
-| `<NN>-review.log` / `<feature>/<NN>-review.log` | Full per-issue review-and-gate dispatch output. Present for every iteration that reached the gate stage (clean, blocked, or gate-failed); absent for implement-stage failures. |
+| `<NN>-<step>-<label>.log` (narrowed) / `<feature>/<NN>-<step>-<label>.log` (drain) | Full per-step dispatch output for each post-implement walk step, e.g. `01-01-review.log` for the default single `review` step. One log per step that ran; absent when the implement stage failed and the walk never started. |
 | `SUMMARY.md` | Markdown end-of-run summary. Narrowed modes: feature heading + flat per-issue table. Drain mode: `# AFK runner — multi-feature drain` heading + per-feature sections (`## <feature> — drained` with nested per-issue table, or `## <feature> — skipped: <reason>` / `## <feature> — feature-snapshot-failed` one-liner). Pre-flight aborts replace the table with a single line naming the failing invariant. |
 
 Stdout while a run is in flight uses per-stage progress lines. A typical
@@ -53,12 +53,13 @@ combined-outcome column. The combined-outcome vocabulary is:
 | Outcome | Meaning |
 |---------|---------|
 | `done` | Gate found no Critical findings; status flipped to `done`. |
-| `blocked` | Gate found ≥1 🔴 Critical; status stayed at `in-review` with findings appended as a comment. |
+| `left-for-human` | Post-implement walk exhausted with the issue still at `in-review` (e.g. the review step found ≥1 🔴 Critical and appended findings as a comment). No abort flag; the maintainer picks it up. |
 | `gate-failed` | Gate dispatch errored or landed on an off-mission status. Runner writes a `type: technical` abort flag and continues. |
 | `review-aborted` | Gate subprocess transport-crashed (empty log, API 5xx/429, network error) and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
 | `dispatch-aborted` | Implement subprocess transport-crashed and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
-| `in-review` | AFK iteration interrupted between the implement and gate stages: implement landed `in-review`, the interrupt pre-empted the gate, and the iteration is recorded at its implement outcome. |
+| `in-review` | AFK iteration interrupted between implement-finish and the start of the post-implement walk: implement landed `in-review`, the interrupt pre-empted the first walk step, and the iteration is recorded at its implement outcome. |
 | `FAIL` | Implement-stage failure (classifier verdict, container error, or parking-ref publish failure). Any `tracker:` work the dispatch did commit (notably the comment `/implement` posts on a bail) is still propagated to the host so it shows up on your branch when you return. |
+| `halt → runaway` | A post-implement step drove the issue back to `ready-for-agent` (eligible) — a misconfigured manifest that would otherwise re-dispatch the same ref forever. The runner halts the entire run immediately. No abort flag (the issue is eligible, not stuck); the maintainer fixes the manifest. |
 
 The trailing `stop reason:` line varies by mode.
 
@@ -175,12 +176,12 @@ this README — instructs the dispatched claude session to:
 5. On a clean verdict only, set the state to `done`.
 6. Land a single `tracker:` commit and emit a `verdict:` line on stdout.
 
-The runner classifies the gate's outcome from the snapshot delta and
-the dispatch exit code (`classify_gate_outcome` in
-`run-the-queue.sh`) — it does not parse the verdict line. `clean` and
-`blocked` both return 0 from `dispatch_one` (operational health is
-fine; the verdict is independent); `gate-failed` returns 1 and writes
-an abort flag.
+The runner classifies the step's outcome from the snapshot delta and the
+dispatch exit code (`classify_item_action` in `run-the-queue.sh`, called
+per walk step by `walk_post_implement_steps`) — it does not parse the
+verdict line. A terminal status (`done`) and an issue left at `in-review`
+both return 0 from `dispatch_one` (operational health is fine; the
+verdict is independent); a failed step returns 1 and writes an abort flag.
 
 ## Sandbox primitives
 
@@ -196,7 +197,7 @@ an abort flag.
 | `demo-fixture/` | Tiny Maven project (single class + JUnit Jupiter test) used by `demo-dispatch.sh` to make first-vs-second timing meaningful. |
 | `lib.sh` | Shared constants (image, network, bridge, subnet, iptables chain, OAuth keychain coords, mvn-cache prefix, container `~/.m2` path). Source of truth for the names below. |
 | `NOTES.md` | Provenance of vendored files (currently `retrieve-secret.sh`). Re-vendor instructions live there. |
-| `tests/` | `bats` suite covering `tracker-snapshot` (including `--list`), the runner's pure-logic functions (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_gate_outcome`, `propagate_feature`, `format_multi_feature_summary_md`), the outer drain loop (`run_drain`, `drain_one_feature`), and `run_loop` mechanics (drain / interrupt / abort-flag skipping / feature-gate refusals) with mocked dispatch. Real-Docker exercising is the job of slice 08's smoke test. |
+| `tests/` | `bats` suite covering `tracker-snapshot` (including `--list`), the runner's pure-logic functions (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_item_action`, `walk_post_implement_steps`, `propagate_feature`, `format_multi_feature_summary_md`), the outer drain loop (`run_drain`, `drain_one_feature`), and `run_loop` mechanics (drain / interrupt / abort-flag skipping / feature-gate refusals) with mocked dispatch. Real-Docker exercising is the job of slice 08's smoke test. |
 | `tests/fixtures/synthetic-drain/` | Two-issue micro-feature template the maintainer installs into `.features/synthetic-drain/` for the loop's live demo. Reused by slice 08. See its README for the runbook. |
 
 ## Stable Docker asset names
