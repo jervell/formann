@@ -1349,7 +1349,7 @@ check_manifest() {
   local manifest_path="$HOST_REPO/$RUNNER_MANIFEST_FILE"
   if [ ! -f "$manifest_path" ]; then
     fail_invariant "manifest" \
-      "$manifest_path not found"
+      "$manifest_path not found — re-run the Formann installer (installer/install.sh) against this repo to seed the default manifest"
   fi
   local manifest_text
   manifest_text="$(cat "$manifest_path")"

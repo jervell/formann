@@ -507,6 +507,10 @@ _setup_retry_test() {
   [ "$status" -eq 2 ]
   [[ "$output" == *"runner: manifest:"* ]]
   [[ "$output" == *"$HOST_REPO/$RUNNER_MANIFEST_FILE not found"* ]]
+  # A consumer who upgraded by pulling the framework (symlinked) but never
+  # re-ran the installer has no seeded manifest; the message must point them
+  # at the fix rather than just naming the absent file.
+  [[ "$output" == *"installer/install.sh"* ]]
 }
 
 @test "check_manifest — valid manifest sets RESOLVED_MANIFEST" {

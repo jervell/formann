@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Installer runs each binding's optional install-time setup hook after binding selection. For the `github-issues` binding, the hook seeds the `formann:*` label namespace and prompts for the GH-token macOS Keychain entry when missing. Local-markdown ships no hook; that path is unchanged.
 - `build-image.sh --fresh` rebuilds the runner image with every bundled tool — including the Claude CLI — re-resolved to its current published version, instead of reusing the versions baked into the cached image.
 - `/improve-codebase-architecture` skill — finds deepening opportunities (shallow modules, leaky seams, hard-to-test interfaces) using the project's `GLOSSARY.md` and `docs/adr/`, then grills a chosen candidate toward a deeper, more testable module. Consumer-side engineering skill alongside `/grill-with-docs`.
+- Customizable post-implement phase — the AFK runner's behaviour after `/implement` is now a Consumer-owned ordered list of steps in `runner/manifest.md`, composed from framework-supplied building blocks and/or your own prompts. The installer seeds a default that reproduces the prior review-and-gate behaviour; **existing consumers must re-run `installer/install.sh` once after upgrading**, or the runner refuses to start.
 
 ### Changed
 - Installer prompts default to the consumer's current binding on re-install; press Enter to keep it.
