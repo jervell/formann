@@ -26,13 +26,15 @@ Report the resolved slug before proceeding.
 
 2. **Pull runner-side work.** If a `runner` remote exists: `git fetch runner`; fast-forward or merge `runner/<slug>` if it has commits the host branch doesn't. Stop on conflicts; don't auto-resolve. Skip silently if the remote or branch is absent.
 
-3. **Confirm the feature is archived.** Resolve the parent issue per the **Read the feature** verb in `docs/formann/issue-tracker/BINDING.md`. If it's closed and carries `formann:archived`, continue. Otherwise invoke `/triage` with "archive `<slug>`" — interactive `[human]`-row walks are expected, not a hang. Stop if `/triage` refuses.
+3. **Run the full test suite.** Run `bin/test.sh` — every tracked bats suite must pass (exit 0). A red suite blocks the merge: stop and report, don't proceed. `build-image.bats` needs a reachable Docker daemon and fails loudly without one — that's intentional, don't skip it.
 
-4. **Reconcile `CHANGELOG.md`.** Compare `[Unreleased]` against `git log --oneline main..HEAD`. Follow the rules at `~/.claude/skills/commit/CHANGELOG.rules.md`. Present proposed edits before writing.
+4. **Confirm the feature is archived.** Resolve the parent issue per the **Read the feature** verb in `docs/formann/issue-tracker/BINDING.md`. If it's closed and carries `formann:archived`, continue. Otherwise invoke `/triage` with "archive `<slug>`" — interactive `[human]`-row walks are expected, not a hang. Stop if `/triage` refuses.
 
-5. **Clear resolved inbox entries.** Read `.inbox.md` and any linked files under `.inbox/`. Delete any entry this feature resolved — both the bullet and the body file if it has one.
+5. **Reconcile `CHANGELOG.md`.** Compare `[Unreleased]` against `git log --oneline main..HEAD`. Follow the rules at `~/.claude/skills/commit/CHANGELOG.rules.md`. Present proposed edits before writing.
 
-6. **Confirm, commit, merge.**
+6. **Clear resolved inbox entries.** Read `.inbox.md` and any linked files under `.inbox/`. Delete any entry this feature resolved — both the bullet and the body file if it has one.
+
+7. **Confirm, commit, merge.**
    - Refuse if local `main` is behind `origin/main` — fetch and update first.
    - Summarise pending edits and the merge plan. Default: fast-forward if possible, else a merge commit. Maintainer may request rebase or squash instead.
    - On go-ahead: invoke `/commit` twice — once for CHANGELOG (`changelog: …`), once for inbox edits (`inbox: …`). Two commits preserve the `inbox:` subject-prefix filter.
