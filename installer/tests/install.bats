@@ -148,7 +148,7 @@ _run_installer() {
 @test "runner/Dockerfile contains runner-capable content" {
   run _run_installer
   assert_success
-  grep -q "temurin-21-jdk" "$CONSUMER/runner/Dockerfile"
+  grep -q "temurin-25-jdk" "$CONSUMER/runner/Dockerfile"
   grep -q "@anthropic-ai/claude-code" "$CONSUMER/runner/Dockerfile"
   grep -q "RUNNER_UID" "$CONSUMER/runner/Dockerfile"
   grep -q "ulimit -c 0" "$CONSUMER/runner/Dockerfile"

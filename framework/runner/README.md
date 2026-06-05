@@ -207,14 +207,12 @@ verdict is independent); a failed step returns 1 and writes an abort flag.
 
 | File | Role |
 |------|------|
-| `Dockerfile` | **Consumer-owned** (lives at `<consumer>/runner/Dockerfile`, not in the framework — see ADR-0002). The installer scaffolds an initial Debian-slim image with JDK 21, Maven, git, the `claude` CLI, a non-root user (UID/GID 1000), workdir `/repo`, and an inlined entrypoint that suppresses kernel core dumps (`ulimit -c 0`). The consumer edits it for their project. |
+| `Dockerfile` | **Consumer-owned** (lives at `<consumer>/runner/Dockerfile`, not in the framework — see ADR-0002). The installer scaffolds an initial Debian-slim image with JDK 25, Maven, git, the `claude` CLI, a non-root user (UID/GID 1000), workdir `/repo`, and an inlined entrypoint that suppresses kernel core dumps (`ulimit -c 0`). The consumer edits it for their project. |
 | `build-image.sh` | Builds the consumer's image idempotently from `<consumer>/runner/Dockerfile`. Walks `$PWD` upward to find the consumer root (`.formann` ancestor), so it works from anywhere inside the consumer repo. Reuses the cached image. `--rebuild` forces a build that still reuses the layer cache (cheap; picks up Dockerfile edits but keeps installed tools at their cached versions). `--fresh` forces a build with no layer cache and a base-image re-pull, so every tool — apt packages, the JDK, Node, and the Claude CLI — re-resolves to its current published version. Prints the image name on stdout. |
 | `setup-network.sh` | Creates the sandbox bridge network and applies the RFC1918-deny outbound policy. Idempotent. Prints the network name on stdout. |
 | `retrieve-secret.sh` | Verbatim vendor of `arne/claude-code-api-key-setup`'s generic Keychain/libsecret/keyctl reader. Provenance in `NOTES.md`. |
 | `retrieve-token.sh` | Wraps `retrieve-secret.sh` with the OAuth-token service/account constants from `lib.sh`. Prints the token on stdout, fails fast with a populate-the-Keychain hint on stderr. Token never echoed beyond stdout. |
 | `ensure-mvn-cache.sh` | Per-feature mvn cache helper. Creates `runner-mvn-cache-<slug>` on first use (and chowns it to uid 1000 so the non-root container can write); idempotent on re-invocation. Prints the volume name on stdout. |
-| `demo-dispatch.sh` | End-to-end demonstration of the slice-03 surface: retrieve token, ensure cache, `docker run` with `claude -p "echo hi"`, then two `mvn install` runs against `demo-fixture/` to demonstrate cache reuse. Per-run logs at `/tmp/afk-runner-demo-<ts>/`. |
-| `demo-fixture/` | Tiny Maven project (single class + JUnit Jupiter test) used by `demo-dispatch.sh` to make first-vs-second timing meaningful. |
 | `lib.sh` | Shared constants (image, network, bridge, subnet, iptables chain, OAuth keychain coords, mvn-cache prefix, container `~/.m2` path). Source of truth for the names below. |
 | `NOTES.md` | Provenance of vendored files (currently `retrieve-secret.sh`). Re-vendor instructions live there. |
 | `tests/` | `bats` suite covering `tracker-snapshot` (including `--list`), the runner's pure-logic functions (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_item_action`, `walk_post_implement_steps`, `propagate_feature`, `format_multi_feature_summary_md`), the outer drain loop (`run_drain`, `drain_one_feature`), and `run_loop` mechanics (drain / interrupt / abort-flag skipping / feature-gate refusals) with mocked dispatch. Real-Docker exercising is the job of slice 08's smoke test. |
@@ -331,9 +329,6 @@ docker run --rm --network afk-runner-sandbox afk-runner-sandbox \
   curl -sSf -m 10 -o /dev/null https://repo.maven.apache.org && echo PUBLIC_OK
 docker run --rm --network afk-runner-sandbox afk-runner-sandbox \
   curl -sS -m 5 -o /dev/null http://10.0.0.1 && echo LEAK || echo BLOCKED
-
-# End-to-end shake-out (token + cache + claude + mvn timings + leakage scan):
-framework/runner/demo-dispatch.sh --clean
 ```
 
 ## Token argv leakage probe

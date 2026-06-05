@@ -80,7 +80,7 @@ Pure logic (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `c
 
 Each dispatch runs in a fresh container built from `$HOST_REPO/runner/Dockerfile` (consumer-owned):
 
-- Debian-slim base, JDK 21 (matching the project's pom), Maven, git, and the `claude` CLI installed via npm.
+- Debian-slim base, JDK 25, Maven, git, and the `claude` CLI installed via npm.
 - Non-root user (UID/GID 1000), workdir `/repo`.
 - Pass-through entrypoint that suppresses kernel core dumps (`ulimit -c 0`) so an in-container crash can't drop a `core` file into the bind-mounted runner-checkout.
 - Permissions: `claude --dangerously-skip-permissions`. The blast radius is bounded by the container, not by per-tool allowlists.
@@ -483,7 +483,6 @@ framework/
     ├── retrieve-token.sh                     ← OAuth token wrapper
     ├── review-and-gate.md                    ← default post-implement step prompt
     ├── review.md / gate.md / fix.md          ← building-block step prompts (custom manifests)
-    ├── demo-dispatch.sh + demo-fixture/      ← end-to-end shake-out
     └── tests/                                ← bats suite (pure logic) + smoke fixture
 
 .runner-state/                                ← per-project, gitignored

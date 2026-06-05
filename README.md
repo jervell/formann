@@ -42,7 +42,7 @@ Consumer:
 
 Contributor: everything above plus [`bats`](https://bats-core.readthedocs.io/) 1.x (tested with 1.13) for the installer test suite at `installer/tests/install.bats`.
 
-The runner Dockerfile template (`installer/templates/Dockerfile`) bakes in JDK 21, Maven, Node 20, and the Claude CLI. A consumer edits `runner/Dockerfile` to swap toolchains; your project's own build toolchain is your concern, not Formann's.
+The runner Dockerfile template (`installer/templates/Dockerfile`) bakes in JDK 25, Maven, Node 20, and the Claude CLI. A consumer edits `runner/Dockerfile` to swap toolchains; your project's own build toolchain is your concern, not Formann's.
 
 ## Docs
 

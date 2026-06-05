@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Runner Dockerfile template scaffolds Eclipse Temurin JDK 25 instead of 21. Existing consumers are unaffected — the installer never overwrites an existing `runner/Dockerfile`.
+
 ## [0.3.0] - 2026-06-04
 
 ### Added

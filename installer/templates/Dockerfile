@@ -18,13 +18,13 @@ RUN apt-get update \
       wget \
  && rm -rf /var/lib/apt/lists/*
 
-# Eclipse Temurin JDK 21 from the Adoptium apt repo.
+# Eclipse Temurin JDK 25 from the Adoptium apt repo.
 RUN wget -qO- https://packages.adoptium.net/artifactory/api/gpg/key/public \
       | gpg --dearmor -o /usr/share/keyrings/adoptium.gpg \
  && echo "deb [signed-by=/usr/share/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb bookworm main" \
       > /etc/apt/sources.list.d/adoptium.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends temurin-21-jdk \
+ && apt-get install -y --no-install-recommends temurin-25-jdk \
  && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI (github-issues binding) and bats (framework test suite).
