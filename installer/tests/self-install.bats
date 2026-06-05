@@ -47,6 +47,7 @@ _setup_self_install_fixture() {
 
   mkdir -p "$FORMANN_FIXTURE/installer/templates"
   cp "$INSTALLER_DIR/templates/Dockerfile" "$FORMANN_FIXTURE/installer/templates/Dockerfile"
+  cp "$INSTALLER_DIR/templates/manifest.md" "$FORMANN_FIXTURE/installer/templates/manifest.md"
   cp "$INSTALLER_DIR/templates/claude-md-snippet.md" "$FORMANN_FIXTURE/installer/templates/claude-md-snippet.md"
 }
 
