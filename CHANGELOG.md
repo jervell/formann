@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- AFK runner paints a live **liveness line** on the operator's terminal while a dispatch is in flight — feature/issue, stage, elapsed, the current phase (running tool, thinking, or the CLI's internal retry/backoff) and time-in-phase — so a glance distinguishes a slow dispatch from a stuck one. Painted only to the controlling terminal: it never lands in `runner.log` or any saved artifact, a redirected stdout stays clean, and detached runs are unaffected. `RUNNER_DISABLE_LIVENESS=1` turns it off.
+
 ### Changed
 - AFK runner saves each dispatch as a clean structured-event log (`<NN>.stdout.jsonl`), with diagnostics split into `<NN>.stderr.log` and the agent's closing message in `<NN>.summary.md`; saved logs no longer carry terminal escape-sequence noise, and the runner retries transport faults while letting genuine request errors fail fast.
 - Runner Dockerfile template scaffolds Eclipse Temurin JDK 25 instead of 21. Existing consumers are unaffected — the installer never overwrites an existing `runner/Dockerfile`.

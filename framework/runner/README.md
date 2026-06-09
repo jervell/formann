@@ -49,6 +49,39 @@ so the visible record matches the SUMMARY.md row:
 [09:13:28] afk-runner/06 implement → halt → FAIL (43s)
 ```
 
+## Liveness line
+
+Between a stage's two progress lines, the runner paints a single
+transient **liveness line** in place on the controlling terminal,
+showing what the in-flight dispatch is doing right now and for how
+long:
+
+```
+afk-runner/06 implement 12m 34s | Bash: bats -p framework/runner/tests (1m 2s)
+```
+
+The phase is derived from the latest relevant streamed event (see
+GLOSSARY.md, *Dispatch phase*): an assistant tool-use event names the
+running tool, a tool-result event reads `thinking`, and a
+`system`/`api_retry` event reads `retry <attempt>/<max> (<reason>)` —
+the CLI retrying a transport fault internally, where an advancing
+attempt counter is liveness and a frozen one with a climbing timer is a
+genuinely wedged retry loop. The line repaints every second, so the
+time-in-phase climbs even when no event arrives: a changing phase with
+a resetting timer means progress; a frozen phase with a climbing timer
+means stuck. The label truncates to the terminal width, and the line is
+cleared when the dispatch ends (including on Ctrl-C).
+
+The line is painted directly to `/dev/tty`, bypassing the `runner.log`
+capture: it never appears in `runner.log` or any saved artifact, a
+redirected stdout stays clean while the terminal still shows the line,
+and on a fully-detached run (no controlling terminal) the machinery
+silently does nothing. The renderer is a read-only observer of the
+dispatch's event-stream artifact — every failure mode degrades to a
+missing or partial line and can never terminate, delay, or alter a
+dispatch or its classified outcome. Set `RUNNER_DISABLE_LIVENESS=1` to
+turn the line off entirely.
+
 The end-of-run table prints one row per iteration, with a single
 combined-outcome column. The combined-outcome vocabulary is:
 

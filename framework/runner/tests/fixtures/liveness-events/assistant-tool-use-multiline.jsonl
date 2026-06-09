@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"id":"msg_05","type":"message","role":"assistant","model":"claude-opus-4-8","content":[{"type":"tool_use","id":"toolu_05","name":"Bash","input":{"command":"cd /repo &&\n  mvn -q verify\t2>&1","description":"Build"}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":20}},"parent_tool_use_id":null,"session_id":"s","uuid":"u5"}

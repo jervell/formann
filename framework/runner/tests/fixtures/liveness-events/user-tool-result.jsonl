@@ -1,0 +1,1 @@
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"137 tests, 0 failures"}]}]},"parent_tool_use_id":null,"session_id":"s","uuid":"u8"}

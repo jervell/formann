@@ -225,6 +225,10 @@ Abort flags persist across runs (files on disk). The eligibility skip log line i
         │
         ▼
    run_dispatch_container("/implement <ref>")  ─► writes <NN>.{stdout.jsonl,stderr.log,exit}
+        │  (per attempt, run_sandbox_container spawns the liveness renderer —
+        │   a read-only observer tailing <NN>.stdout.jsonl and painting the
+        │   liveness line on /dev/tty — and reaps it when the container ends;
+        │   no-op when detached or RUNNER_DISABLE_LIVENESS=1)
    extract_result_summary(<NN>.stdout.jsonl)   ─► writes <NN>.summary.md
    impl_transport_crash = is_transport_crash(<NN>.stdout.jsonl, impl_rc)
         │

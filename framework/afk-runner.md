@@ -371,9 +371,9 @@ Every invocation that parses cleanly — including pre-flight aborts — creates
 | ----------------- | ------------------------------------------------------------------------------------------------- |
 | `runner.log`      | Everything the runner emits to stdout/stderr (tee'd, terminal still gets the live stream).        |
 | `discovery.json`  | The JSON array returned by `tracker-snapshot --list`. Written immediately after the `discovery` invariant passes; same lifecycle as `runner.log`. |
-| `<NN>.log` (narrowed) / `<feature>/<NN>.log` (drain) | Full per-issue implement-dispatch output (stdout + stderr from the container). Drain mode uses a per-feature subdir so per-issue artifacts don't collide across features that share `<NN>`. |
-| `<NN>.exit` / `<feature>/<NN>.exit` | Per-issue implement-dispatch exit code. Same flat / nested layout as the log file. |
-| `<NN>-<step>-<label>.log` / `<feature>/<NN>-<step>-<label>.log` | Full per-step output for each post-implement walk step (e.g. `01-01-review.log`). One per step that ran; absent for implement-stage failures (the walk never started). |
+| `<NN>.{stdout.jsonl,stderr.log,summary.md}` (narrowed) / `<feature>/<NN>.…` (drain) | Per-issue implement-dispatch artifacts: the streamed structured-event trace, the diagnostics-only stderr, and the readable closing message extracted from the terminal `result` event. Drain mode uses a per-feature subdir so per-issue artifacts don't collide across features that share `<NN>`. |
+| `<NN>.exit` / `<feature>/<NN>.exit` | Per-issue implement-dispatch exit code. Same flat / nested layout as the other per-issue artifacts. |
+| `<NN>-<step>-<label>.{stdout.jsonl,stderr.log,summary.md}` / `<feature>/<NN>-<step>-<label>.…` | The same per-dispatch artifact set for each post-implement walk step (e.g. `01-01-review.stdout.jsonl`). One set per step that ran; absent for implement-stage failures (the walk never started). |
 | `SUMMARY.md`      | End-of-run Markdown summary. Narrowed modes: feature heading + flat per-issue table. Drain mode: `# AFK runner — multi-feature drain` heading + per-feature sections (`## <feature> — drained` with the same nested per-issue table, or `## <feature> — skipped: <reason>` / `## <feature> — feature-snapshot-failed` one-liner). |
 
 Live stdout uses per-stage progress lines. A typical iteration produces four — implement starting/outcome and review starting/outcome:
@@ -384,6 +384,8 @@ Live stdout uses per-stage progress lines. A typical iteration produces four —
 [09:13:27] afk-runner/06 review → starting
 [09:13:31] afk-runner/06 review → clean → done (4s)
 ```
+
+Between a stage's two progress lines, a single transient **liveness line** is painted in place on the controlling terminal (directly to `/dev/tty`, so it bypasses the `runner.log` capture and never reaches any saved artifact): `<feature>/<NN> <stage> <elapsed> | <phase> (<time-in-phase>)`. The phase derives from the latest streamed event — the running tool, `thinking`, or `retry <attempt>/<max> (<reason>)` during the CLI's internal transport retries — and repaints every second, so a changing phase with a resetting timer reads as healthy and a frozen phase with a climbing timer reads as stuck. Silently absent on a detached run; cleared (and the renderer reaped, including on Ctrl-C via the interrupt trap) when the dispatch ends. The renderer is a read-only observer of the dispatch's event-stream artifact and can never terminate, delay, or alter a dispatch or its classified outcome. See GLOSSARY.md (*Progress line*, *Liveness line*, *Dispatch phase*) and `runner/README.md`.
 
 When a parking-ref publish fails after a stage, the original outcome line is preserved (so `runner.log` retains the forensic story — the dispatch step itself succeeded; the failure was downstream) and a follow-up `halt → <recorded outcome>` line is emitted so the visible terminal record matches the SUMMARY.md row:
 

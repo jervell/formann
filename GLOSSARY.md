@@ -97,6 +97,18 @@ _Avoid_: "step", "prompt" (ambiguous — these are specifically the decomposed s
 The handoff convention between a review step and a gate step: the review posts a comment containing severity markers (`🔴 Critical` / `🟡 Important` / `🟢 Minor`), and the gate reads the **latest** such comment and thresholds on `🔴 Critical`. Because the steps are separate **Dispatch**es with no shared stdout or filesystem, the tracker comment is the sole channel. Any review that emits the convention interoperates with the framework `gate` prompt; a custom review that cannot emit it ships its own gate.
 _Avoid_: "review contract", "findings format" (the contract is specifically the severity-marker convention in the posted comment)
 
+**Progress line**:
+A per-stage line on the **Runner**'s stdout — `[HH:MM:SS] <ref> <stage> → starting`, then `→ <outcome> (<duration>)` — captured into `runner.log` by the tee capture. The durable per-stage record of a run; between a stage's two progress lines this channel is silent for the whole **Dispatch**.
+_Avoid_: conflating with the **Liveness line** (that one never reaches any saved log)
+
+**Liveness line**:
+The single transient line the **Runner** paints in place on the controlling terminal while a **Dispatch** is in flight: `<feature>/<NN> <stage> <elapsed> | <phase> (<time-in-phase>)`. Derived by tailing the dispatch's event-stream artifact and repainted every second, so time-in-phase climbs even when no event arrives. A changing **Dispatch phase** with a resetting timer reads as healthy; a frozen phase with a climbing timer reads as stuck. Painted directly to `/dev/tty`, bypassing the `runner.log` capture — it never lands in any saved artifact, stays off a redirected stdout, and is silently absent when there is no controlling terminal (detached run). Cleared when the dispatch ends. Informs only; never acts.
+_Avoid_: "status line"; "spinner" (there is no spinner — the event cadence is bursty, so time-in-phase is the liveness truth)
+
+**Dispatch phase**:
+What an in-flight **Dispatch** is doing right now, derived from the latest relevant streamed event. Exactly three: **running-tool** (an assistant event carrying a tool-use block; labeled with the tool name and its target), **thinking** (a tool-result event; the model is working out its next turn), and **retry/backoff** (a `system`/`api_retry` event; the CLI is retrying a transport fault internally, the label carries attempt/max and a reason, and each new attempt is a phase change so the time-in-phase resets).
+_Avoid_: "state", "activity" (the **Liveness line** renders a phase)
+
 ### Installer
 
 **Installer**:
@@ -122,3 +134,4 @@ _Avoid_: "setup script" (the prompt may delegate to scripts, but the installer i
 - "agent" — overloaded between (a) a Claude Code subagent (e.g., `review-feature`) and (b) "the autonomous thing running in the sandbox." Resolved: (a) is **Agent**; (b) is **Dispatch**.
 - "target repo" — used in conversation for what is now **Consumer**. Resolved: prefer **Consumer**.
 - "docs/agents/" — the pre-Formann name of the **Role surface**. Resolved: renamed to `docs/formann/`.
+- "observer" — overloaded between (a) the operator glancing at the live terminal (the **Liveness line**'s audience) and (b) the renderer process, a read-only observer of the artifacts a **Dispatch** writes. Resolved: unqualified "observer" means (a), the operator; (b) is always named "the renderer".

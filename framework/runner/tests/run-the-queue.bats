@@ -10,6 +10,10 @@ setup() {
   # source-guard inside the script prevents `main` from running.
   # shellcheck source=../run-the-queue.sh
   source "$RUNNER_SCRIPT"
+
+  # Tests that drive the real run_sandbox_container must not paint the
+  # developer's terminal; the renderer has its own pinned tests below.
+  RUNNER_DISABLE_LIVENESS=1
 }
 
 # A minimal tracker-snapshot envelope with one issue at the given status.
@@ -424,6 +428,49 @@ DOCKEREOF
   local base="$BATS_TEST_TMPDIR/dispatch"
   run_sandbox_container "$base" claude -p "/implement #1"
   ! grep -qx -- '-t' "$DOCKER_ARGV_FILE"
+}
+
+# === Liveness renderer — spawn gate and reap (issue #72) =====================
+#
+# The renderer's terminal painting needs a real controlling terminal and is
+# covered by the operator-attended smoke walk; these tests pin the spawn gate
+# and the reap mechanics, which are terminal-independent.
+
+@test "start_liveness_renderer — RUNNER_DISABLE_LIVENESS=1 spawns nothing" {
+  RUNNER_DISABLE_LIVENESS=1
+  LIVENESS_PID="stale"
+  start_liveness_renderer "$BATS_TEST_TMPDIR/stream.jsonl"
+  [ -z "$LIVENESS_PID" ]
+}
+
+@test "stop_liveness_renderer — reaps the renderer process and clears LIVENESS_PID" {
+  sleep 60 &
+  LIVENESS_PID=$!
+  stop_liveness_renderer
+  ! kill -0 "$!" 2>/dev/null
+  [ -z "$LIVENESS_PID" ]
+}
+
+@test "stop_liveness_renderer — no-op when no renderer is in flight" {
+  LIVENESS_PID=""
+  stop_liveness_renderer
+  [ -z "$LIVENESS_PID" ]
+}
+
+@test "handle_signal — signals the in-flight liveness renderer (Ctrl-C reap)" {
+  sleep 60 &
+  local renderer_pid=$!
+  LIVENESS_PID=$renderer_pid
+  IN_FLIGHT_CID_FILE=""
+  RUNNER_INTERRUPTED=0
+  handle_signal
+  # The trap only sends the signal; give the process a moment to die.
+  local i=0
+  while [ "$i" -lt 20 ] && kill -0 "$renderer_pid" 2>/dev/null; do
+    sleep 0.1
+    i=$(( i + 1 ))
+  done
+  ! kill -0 "$renderer_pid" 2>/dev/null
 }
 
 # === run_dispatch_container / run_item_container — streamed-event flags ======

@@ -59,6 +59,11 @@ source "$HERE/lib.sh"
 source "$HERE/validate-binding-env.sh"
 # shellcheck source=resolve-manifest.sh
 source "$HERE/resolve-manifest.sh"
+# liveness.sh provides the liveness-line module (derive_phase,
+# format_liveness_line, liveness_render_loop) and humanize_duration,
+# which the progress-line formatters below also use.
+# shellcheck source=liveness.sh
+source "$HERE/liveness.sh"
 
 # === Configuration =========================================================
 
@@ -79,6 +84,11 @@ RUNNER_TRANSPORT_RETRY_BACKOFFS="30 90 240"
 # is_transport_crash's verdict — useful for testing and declared-outage
 # situations where the operator wants to fail fast.
 : "${RUNNER_DISABLE_TRANSPORT_RETRY:=0}"
+
+# When set to 1, no liveness renderer is spawned — the dispatch runs exactly
+# as on a detached terminal. Useful for testing and for operators who don't
+# want the live line.
+: "${RUNNER_DISABLE_LIVENESS:=0}"
 
 # === Pure logic ============================================================
 #
@@ -425,19 +435,6 @@ now_clock() { date +"%H:%M:%S"; }
 #   in-review        — interrupt between implement and walk start (walk not run)
 #   FAIL             — implement-stage failure (classifier, propagation, container)
 #   halt → runaway   — AFK + post-implement step pushed issue back to ready-for-agent (run halted)
-
-# Convert integer seconds to a human-friendly string.
-# Rules: <60 → Xs; 60..3599 → Xm Ys; ≥3600 → Xh Ym (seconds dropped).
-humanize_duration() {
-  local s="$1"
-  if [ "$s" -lt 60 ]; then
-    printf '%ss\n' "$s"
-  elif [ "$s" -lt 3600 ]; then
-    printf '%sm %ss\n' "$((s / 60))" "$((s % 60))"
-  else
-    printf '%sh %sm\n' "$((s / 3600))" "$(( (s % 3600) / 60 ))"
-  fi
-}
 
 # Progress-line "starting" form: emitted at the start of a stage.
 format_progress_start() {
@@ -922,6 +919,11 @@ finalize_run() {
   local rc=$?
   set +e
   trap - EXIT
+
+  # Defensive reap: on any exit path that bypassed run_sandbox_container's
+  # own reap, make sure no renderer outlives the run and no painted line
+  # survives. No-op in the normal flow.
+  stop_liveness_renderer
 
   if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then
     local end_clock
@@ -1572,6 +1574,11 @@ IN_FLIGHT_CID_FILE=""
 
 handle_signal() {
   RUNNER_INTERRUPTED=1
+  # Reap the liveness renderer first — its TERM trap clears the painted
+  # line, so the interrupt leaves no half-painted text behind.
+  if [ -n "${LIVENESS_PID:-}" ]; then
+    kill -TERM "$LIVENESS_PID" 2>/dev/null || true
+  fi
   if [ -n "$IN_FLIGHT_CID_FILE" ] && [ -s "$IN_FLIGHT_CID_FILE" ]; then
     local cid
     cid="$(cat "$IN_FLIGHT_CID_FILE" 2>/dev/null || true)"
@@ -1579,6 +1586,56 @@ handle_signal() {
       docker kill --signal=SIGTERM "$cid" >/dev/null 2>&1 || true
     fi
   fi
+}
+
+# === Liveness renderer spawn/reap ==========================================
+#
+# The renderer (liveness_render_loop in liveness.sh) is a read-only observer
+# of the dispatch's event-stream artifact, painting the liveness line on the
+# controlling terminal for the duration of one dispatch attempt. It is
+# spawned right after the container and reaped right after it ends — its
+# exit status is never consulted (reaped, not waited-on-for-success), and a
+# spawn that is skipped (no terminal, disabled) changes nothing downstream.
+
+# Dispatch context the renderer displays. Set by dispatch_one (implement
+# stage) and walk_post_implement_steps (each item) before their container
+# wrappers run; read by start_liveness_renderer.
+LIVENESS_PID=""
+RUNNER_LIVENESS_FEATURE=""
+RUNNER_LIVENESS_ISSUE=""
+RUNNER_LIVENESS_STAGE=""
+RUNNER_LIVENESS_STARTED_AT=""
+
+# Spawn the renderer for one dispatch attempt. Silently a no-op when the
+# liveness line is disabled or there is no writable controlling terminal
+# (fully-detached run) — a missing terminal is never an error. The renderer's
+# stdout/stderr are discarded so nothing it emits can reach the runner.log
+# capture; it paints /dev/tty directly, which the capture never sees.
+#
+# Args: $1 = event-stream artifact path ($log_base.stdout.jsonl)
+start_liveness_renderer() {
+  local stream_file="$1"
+  LIVENESS_PID=""
+  if [ "${RUNNER_DISABLE_LIVENESS:-0}" = "1" ]; then
+    return 0
+  fi
+  if ! { : >/dev/tty; } 2>/dev/null; then
+    return 0
+  fi
+  liveness_render_loop "$stream_file" \
+    "$RUNNER_LIVENESS_FEATURE" "$RUNNER_LIVENESS_ISSUE" \
+    "$RUNNER_LIVENESS_STAGE" "$RUNNER_LIVENESS_STARTED_AT" \
+    >/dev/null 2>&1 &
+  LIVENESS_PID=$!
+}
+
+# Reap the in-flight renderer, if any. TERM triggers its clear-the-line
+# trap; the wait only collects the dead child (never gates on its status).
+stop_liveness_renderer() {
+  if [ -z "${LIVENESS_PID:-}" ]; then return 0; fi
+  kill -TERM "$LIVENESS_PID" 2>/dev/null || true
+  wait "$LIVENESS_PID" 2>/dev/null || true
+  LIVENESS_PID=""
 }
 
 # Pre-flight-aware INT/TERM handler. Installed before `preflight` so a
@@ -1740,6 +1797,12 @@ run_sandbox_container() {
     >"$log_base.stdout.jsonl" 2>"$log_base.stderr.log" &
   local docker_pid=$!
 
+  # Paint the liveness line on the controlling terminal while the container
+  # runs. Per attempt on purpose: each retry attempt's redirect above
+  # truncates the event stream, so the renderer's lifetime matches the
+  # artifact it tails. No-op when disabled or detached.
+  start_liveness_renderer "$log_base.stdout.jsonl"
+
   # `wait` is interruptible by traps. main() runs with `set -e`, but a
   # signal-interrupted wait exits non-zero; capture rc explicitly.
   local rc=0
@@ -1773,6 +1836,10 @@ run_sandbox_container() {
     rc=$?
     set -e
   fi
+
+  # The dispatch is over — reap the renderer (clears its line) before the
+  # caller prints anything, so no stale text lingers between dispatches.
+  stop_liveness_renderer
 
   IN_FLIGHT_CID_FILE=""
   rm -f "$cid_file"
@@ -2323,6 +2390,12 @@ walk_post_implement_steps() {
     local item_started_at
     item_started_at=$(date +%s)
 
+    # Liveness-line context for this walk item (read by start_liveness_renderer).
+    RUNNER_LIVENESS_FEATURE="$feature"
+    RUNNER_LIVENESS_ISSUE="$nn"
+    RUNNER_LIVENESS_STAGE="$item_label"
+    RUNNER_LIVENESS_STARTED_AT="$item_started_at"
+
     local item_rc=0
     run_item_container "$ref" "$item_log_base" "$item_path" || item_rc=$?
     local item_attempts="${TRANSPORT_RETRY_ATTEMPTS:-1}"
@@ -2536,6 +2609,12 @@ dispatch_one() {
   started_at=$(date +%s)
   start_clock="$(now_clock)"
   format_progress_start "$start_clock" "$ref" "implement"
+
+  # Liveness-line context for this stage (read by start_liveness_renderer).
+  RUNNER_LIVENESS_FEATURE="$feature"
+  RUNNER_LIVENESS_ISSUE="$nn"
+  RUNNER_LIVENESS_STAGE="implement"
+  RUNNER_LIVENESS_STARTED_AT="$started_at"
 
   # Capture the runner-checkout's HEAD before and after the dispatch.
   # The pre-iteration `ensure_runner_checkout` syncs HEAD to host's
