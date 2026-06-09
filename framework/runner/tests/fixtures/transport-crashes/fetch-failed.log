@@ -1,4 +1,0 @@
-FetchError: fetch failed
-    at node:internal/process/promises:289:7
-    at process.processTicksAndRejections (node:internal/process/promises:289:7)
-exit status 1

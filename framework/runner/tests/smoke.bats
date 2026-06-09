@@ -61,6 +61,12 @@ setup() {
   #   - `.claude/` is a full copy of host's. Its `skills/*` and
   #     `agents/*` symlinks are relative (`../../.formann/...`), so they
   #     resolve through the workspace's own `.formann`.
+  #   - `CLAUDE.md` is the installer's Formann snippet — the project
+  #     memory a real consumer carries after install. The dispatch
+  #     container runs claude with cwd `/repo` (the runner-checkout
+  #     clone), so `/repo/CLAUDE.md` is auto-loaded as project memory and
+  #     points the agent at the binding doc. A workspace without it
+  #     diverges from real consumers, so it is committed (not gitignored).
   #   - `.gitignore` covers the installer-managed indirection paths and
   #     the runner's per-run state dir so pre-flight's "host clean"
   #     check passes after the runner creates `.runner-state/runs/`.
@@ -71,6 +77,7 @@ setup() {
   cp -RP "$HOST_REPO/.claude" "$WORKSPACE/.claude"
   mkdir -p "$WORKSPACE/runner"
   cp "$HOST_REPO/installer/templates/manifest.md" "$WORKSPACE/runner/manifest.md"
+  cp "$HOST_REPO/installer/templates/claude-md-snippet.md" "$WORKSPACE/CLAUDE.md"
   cat >"$WORKSPACE/.gitignore" <<'EOF'
 /.formann
 /docs/formann/issue-tracker
@@ -105,16 +112,17 @@ EOF
 }
 
 teardown() {
-  # On failure, surface runner.log and per-issue logs from the
-  # throwaway workspace before the cleanup `rm -rf` removes them. They
-  # carry the diagnostic the operator needs to see why the dispatch
-  # didn't advance.
+  # On failure, surface runner.log and the per-dispatch artifacts (event
+  # streams, stderr, readable summaries) from the throwaway workspace before
+  # the cleanup `rm -rf` removes them. They carry the diagnostic the operator
+  # needs to see why the dispatch didn't advance.
   if [ -z "${BATS_TEST_COMPLETED:-}" ] \
      && [ -n "${WORKSPACE:-}" ] \
      && [ -d "$WORKSPACE/.runner-state/runs" ]; then
-    echo "=== smoke teardown: runner.log + per-issue logs ===" >&2
+    echo "=== smoke teardown: runner.log + per-dispatch artifacts ===" >&2
     find "$WORKSPACE/.runner-state/runs" -type f \
-      \( -name "runner.log" -o -name "*.log" -o -name "SUMMARY.md" \) \
+      \( -name "runner.log" -o -name "*.log" -o -name "*.jsonl" \
+         -o -name "*.summary.md" -o -name "SUMMARY.md" \) \
       -print -exec sh -c 'echo "--- $1 ---"; cat "$1"' _ {} \; >&2 2>/dev/null || true
   fi
   if [ -n "${WORKSPACE:-}" ] && [ -d "$WORKSPACE" ]; then
@@ -124,9 +132,11 @@ teardown() {
 
 # Common assertions on the per-run dir. Both scenarios produce the same
 # runner-output surface; only the propagation column / branch tips
-# differ. Per-issue logs sit under `<run_dir>/<feature>/` — the runner
+# differ. Per-dispatch artifacts sit under `<run_dir>/<feature>/` — the runner
 # groups them per-feature so drain-all runs over multiple features stay
-# legible.
+# legible. Each dispatch (implement and each walk step) splits into a
+# `.stdout.jsonl` event stream and a `.stderr.log`, plus an extracted
+# `.summary.md` readable closing message (issue #71).
 assert_run_artifacts() {
   shopt -s nullglob
   local runs_dir="$WORKSPACE/.runner-state/runs"
@@ -137,8 +147,13 @@ assert_run_artifacts() {
   RUN_DIR="${per_run[0]}"
   [ -f "${RUN_DIR}runner.log" ]
   [ -f "${RUN_DIR}SUMMARY.md" ]
-  [ -f "${RUN_DIR}smoke/01.log" ]
-  [ -f "${RUN_DIR}smoke/01-01-review.log" ]
+  # Implement dispatch: event stream + readable summary.
+  [ -f "${RUN_DIR}smoke/01.stdout.jsonl" ]
+  [ -f "${RUN_DIR}smoke/01.summary.md" ]
+  # Review-and-gate walk step (the default manifest's fused step): event
+  # stream + readable summary.
+  [ -f "${RUN_DIR}smoke/01-01-review-and-gate.stdout.jsonl" ]
+  [ -f "${RUN_DIR}smoke/01-01-review-and-gate.summary.md" ]
 }
 
 @test "smoke — propagated → host (park=main)" {

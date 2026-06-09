@@ -7,7 +7,7 @@ behavior: the runner stops at the first manifest entry that reaches
 
 Note: this manifest has repeated labels (`review-and-gate` appears at
 steps 1 and 3). The runner disambiguates log files by walk position:
-`01-01-review-and-gate.log`, `01-02-fix.log`, `01-03-review-and-gate.log`.
+`01-01-review-and-gate.stdout.jsonl`, `01-02-fix.stdout.jsonl`, `01-03-review-and-gate.stdout.jsonl`.
 
 ## Layout
 
@@ -30,8 +30,8 @@ For a clean issue (no Critical findings at step 1):
    manifest walk.
 3. Steps 2 (`fix`) and 3 (`review-and-gate`) are **not dispatched** —
    early-exit triggered by `done` status.
-4. Only `01-01-review-and-gate.log` exists; `01-02-fix.log` and
-   `01-03-review-and-gate.log` are absent.
+4. Only `01-01-review-and-gate.stdout.jsonl` exists; `01-02-fix.stdout.jsonl` and
+   `01-03-review-and-gate.stdout.jsonl` are absent.
 5. `SUMMARY.md` records `done`.
 
 ## Runbook
@@ -100,9 +100,9 @@ git -C "$ws" show smoke-iterate:.features/smoke-iterate/issues/01-stamp-marker.m
 
 # Only the first step's log exists; steps 2 and 3 were skipped.
 # (drain mode nests logs under the feature slug.)
-ls "$ws/.runner-state/runs/"*/smoke-iterate/01-01-review-and-gate.log  # present
-ls "$ws/.runner-state/runs/"*/smoke-iterate/01-02-fix.log 2>/dev/null   # absent
-ls "$ws/.runner-state/runs/"*/smoke-iterate/01-03-review-and-gate.log 2>/dev/null  # absent
+ls "$ws/.runner-state/runs/"*/smoke-iterate/01-01-review-and-gate.stdout.jsonl  # present
+ls "$ws/.runner-state/runs/"*/smoke-iterate/01-02-fix.stdout.jsonl 2>/dev/null   # absent
+ls "$ws/.runner-state/runs/"*/smoke-iterate/01-03-review-and-gate.stdout.jsonl 2>/dev/null  # absent
 
 # SUMMARY.md shows done.
 grep 'done' "$ws/.runner-state/runs/"*/SUMMARY.md

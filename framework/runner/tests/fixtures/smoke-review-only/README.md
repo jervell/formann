@@ -23,7 +23,7 @@ After the runner drains the queue with this manifest:
 2. The `review` step runs: a severity-tagged "Review (AFK runner)"
    comment is posted on the issue.
 3. The issue remains at `in-review` — no state promotion.
-4. The step log (`01-01-review.log`) contains the review findings and
+4. The step event stream (`01-01-review.stdout.jsonl`) contains the review findings and
    a `verdict:` line.
 5. `SUMMARY.md` records `left-for-human` (the manifest was exhausted
    without reaching `done`).
@@ -98,8 +98,8 @@ git -C "$ws" show smoke-review-only:.features/smoke-review-only/issues/01-stamp-
 # A findings comment was posted (review-issue output under a "Review (AFK runner)" heading).
 git -C "$ws" show smoke-review-only:.features/smoke-review-only/issues/01-stamp-marker.md | grep -F '### Review (AFK runner)'
 
-# The step log exists (drain mode nests logs under the feature slug).
-ls "$ws/.runner-state/runs/"*/smoke-review-only/01-01-review.log
+# The step event stream exists (drain mode nests logs under the feature slug).
+ls "$ws/.runner-state/runs/"*/smoke-review-only/01-01-review.stdout.jsonl
 
 # SUMMARY.md shows left-for-human.
 grep 'left-for-human' "$ws/.runner-state/runs/"*/SUMMARY.md

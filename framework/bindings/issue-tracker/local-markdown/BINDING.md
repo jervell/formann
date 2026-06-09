@@ -21,6 +21,8 @@ Two structural types underpin the contract:
 - **Timeline-shaped** — append-only; history preserved. Corresponds to posting a comment on GitHub. **Comment with `<kind>`** is the only timeline-shaped verb.
 - **Body-shaped** — single canonical place; rewriting supersedes the prior value. Corresponds to editing the issue body on GitHub. All other verbs are body-shaped.
 
+**Every mutating verb ends with a commit.** The per-verb realizations below describe the file write; the `tracker:` commit that makes it durable is part of the verb, not an optional afterthought (see [Committing tracker changes](#committing-tracker-changes)). An uncommitted edit does not count as the operation having happened — the runner classifies and propagates from committed state (HEAD) only, and resets the working tree before the next dispatch, so a frontmatter flip or comment that is written but not committed is silently lost.
+
 ### Read the issue
 
 Read the full content of an issue: its metadata, body sections (title, what to build, acceptance criteria, blocked-by, agent brief, triage notes), and its comment timeline.
@@ -43,7 +45,7 @@ Return the set of issues in a feature with their metadata (ref, nn, status, cate
 
 Transition an issue to a new lifecycle state.
 
-**Local-markdown realization:** Write the new value into the `status` field of the YAML frontmatter block at the top of the issue file.
+**Local-markdown realization:** Write the new value into the `status` field of the YAML frontmatter block at the top of the issue file, then commit it via a `tracker:` commit (batched with an accompanying comment into one commit — see [Committing tracker changes](#committing-tracker-changes)). The frontmatter write alone does not transition the issue; only the commit does.
 
 ### Set issue metadata
 
@@ -74,6 +76,7 @@ Append a comment to the issue's timeline. Timeline-shaped: append-only, history 
 - Same-day collisions of the same kind get a numeric suffix: `### Implementation (2) — 2026-05-08`, `### Implementation (3) — 2026-05-08`, etc.
 - Sub-blocks (Evidence, Findings, Decisions, Resolved scope, Verification summary) live as **bolded labels** — `**Evidence**`, `**Findings**`, etc. — inside the producing comment subsection. They are never `####` nested headings and never sibling sections of `## Comments`.
 - The body above `## Comments` is read-only after triage. Corrections and follow-ups go in a new comment. The only above-the-fold mutations permitted after triage are frontmatter field writes (Set the state, Set issue metadata) and the Triage Notes section (written and cleared by the Record triage notes verb only).
+- Commit the appended comment via a `tracker:` commit (see [Committing tracker changes](#committing-tracker-changes)). A comment posted alongside a status change is the same logical operation — both file edits land in one commit, not two.
 
 #### Canonical example
 

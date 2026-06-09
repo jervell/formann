@@ -20,6 +20,17 @@ snapshot_one() {
     "$ref" "$status"
 }
 
+# Write a single terminal `result` event to a dispatch's stdout event-stream
+# artifact. $1 = the dispatch log BASE (the runner reads <base>.stdout.jsonl);
+# $2 = is_error (true|false); $3 = api_error_status (a number, or "null").
+# Used by container mocks to drive the rewritten classifier's verdict:
+#   true + 429/5xx/null → transport crash; true + other-4xx or false → genuine.
+emit_result_event() {
+  local base="$1" is_error="$2" status="${3:-null}"
+  printf '{"type":"result","subtype":"success","is_error":%s,"api_error_status":%s,"result":"x","uuid":"u"}\n' \
+    "$is_error" "$status" >"$base.stdout.jsonl"
+}
+
 @test "classify_outcome — ready-for-agent → in-review is success" {
   pre="$(snapshot_one f/01 ready-for-agent)"
   post="$(snapshot_one f/01 in-review)"
@@ -199,61 +210,282 @@ snapshot_one() {
   [ -z "$_captured_review" ]
 }
 
-# === is_transport_crash =======================================================
+# === is_transport_crash — two-rung structured-event contract ================
 #
-# Pure predicate: returns exit 0 when a dispatch log carries a transport-class
-# failure signature (empty/whitespace log, API 5xx/429 error, network errors).
+# Rewritten for streamed-event output (#71). The classifier reads the dispatch's
+# stdout event stream (a <name>.stdout.jsonl fixture) plus the exit code, never
+# stderr. Rung 1 is the terminal `result` event's is_error / api_error_status;
+# Rung 2 (empty / nonzero-exit, no recoverable result) is the safety net. The
+# fixtures and the locked contract come from the spike (#70); see the fixtures
+# dir README for provenance.
 
-@test "is_transport_crash — empty log is a crash" {
-  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
-  is_transport_crash "$HERE/fixtures/transport-crashes/empty.log"
+# Resolve a fixture's stdout stream and its captured exit code together. Use
+# $BATS_TEST_DIRNAME (the .bats file's dir) rather than $HERE — sourcing the
+# runner clobbers $HERE with the script's own directory.
+_fx()      { printf '%s/fixtures/transport-crashes/%s.stdout.jsonl' "$BATS_TEST_DIRNAME" "$1"; }
+_fx_exit() { cat "$BATS_TEST_DIRNAME/fixtures/transport-crashes/$1.exit"; }
+
+@test "is_transport_crash — control (is_error:false) is not a crash" {
+  ! is_transport_crash "$(_fx control)" "$(_fx_exit control)"
 }
 
-@test "is_transport_crash — whitespace-only log is a crash" {
-  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
-  is_transport_crash "$HERE/fixtures/transport-crashes/whitespace-only.log"
+@test "is_transport_crash — HTTP 429 result event is a crash (retry)" {
+  is_transport_crash "$(_fx http429)" "$(_fx_exit http429)"
 }
 
-@test "is_transport_crash — API 5xx log is a crash" {
-  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
-  is_transport_crash "$HERE/fixtures/transport-crashes/5xx.log"
+@test "is_transport_crash — HTTP 503 result event is a crash (retry)" {
+  is_transport_crash "$(_fx http503)" "$(_fx_exit http503)"
 }
 
-@test "is_transport_crash — API 429 log is a crash" {
-  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
-  is_transport_crash "$HERE/fixtures/transport-crashes/429.log"
+@test "is_transport_crash — null-status connection fault (getaddrinfo) is a crash" {
+  is_transport_crash "$(_fx getaddrinfo)" "$(_fx_exit getaddrinfo)"
 }
 
-@test "is_transport_crash — fetch failed log is a crash" {
-  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
-  is_transport_crash "$HERE/fixtures/transport-crashes/fetch-failed.log"
+@test "is_transport_crash — null-status connection fault (ECONNRESET) is a crash" {
+  is_transport_crash "$(_fx econnreset)" "$(_fx_exit econnreset)"
 }
 
-@test "is_transport_crash — ECONNRESET log is a crash" {
-  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
-  is_transport_crash "$HERE/fixtures/transport-crashes/econnreset.log"
+@test "is_transport_crash — null-status connection fault (fetch failed / refused) is a crash" {
+  is_transport_crash "$(_fx fetchfailed)" "$(_fx_exit fetchfailed)"
 }
 
-@test "is_transport_crash — ETIMEDOUT log is a crash" {
-  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
-  is_transport_crash "$HERE/fixtures/transport-crashes/etimedout.log"
+@test "is_transport_crash — other-4xx result event (400) is a genuine failure, not a crash" {
+  ! is_transport_crash "$(_fx http400)" "$(_fx_exit http400)"
 }
 
-@test "is_transport_crash — getaddrinfo log is a crash" {
-  HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
-  is_transport_crash "$HERE/fixtures/transport-crashes/getaddrinfo.log"
+@test "is_transport_crash — body-invariant 429 (empty / real / garbage bodies) all crash" {
+  is_transport_crash "$(_fx inv-empty)"   "$(_fx_exit inv-empty)"
+  is_transport_crash "$(_fx inv-real)"    "$(_fx_exit inv-real)"
+  is_transport_crash "$(_fx inv-garbage)" "$(_fx_exit inv-garbage)"
 }
 
-@test "is_transport_crash — model-produced output without crash signature is not a crash" {
-  local log_file="$BATS_TEST_TMPDIR/model-exit.log"
-  printf 'claude: The brief is insufficient. Cannot implement without a clearer spec.\nexit status 0\n' >"$log_file"
-  ! is_transport_crash "$log_file"
+@test "is_transport_crash — truncated stream, no result event (etimedout), nonzero exit is a crash (Rung 2)" {
+  is_transport_crash "$(_fx etimedout)" "$(_fx_exit etimedout)"
 }
 
-@test "is_transport_crash — intentional prompt-error exit is not a crash" {
-  local log_file="$BATS_TEST_TMPDIR/prompt-error.log"
-  printf 'Error: prompt file not found: /path/to/review-and-gate.md\nexit status 1\n' >"$log_file"
-  ! is_transport_crash "$log_file"
+@test "is_transport_crash — empty stdout + nonzero exit is a crash (Rung 2)" {
+  is_transport_crash "$(_fx empty)" "$(_fx_exit empty)"
+}
+
+@test "is_transport_crash — lenient recovery: a truncated result line yields its 429 (Rung 1 fallback)" {
+  is_transport_crash "$(_fx truncated-result)" "$(_fx_exit truncated-result)"
+}
+
+# --- Two-rung precedence: the structured verdict overrides the exit/empty net.
+
+@test "is_transport_crash — Rung-1 success overrides a nonzero exit" {
+  # A clean is_error:false result with a (contrived) nonzero exit must NOT be a
+  # crash: the structured verdict is authoritative over the exit-code net.
+  local s="$BATS_TEST_TMPDIR/ok-but-nonzero.stdout.jsonl"
+  cp "$(_fx control)" "$s"
+  ! is_transport_crash "$s" 1
+}
+
+@test "is_transport_crash — Rung-1 genuine-4xx overrides a nonzero exit" {
+  # http400 carries exit 1 yet must classify genuine (Rung-1 wins over Rung-2).
+  ! is_transport_crash "$(_fx http400)" 1
+}
+
+# --- Rung 2: the exit code decides when no result event is recoverable.
+
+@test "is_transport_crash — no result event: nonzero exit retries, clean exit defers" {
+  is_transport_crash "$(_fx garbage)" 1     # nonzero exit → conservative crash
+  ! is_transport_crash "$(_fx garbage)" 0   # clean exit, no result → defer (not a crash)
+}
+
+# --- Fail-safe: a malformed stream never propagates a parse error. (AC #5)
+
+@test "is_transport_crash — garbage stream yields a defined verdict with no parse error on stderr" {
+  local err
+  err="$(is_transport_crash "$(_fx garbage)" 1 2>&1 1>/dev/null)"
+  [ -z "$err" ]
+  is_transport_crash "$(_fx garbage)" 1     # and the verdict is the contract's value
+}
+
+@test "is_transport_crash — truncated stream yields a defined verdict with no parse error on stderr" {
+  local err
+  err="$(is_transport_crash "$(_fx etimedout)" 137 2>&1 1>/dev/null)"
+  [ -z "$err" ]
+}
+
+@test "classifier read-side — set -e: garbage stream never aborts (no parse error propagates)" {
+  # Source the runner under set -e and drive every read-side function on garbage.
+  # If any internal jq/grep failure were allowed to escape, set -e would abort
+  # before `reached` is printed. (AC #5 — the test that fails on propagation.)
+  local g="$BATS_TEST_DIRNAME/fixtures/transport-crashes/garbage.stdout.jsonl"
+  [ -f "$g" ]   # guard: a missing fixture would make this test vacuous
+  run bash -c '
+    set -e
+    source "$1"
+    if is_transport_crash "$2" 1; then :; else :; fi
+    extract_result_summary "$2" >/dev/null
+    _transport_crash_class "$2" 1 >/dev/null
+    echo reached
+  ' _ "$RUNNER_SCRIPT" "$g"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *reached* ]]
+}
+
+# === _transport_crash_class — cosmetic retry-line labeler ====================
+#
+# Reads the same stdout stream (and may read the human-readable result text);
+# it never feeds the retry decision. Labels are forensic only.
+
+@test "_transport_crash_class — 429 result labels 'API Error: 429'" {
+  [ "$(_transport_crash_class "$(_fx http429)" 1)" = "API Error: 429" ]
+}
+
+@test "_transport_crash_class — 5xx result labels 'API Error: 5xx'" {
+  [ "$(_transport_crash_class "$(_fx http503)" 1)" = "API Error: 5xx" ]
+}
+
+@test "_transport_crash_class — null-status fault labels a connection fault" {
+  [[ "$(_transport_crash_class "$(_fx getaddrinfo)" 1)" == connection-fault* ]]
+}
+
+@test "_transport_crash_class — empty stdout labels 'empty-output'" {
+  [ "$(_transport_crash_class "$(_fx empty)" 137)" = "empty-output" ]
+}
+
+@test "_transport_crash_class — truncated stream (no result) labels a no-result class" {
+  [[ "$(_transport_crash_class "$(_fx etimedout)" 137)" == no-result* ]]
+}
+
+# === extract_result_summary — readable closing message (AC #6) ===============
+
+@test "extract_result_summary — control stream yields the agent's closing message" {
+  [ "$(extract_result_summary "$(_fx control)")" = "ok" ]
+}
+
+@test "extract_result_summary — error result yields its result text" {
+  [ "$(extract_result_summary "$(_fx http429)")" = "API Error: Request rejected (429) · injected 429" ]
+}
+
+@test "extract_result_summary — truncated stream (no result) yields a non-empty placeholder" {
+  local out; out="$(extract_result_summary "$(_fx etimedout)")"
+  [ -n "$out" ]
+  [[ "$out" == *"no result"* ]]
+}
+
+@test "extract_result_summary — empty stream yields a non-empty placeholder" {
+  local out; out="$(extract_result_summary "$(_fx empty)")"
+  [ -n "$out" ]
+}
+
+# === run_sandbox_container — stream split + PTY removal (AC #1, #2) ==========
+
+_setup_sandbox_split_test() {
+  # A docker shim that emits to BOTH streams and records its argv.
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat >"$BATS_TEST_TMPDIR/bin/docker" <<'DOCKEREOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$DOCKER_ARGV_FILE"
+while [ $# -gt 0 ]; do
+  [ "$1" = "--cidfile" ] && { echo cid >"$2" 2>/dev/null || true; }
+  shift
+done
+printf '{"type":"result","is_error":false}\n'   # stdout → event stream
+printf 'runner: entrypoint: noise\n' >&2         # stderr → diagnostics
+exit 0
+DOCKEREOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  export DOCKER_ARGV_FILE="$BATS_TEST_TMPDIR/docker-argv"
+  mkdir -p "$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker"
+  HOST_REPO="$BATS_TEST_TMPDIR/repo"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/repo"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR"
+  NET_NAME=none
+  RUNNER_CONTAINER_REPO_PATH=/repo
+  RUNNER_CONTAINER_M2_PATH=/m2
+  MVN_VOLUME=vol
+  RUNNER_IMAGE_NAME=img
+  TOKEN=oauth
+  RUNNER_GIT_USER_NAME=Arne
+  RUNNER_GIT_USER_EMAIL=a@b.c
+  RUNNER_INTERRUPTED=0
+  RUNNER_KILL_GRACE_SECONDS=1
+  IN_FLIGHT_CID_FILE=""
+}
+
+@test "run_sandbox_container — splits stdout (events) and stderr (diagnostics) into separate artifacts" {
+  _setup_sandbox_split_test
+  local base="$BATS_TEST_TMPDIR/dispatch"
+  run_sandbox_container "$base" claude -p "/implement #1"
+  # stdout → <base>.stdout.jsonl; stderr → <base>.stderr.log; no cross-bleed.
+  grep -q '"type":"result"' "$base.stdout.jsonl"
+  ! grep -q 'entrypoint: noise' "$base.stdout.jsonl"
+  grep -q 'entrypoint: noise' "$base.stderr.log"
+  ! grep -q '"type":"result"' "$base.stderr.log"
+}
+
+@test "run_sandbox_container — no PTY (-t) is allocated" {
+  _setup_sandbox_split_test
+  local base="$BATS_TEST_TMPDIR/dispatch"
+  run_sandbox_container "$base" claude -p "/implement #1"
+  ! grep -qx -- '-t' "$DOCKER_ARGV_FILE"
+}
+
+# === run_dispatch_container / run_item_container — streamed-event flags ======
+
+@test "run_dispatch_container — invokes claude with streamed structured-event flags" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"   # for with_transport_retry's HEAD probe
+  run_dispatch_container "#71" "$BATS_TEST_TMPDIR/base"
+  grep -q -- '--output-format stream-json' "$cap"
+  grep -q -- '--verbose' "$cap"
+  grep -q -- '/implement #71' "$cap"
+}
+
+@test "run_item_container — invokes claude with streamed structured-event flags" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  local prompt="$BATS_TEST_TMPDIR/step.md"
+  printf 'Do the review step.\n' >"$prompt"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  run_item_container "#71" "$BATS_TEST_TMPDIR/base" "$prompt"
+  grep -q -- '--output-format stream-json' "$cap"
+  grep -q -- '--verbose' "$cap"
+  grep -q -- 'Do the review step.' "$cap"
+}
+
+# === Fault isolation: a malformed stream cannot change the outcome (AC #8) ===
+
+@test "dispatch_one — malformed event stream leaves classified outcome and completion unchanged vs well-formed" {
+  # Two identical dispatches differing only in the event-stream shape: a
+  # well-formed success stream vs garbage bytes. The classified outcome (driven
+  # by the tracker-snapshot delta, never the stream) and the run's completion
+  # must be identical — proving no parse surprise leaks into control flow.
+  _run_with_stream() {
+    local fixture="$1"
+    setup_dispatch_one_test
+    run_dispatch_container() {
+      git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+        commit --allow-empty --quiet -m "tracker: f/01 (test)"
+      cp "$BATS_TEST_DIRNAME/fixtures/transport-crashes/$fixture.stdout.jsonl" "$2.stdout.jsonl"
+      : >"$2.stderr.log"
+      return 0
+    }
+    propagate_feature() { :; }
+    RUN_DISPATCHES=()
+    set +e
+    dispatch_one "f" "01" "$TEST_RUN_DIR"
+    DISPATCH_RC=$?
+    set -e
+    DISPATCH_OUTCOME="$(printf '%s' "${RUN_DISPATCHES[0]}" | cut -d'|' -f4)"
+  }
+
+  _run_with_stream control
+  local rc_ok="$DISPATCH_RC" out_ok="$DISPATCH_OUTCOME"
+
+  _run_with_stream garbage
+  local rc_bad="$DISPATCH_RC" out_bad="$DISPATCH_OUTCOME"
+
+  [ "$rc_ok" -eq "$rc_bad" ]
+  [ "$out_ok" = "$out_bad" ]
+  # And it actually completed the walk (the default snapshot lands left-for-human).
+  [ "$out_ok" = "left-for-human" ]
 }
 
 # === with_transport_retry =====================================================
@@ -283,11 +515,11 @@ _setup_retry_test() {
 @test "with_transport_retry — first-attempt success: no retry, no log archival, attempts=1" {
   _setup_retry_test
   local log_file="$BATS_TEST_TMPDIR/test.log"
-  fake_dispatch() { : >"$1"; return 0; }
+  fake_dispatch() { : >"$1.stdout.jsonl"; return 0; }
 
   with_transport_retry "$log_file" fake_dispatch
   [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
-  [ ! -f "${log_file}.attempt-1" ]
+  [ ! -f "${log_file}.stdout.jsonl.attempt-1" ]
   [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
 }
 
@@ -298,10 +530,10 @@ _setup_retry_test() {
   fake_dispatch() {
     call_count=$(( call_count + 1 ))
     if [ "$call_count" -eq 1 ]; then
-      printf 'API Error: 500 Internal server error.\n' >"$1"
+      printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$1.stdout.jsonl"
       return 1
     fi
-    printf 'success output\n' >"$1"
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n' >"$1.stdout.jsonl"
     return 0
   }
 
@@ -313,10 +545,10 @@ _setup_retry_test() {
   [ "$rc" -eq 0 ]
   [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 2 ]
   # attempt-1 archived, carries the transport-crash content
-  [ -f "${log_file}.attempt-1" ]
-  grep -q "500" "${log_file}.attempt-1"
+  [ -f "${log_file}.stdout.jsonl.attempt-1" ]
+  grep -q "500" "${log_file}.stdout.jsonl.attempt-1"
   # No second archived log — final attempt succeeded
-  [ ! -f "${log_file}.attempt-2" ]
+  [ ! -f "${log_file}.stdout.jsonl.attempt-2" ]
   # Backoff for attempt 1 is RUNNER_TRANSPORT_RETRY_BACKOFFS[0]=1 → 1 sleep call
   [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 1 ]
   grep -qx "1" "$SLEEP_ARGS_FILE"
@@ -326,7 +558,7 @@ _setup_retry_test() {
   _setup_retry_test
   local log_file="$BATS_TEST_TMPDIR/test.log"
   fake_dispatch() {
-    printf 'API Error: 500 Internal server error.\n' >"$1"
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$1.stdout.jsonl"
     return 1
   }
 
@@ -338,10 +570,10 @@ _setup_retry_test() {
   [ "$rc" -ne 0 ]
   [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 3 ]
   # Attempts 1 and 2 archived; final attempt's log stays at $log_file
-  [ -f "${log_file}.attempt-1" ]
-  [ -f "${log_file}.attempt-2" ]
-  [ ! -f "${log_file}.attempt-3" ]
-  [ -f "$log_file" ]
+  [ -f "${log_file}.stdout.jsonl.attempt-1" ]
+  [ -f "${log_file}.stdout.jsonl.attempt-2" ]
+  [ ! -f "${log_file}.stdout.jsonl.attempt-3" ]
+  [ -f "${log_file}.stdout.jsonl" ]
   # Sleep calls: backoff[0]=1 (attempt 1) + backoff[1]=2 (attempt 2) = 3 total
   [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 3 ]
 }
@@ -350,7 +582,9 @@ _setup_retry_test() {
   _setup_retry_test
   local log_file="$BATS_TEST_TMPDIR/test.log"
   fake_dispatch() {
-    printf 'Error: brief is insufficient.\n' >"$1"
+    # A genuine non-transport failure: a result event with a non-transport 4xx
+    # status. is_transport_crash classifies it genuine, so no retry fires.
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":400,"result":"API Error: 400 invalid request"}\n' >"$1.stdout.jsonl"
     return 42
   }
 
@@ -361,7 +595,7 @@ _setup_retry_test() {
 
   [ "$rc" -eq 42 ]
   [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
-  [ ! -f "${log_file}.attempt-1" ]
+  [ ! -f "${log_file}.stdout.jsonl.attempt-1" ]
   [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
 }
 
@@ -374,7 +608,7 @@ _setup_retry_test() {
   }
   local log_file="$BATS_TEST_TMPDIR/test.log"
   fake_dispatch() {
-    printf 'API Error: 500 Internal server error.\n' >"$1"
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$1.stdout.jsonl"
     return 1
   }
 
@@ -395,7 +629,7 @@ _setup_retry_test() {
   local log_file="$BATS_TEST_TMPDIR/test.log"
   # The dispatch function advances HOST_CHECKOUT's HEAD, simulating partial work.
   fake_dispatch() {
-    printf 'API Error: 500 Internal server error.\n' >"$1"
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$1.stdout.jsonl"
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "partial work"
     return 1
@@ -418,7 +652,7 @@ _setup_retry_test() {
   RUNNER_DISABLE_TRANSPORT_RETRY=1
   local log_file="$BATS_TEST_TMPDIR/test.log"
   fake_dispatch() {
-    printf 'API Error: 500 Internal server error.\n' >"$1"
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$1.stdout.jsonl"
     return 1
   }
 
@@ -429,7 +663,7 @@ _setup_retry_test() {
 
   [ "$rc" -ne 0 ]
   [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
-  [ ! -f "${log_file}.attempt-1" ]
+  [ ! -f "${log_file}.stdout.jsonl.attempt-1" ]
   [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
 }
 
@@ -451,14 +685,14 @@ _setup_retry_test() {
     n=$(( $(cat "$SANDBOX_CALL_COUNT_FILE") + 1 ))
     echo "$n" >"$SANDBOX_CALL_COUNT_FILE"
     if [ "$n" -eq 1 ]; then
-      # First implement attempt: transport crash
-      printf 'API Error: 500 Internal server error.\n' >"$lf"
+      # First implement attempt: transport crash (5xx result event)
+      printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$lf.stdout.jsonl"
       return 1
     fi
     # Second implement attempt: success — commit so impl_has_runner_commits=1
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: f/01 (test)"
-    : >"$lf"
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n' >"$lf.stdout.jsonl"
     return 0
   }
 
@@ -481,7 +715,7 @@ _setup_retry_test() {
   [ "$dispatch_rc" -eq 0 ]
 
   # .attempt-1 was archived during the retry backoff
-  [ -f "$TEST_RUN_DIR/01.log.attempt-1" ]
+  [ -f "$TEST_RUN_DIR/01.stdout.jsonl.attempt-1" ]
 
   # No abort flag written for a successful dispatch
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
@@ -1497,7 +1731,7 @@ EOF
   RUNNER_KILL_GRACE_SECONDS=1
   IN_FLIGHT_CID_FILE=""
 
-  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch.log" claude -p "/implement #1"
+  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch" claude -p "/implement #1"
 
   grep -q '^GH_TOKEN=fixture_binding_token$' "$cap"
 }
@@ -1542,7 +1776,7 @@ EOF
   RUNNER_KILL_GRACE_SECONDS=1
   IN_FLIGHT_CID_FILE=""
 
-  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch.log" claude -p "/implement #1"
+  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch" claude -p "/implement #1"
 
   # OAuth still delivered; no binding GH_TOKEN leaked in from nowhere.
   grep -q '^CLAUDE_CODE_OAUTH_TOKEN=oauth_value$' "$cap"
@@ -1918,14 +2152,14 @@ EOF
     return 0
   }
 
-  # Item commits AND exits nonzero with a non-transport-crash log
-  # (`Killed` — typical OOM kill output). The classifier sees exit_code
-  # != 0 and not-a-transport-crash → verdict = gate-failed.
+  # Item commits AND fails genuinely (non-transport): a result event carrying a
+  # non-transport 4xx status. is_transport_crash sees a recoverable result that
+  # is not a transport class → verdict = gate-failed.
   run_item_container() {
     git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
       commit --allow-empty --quiet -m "tracker: review f/01 → gate-failed (notes)"
-    echo "Killed" >"$2"
-    return 137
+    emit_result_event "$2" true 400
+    return 1
   }
 
   set +e
@@ -2405,11 +2639,11 @@ setup_eligibility_test() {
     return 0
   }
   run_item_container() {
-    # Container crashed (OOM kill) — nonzero exit. We must write a non-whitespace
-    # line to the log ($2) so is_transport_crash doesn't misclassify the empty log
-    # as a transport crash and flip the verdict to review-aborted.
-    echo "Killed" >"$2"
-    return 137
+    # Genuine (non-transport) item failure: a result event with a non-transport
+    # 4xx status. is_transport_crash classifies it genuine, so the verdict is
+    # gate-failed, not review-aborted.
+    emit_result_event "$2" true 400
+    return 1
   }
 
   RUN_DISPATCHES=()
@@ -2611,11 +2845,11 @@ setup_eligibility_test() {
   local post_implement_json
   post_implement_json='{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
 
-  # Item dispatch exits 137, non-transport log → fail → gate-failed.
+  # Item dispatch fails genuinely (non-transport 4xx result) → fail → gate-failed.
   take_snapshot() {
     printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
   }
-  run_item_container() { echo "Killed" >"$2"; return 137; }
+  run_item_container() { emit_result_event "$2" true 400; return 1; }
   propagate_feature() { return 0; }
   RUN_DISPATCHES=()
 
@@ -3005,8 +3239,8 @@ afk-runner|02|afk-runner/02|FAIL|18|'
   # without a propagation field show `-`. The `logs` column carries one or two
   # links depending on whether the iteration produced a `<NN>-review.log`.
   echo "$result" | grep -q '^| issue | outcome | duration | propagation | logs |$' || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/01 | in-review | 42s | - | [01.log](01.log) |' || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/02 | FAIL | 18s | - | [02.log](02.log) |' || { echo "$result"; false; }
+  echo "$result" | grep -qF '| afk-runner/01 | in-review | 42s | - | [01.summary.md](01.summary.md) |' || { echo "$result"; false; }
+  echo "$result" | grep -qF '| afk-runner/02 | FAIL | 18s | - | [02.summary.md](02.summary.md) |' || { echo "$result"; false; }
 }
 
 @test "format_summary_md — walk-bearing rows include step-log links" {
@@ -3022,17 +3256,17 @@ afk-runner|05|afk-runner/05|FAIL|3|'
 
   # AFK walk rows (done / left-for-human / gate-failed) carry both the dispatch
   # log and the step log. Propagation field absent → '-' indicator.
-  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | - | [01.log](01.log) [01-01-review.log](01-01-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | - | [01.summary.md](01.summary.md) [01-01-review.summary.md](01-01-review.summary.md) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/02 | left-for-human | 36s | - | [02.log](02.log) [02-01-review.log](02-01-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/02 | left-for-human | 36s | - | [02.summary.md](02.summary.md) [02-01-review.summary.md](02-01-review.summary.md) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/03 | gate-failed | 11s | - | [03.log](03.log) [03-01-review.log](03-01-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/03 | gate-failed | 11s | - | [03.summary.md](03.summary.md) [03-01-review.summary.md](03-01-review.summary.md) |' \
     || { echo "$result"; false; }
   # Interrupt-between-stages row (implement-step recorded `in-review`,
   # interrupted before walk) and implement-FAIL row carry only the dispatch log.
-  echo "$result" | grep -qF '| afk-runner/04 | in-review | 17s | - | [04.log](04.log) |' \
+  echo "$result" | grep -qF '| afk-runner/04 | in-review | 17s | - | [04.summary.md](04.summary.md) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/05 | FAIL | 3s | - | [05.log](05.log) |' \
+  echo "$result" | grep -qF '| afk-runner/05 | FAIL | 3s | - | [05.summary.md](05.summary.md) |' \
     || { echo "$result"; false; }
 }
 
@@ -3042,11 +3276,11 @@ afk-runner|05|afk-runner/05|FAIL|3|'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
-  echo "$result" | grep -qF '[01-01-review-and-gate.log](01-01-review-and-gate.log)' \
+  echo "$result" | grep -qF '[01-01-review-and-gate.summary.md](01-01-review-and-gate.summary.md)' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '[01-02-fix.log](01-02-fix.log)' \
+  echo "$result" | grep -qF '[01-02-fix.summary.md](01-02-fix.summary.md)' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '[01-03-review-and-gate.log](01-03-review-and-gate.log)' \
+  echo "$result" | grep -qF '[01-03-review-and-gate.summary.md](01-03-review-and-gate.summary.md)' \
     || { echo "$result"; false; }
 }
 
@@ -3071,9 +3305,9 @@ afk-runner|05|afk-runner/05|FAIL|3|'
   result="$(printf '%s\n' "$input" | format_summary_md \
     some-feature 20260506-091245 09:12:45 09:13:22 ended queue-empty)"
 
-  # Issue column shows binding-native ref (#42); log link uses plain nn (42.log).
+  # Issue column shows binding-native ref (#42); summary link uses plain nn (42.summary.md).
   # Propagation field absent in this record → '-' indicator.
-  echo "$result" | grep -qF '| #42 | in-review | 37s | - | [42.log](42.log) |' \
+  echo "$result" | grep -qF '| #42 | in-review | 37s | - | [42.summary.md](42.summary.md) |' \
     || { echo "$result"; false; }
 }
 
@@ -3084,9 +3318,9 @@ afk-runner|02|afk-runner/02|review-aborted|38|01-review'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
-  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted | 12s | - | [01.log](01.log) |' \
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted | 12s | - | [01.summary.md](01.summary.md) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| afk-runner/02 | review-aborted | 38s | - | [02.log](02.log) [02-01-review.log](02-01-review.log) |' \
+  echo "$result" | grep -qF '| afk-runner/02 | review-aborted | 38s | - | [02.summary.md](02.summary.md) [02-01-review.summary.md](02-01-review.summary.md) |' \
     || { echo "$result"; false; }
 }
 
@@ -3106,7 +3340,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|01-review'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
-  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted (2 attempts) | 12s | - | [01.log](01.log) |' \
+  echo "$result" | grep -qF '| afk-runner/01 | dispatch-aborted (2 attempts) | 12s | - | [01.summary.md](01.summary.md) |' \
     || { echo "$result"; false; }
 }
 
@@ -3115,7 +3349,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|01-review'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
-  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | propagated | [01.log](01.log)' \
+  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | propagated | [01.summary.md](01.summary.md)' \
     || { echo "$result"; false; }
   # No end-of-run parked section — dispatch was propagated, not parked.
   ! echo "$result" | grep -q 'Unpulled parked work' || { echo "$result"; false; }
@@ -3126,7 +3360,7 @@ afk-runner|02|afk-runner/02|review-aborted|38|01-review'
   result="$(printf '%s\n' "$input" | format_summary_md \
     afk-runner 20260506-091245 09:12:45 09:25:33 ended queue-empty)"
 
-  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | parked → runner/afk-runner | [01.log](01.log)' \
+  echo "$result" | grep -qF '| afk-runner/01 | done | 42s | parked → runner/afk-runner | [01.summary.md](01.summary.md)' \
     || { echo "$result"; false; }
   # End-of-run section appears.
   echo "$result" | grep -q '## Unpulled parked work' || { echo "$result"; false; }
@@ -3475,8 +3709,8 @@ setup_loop_output_test() {
   grep -q '^# AFK runner — f$' "$RUN_DIR/SUMMARY.md"
   grep -q -- '- Run: 20260506-091245.*started 09:12:45.*ended ' "$RUN_DIR/SUMMARY.md"
   grep -q -- '- Stop reason: queue-empty$' "$RUN_DIR/SUMMARY.md"
-  grep -qF '| f/01 | in-review | 42s | - | [01.log](01.log) |' "$RUN_DIR/SUMMARY.md"
-  grep -qF '| f/02 | FAIL | 18s | - | [02.log](02.log) |' "$RUN_DIR/SUMMARY.md"
+  grep -qF '| f/01 | in-review | 42s | - | [01.summary.md](01.summary.md) |' "$RUN_DIR/SUMMARY.md"
+  grep -qF '| f/02 | FAIL | 18s | - | [02.summary.md](02.summary.md) |' "$RUN_DIR/SUMMARY.md"
 }
 
 @test "finalize_run — pre-flight abort writes a SUMMARY.md naming the invariant" {
@@ -3688,11 +3922,10 @@ setup_abort_test() {
 
   propagate_feature() { return 0; }
   run_item_container() {
-    # Non-transport item failure (e.g. OOM kill). The log must carry a
-    # non-whitespace line so is_transport_crash doesn't misclassify the empty
-    # log as a transport crash and flip the verdict to review-aborted.
-    echo "Killed" >"$2"
-    return 137
+    # Genuine (non-transport) item failure: a non-transport 4xx result event.
+    # is_transport_crash classifies it genuine → gate-failed, not review-aborted.
+    emit_result_event "$2" true 400
+    return 1
   }
 
   RUN_DISPATCHES=()
@@ -3752,8 +3985,8 @@ setup_abort_test() {
     printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
   }
   run_dispatch_container() {
-    # Transport-signature log + nonzero exit — triggers is_transport_crash.
-    echo "API Error: 503 " >"$2"
+    # Transport crash: a 5xx result event triggers is_transport_crash (Rung 1).
+    emit_result_event "$2" true 503
     return 1
   }
   propagate_feature() { return 0; }
@@ -3782,8 +4015,8 @@ setup_abort_test() {
   install_afk_snapshots in-review
   propagate_feature() { return 0; }
   run_item_container() {
-    # Transport-signature log + nonzero exit — triggers is_transport_crash.
-    echo "API Error: 503 " >"$2"
+    # Transport crash: a 5xx result event triggers is_transport_crash (Rung 1).
+    emit_result_event "$2" true 503
     return 1
   }
 
@@ -4615,9 +4848,9 @@ I|gamma|01|gamma/01|in-review|13|'
 
   # Drained features carry per-issue tables nested under their section.
   # Propagation field absent in these records → '-' indicator.
-  echo "$result" | grep -qF '| alpha/01 | done | 42s | - | [alpha/01.log](alpha/01.log) [alpha/01-01-review.log](alpha/01-01-review.log) |' \
+  echo "$result" | grep -qF '| alpha/01 | done | 42s | - | [alpha/01.summary.md](alpha/01.summary.md) [alpha/01-01-review.summary.md](alpha/01-01-review.summary.md) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| gamma/01 | in-review | 13s | - | [gamma/01.log](gamma/01.log) |' \
+  echo "$result" | grep -qF '| gamma/01 | in-review | 13s | - | [gamma/01.summary.md](gamma/01.summary.md) |' \
     || { echo "$result"; false; }
 }
 
@@ -4664,7 +4897,7 @@ I|some-feature|42|#42|done|25|01-review'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:10:35 ended completed)"
 
-  echo "$result" | grep -qF '| #42 | done | 25s | - | [some-feature/42.log](some-feature/42.log) [some-feature/42-01-review.log](some-feature/42-01-review.log) |' \
+  echo "$result" | grep -qF '| #42 | done | 25s | - | [some-feature/42.summary.md](some-feature/42.summary.md) [some-feature/42-01-review.summary.md](some-feature/42-01-review.summary.md) |' \
     || { echo "$result"; false; }
 }
 
@@ -4675,9 +4908,9 @@ I|alpha|02|alpha/02|review-aborted|38|01-review'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:30:00 ended completed)"
 
-  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted | 12s | - | [alpha/01.log](alpha/01.log) |' \
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted | 12s | - | [alpha/01.summary.md](alpha/01.summary.md) |' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| alpha/02 | review-aborted | 38s | - | [alpha/02.log](alpha/02.log) [alpha/02-01-review.log](alpha/02-01-review.log) |' \
+  echo "$result" | grep -qF '| alpha/02 | review-aborted | 38s | - | [alpha/02.summary.md](alpha/02.summary.md) [alpha/02-01-review.summary.md](alpha/02-01-review.summary.md) |' \
     || { echo "$result"; false; }
 }
 
@@ -4698,7 +4931,7 @@ I|alpha|01|alpha/01|dispatch-aborted|12||2'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:10:22 ended completed)"
 
-  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted (2 attempts) | 12s | - | [alpha/01.log](alpha/01.log) |' \
+  echo "$result" | grep -qF '| alpha/01 | dispatch-aborted (2 attempts) | 12s | - | [alpha/01.summary.md](alpha/01.summary.md) |' \
     || { echo "$result"; false; }
 }
 
@@ -4709,9 +4942,9 @@ I|alpha|02|alpha/02|done|30|01-review|1|parked → runner/alpha'
   result="$(printf '%s\n' "$input" | format_multi_feature_summary_md \
     20260513-101010 10:10:10 10:30:00 ended completed)"
 
-  echo "$result" | grep -qF '| alpha/01 | done | 42s | propagated | [alpha/01.log](alpha/01.log)' \
+  echo "$result" | grep -qF '| alpha/01 | done | 42s | propagated | [alpha/01.summary.md](alpha/01.summary.md)' \
     || { echo "$result"; false; }
-  echo "$result" | grep -qF '| alpha/02 | done | 30s | parked → runner/alpha | [alpha/02.log](alpha/02.log)' \
+  echo "$result" | grep -qF '| alpha/02 | done | 30s | parked → runner/alpha | [alpha/02.summary.md](alpha/02.summary.md)' \
     || { echo "$result"; false; }
 }
 
@@ -5233,8 +5466,8 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -n "$d" ]
   [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] && [ "$c" -lt "$d" ]
   # Drained features carry per-issue rows; skipped/snapshot-failed do not.
-  grep -qF '| alpha/01 | done | 42s | - | [alpha/01.log](alpha/01.log) [alpha/01-01-review.log](alpha/01-01-review.log) |' "$RUN_DIR/SUMMARY.md"
-  grep -qF '| gamma/01 | in-review | 13s | - | [gamma/01.log](gamma/01.log) |' "$RUN_DIR/SUMMARY.md"
+  grep -qF '| alpha/01 | done | 42s | - | [alpha/01.summary.md](alpha/01.summary.md) [alpha/01-01-review.summary.md](alpha/01-01-review.summary.md) |' "$RUN_DIR/SUMMARY.md"
+  grep -qF '| gamma/01 | in-review | 13s | - | [gamma/01.summary.md](gamma/01.summary.md) |' "$RUN_DIR/SUMMARY.md"
   # Skipped features don't get a per-issue row.
   ! grep -qF '| beta/' "$RUN_DIR/SUMMARY.md"
   ! grep -qF '| delta/' "$RUN_DIR/SUMMARY.md"

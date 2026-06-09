@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"synthetic-trunc","uuid":"00000000-0000-0000-0000-000000000011"}
+{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"duration_ms":18100,"num_turns":1,"result":"API Error: Request rejecte

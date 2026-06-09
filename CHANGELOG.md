@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- AFK runner saves each dispatch as a clean structured-event log (`<NN>.stdout.jsonl`), with diagnostics split into `<NN>.stderr.log` and the agent's closing message in `<NN>.summary.md`; saved logs no longer carry terminal escape-sequence noise, and the runner retries transport faults while letting genuine request errors fail fast.
 - Runner Dockerfile template scaffolds Eclipse Temurin JDK 25 instead of 21. Existing consumers are unaffected — the installer never overwrites an existing `runner/Dockerfile`.
 
 ## [0.3.0] - 2026-06-04

@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"synthetic-400","uuid":"00000000-0000-0000-0000-000000000001"}
+{"type":"result","subtype":"success","is_error":true,"api_error_status":400,"duration_ms":140,"duration_api_ms":120,"num_turns":1,"result":"API Error: 400 · invalid_request_error: messages: at least one message is required","session_id":"synthetic-400","total_cost_usd":0,"terminal_reason":"completed","uuid":"00000000-0000-0000-0000-000000000002"}

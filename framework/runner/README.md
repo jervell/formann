@@ -22,9 +22,11 @@ at `.runner-state/runs/<YYYYMMDD-HHMMSS>/` containing:
 |------|------|
 | `runner.log` | Everything the runner emits to stdout/stderr, captured via `tee` (terminal still receives the live stream). |
 | `discovery.json` | The JSON array returned by `tracker-snapshot --list`. Written immediately after the `discovery` pre-flight invariant passes; same lifecycle as `runner.log`. Forensics for "why didn't the runner consider feature X?". |
-| `<NN>.log` (narrowed) / `<feature>/<NN>.log` (drain) | Full per-issue implement-dispatch output (stdout + stderr from the container). Drain mode nests under a per-feature subdir so per-issue artifacts don't collide across features that share `<NN>`. |
-| `<NN>.exit` / `<feature>/<NN>.exit` | Per-issue implement-dispatch exit code. |
-| `<NN>-<step>-<label>.log` (narrowed) / `<feature>/<NN>-<step>-<label>.log` (drain) | Full per-step dispatch output for each post-implement walk step, e.g. `01-01-review.log` for the default single `review` step. One log per step that ran; absent when the implement stage failed and the walk never started. |
+| `<NN>.stdout.jsonl` (narrowed) / `<feature>/<NN>.stdout.jsonl` (drain) | The implement dispatch's stdout: the full streamed structured-event trace (one JSON object per line — tool calls, results, the terminal `result` event). What the transport-crash classifier and the readable-summary extraction read. Drain mode nests under a per-feature subdir so per-issue artifacts don't collide across features that share `<NN>`. |
+| `<NN>.stderr.log` / `<feature>/<NN>.stderr.log` | The implement dispatch's stderr (diagnostic/crash text). Retained for forensics only — the classifier never reads it (the spike proved it carries no transport signal). |
+| `<NN>.summary.md` / `<feature>/<NN>.summary.md` | The implement dispatch's readable closing message, extracted from the terminal `result` event — the skim-the-outcome artifact. This is what the SUMMARY table links. |
+| `<NN>.exit` / `<feature>/<NN>.exit` | Per-issue implement-dispatch exit code (a bare integer). |
+| `<NN>-<step>-<label>.{stdout.jsonl,stderr.log,summary.md}` (narrowed) / `<feature>/…` (drain) | The same three per-dispatch artifacts for each post-implement walk step, e.g. `01-01-review.stdout.jsonl` for the default single `review` step. One set per step that ran; absent when the implement stage failed and the walk never started. |
 | `SUMMARY.md` | Markdown end-of-run summary. Narrowed modes: feature heading + flat per-issue table. Drain mode: `# AFK runner — multi-feature drain` heading + per-feature sections (`## <feature> — drained` with nested per-issue table, or `## <feature> — skipped: <reason>` / `## <feature> — feature-snapshot-failed` one-liner). Pre-flight aborts replace the table with a single line naming the failing invariant. |
 
 Stdout while a run is in flight uses per-stage progress lines. A typical
@@ -127,14 +129,14 @@ type: technical   # model error, bad brief, or other non-transport cause
 type: transport   # transport-class crash: API 5xx/429, network error, or empty log
 ```
 
-A `type: transport` flag means the subprocess never produced model output — the failure is infrastructure, not a problem with the brief or implementation. A `type: technical` flag means the subprocess ran and produced output indicating a genuine failure. Sample flag with the full layout:
+A `type: transport` flag means the dispatch hit a transport-class fault — the terminal `result` event reported a retryable error (HTTP 429 / 5xx, or a connection-layer fault with no HTTP status), or the dispatch died with no recoverable result event and a nonzero exit. The failure is infrastructure, not a problem with the brief or implementation. A `type: technical` flag means the dispatch produced a result event indicating a genuine failure (e.g. a non-transport 4xx). The `log` field points at the dispatch's event-stream artifact; its `.stderr.log` sibling holds diagnostics. Sample flag with the full layout:
 
 ```
 type: transport
 dispatch: review
 at: 2026-05-16T19:58:37Z
 exit: 1
-log: .runner-state/runs/20260516-195837/f/01-01-review.log
+log: .runner-state/runs/20260516-195837/f/01-01-review.stdout.jsonl
 ```
 
 The `dispatch` field carries the manifest item's label (e.g. `review` for the default single-entry manifest). An interrupted dispatch (Ctrl-C or SIGTERM during an active implement or item run) does not write an abort flag — the maintainer's intent is to stop, not to mark the issue as stuck. The next run re-dispatches the issue normally without any `rm` recipe required.
@@ -147,11 +149,13 @@ To inspect what is stuck:
 # List all aborted issues for the current feature
 ls .runner-state/aborted/<feature>/
 
-# Read an abort flag (dispatch, timestamp, exit code, log path)
+# Read an abort flag (dispatch, timestamp, exit code, artifact path)
 cat .runner-state/aborted/<feature>/<NN>
 
-# Follow up on the dispatch log named in the flag
-cat .runner-state/runs/<ts>/<NN>.log
+# Skim the agent's closing message, or read the full event trace / diagnostics
+cat .runner-state/runs/<ts>/<NN>.summary.md       # readable closing message
+cat .runner-state/runs/<ts>/<NN>.stdout.jsonl     # full streamed-event trace
+cat .runner-state/runs/<ts>/<NN>.stderr.log       # diagnostics (forensics)
 ```
 
 To resume (re-include the ref in eligibility selection):

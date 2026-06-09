@@ -224,8 +224,9 @@ Abort flags persist across runs (files on disk). The eligibility skip log line i
    pre_head = git rev-parse HEAD (runner-checkout)
         │
         ▼
-   run_dispatch_container("/implement <ref>")        ─► writes <NN>.log, <NN>.exit
-   impl_transport_crash = (impl_rc != 0 && is_transport_crash(<NN>.log))
+   run_dispatch_container("/implement <ref>")  ─► writes <NN>.{stdout.jsonl,stderr.log,exit}
+   extract_result_summary(<NN>.stdout.jsonl)   ─► writes <NN>.summary.md
+   impl_transport_crash = is_transport_crash(<NN>.stdout.jsonl, impl_rc)
         │
         ▼
    post_head = git rev-parse HEAD (runner-checkout)
@@ -337,7 +338,7 @@ the classifier runs.
    ┌─ next manifest item ───────────────────────────────────────────────────┐
    │                                                                         │
    │   pre_item_head = git rev-parse HEAD (runner-checkout)                  │
-   │   run_item_container(item prompt + ref) ─► writes <NN>-<step>-<label>.log │
+   │   run_item_container(item prompt + ref) ─► <NN>-<step>-<label>.{stdout.jsonl,stderr.log,summary.md} │
    │   post_item_head = git rev-parse HEAD (runner-checkout)                 │
    │   item_has_commits = (pre_item_head != post_item_head)                  │
    │   item_transport_crash = (item_rc != 0 && is_transport_crash(log))      │
@@ -416,9 +417,11 @@ The "propagate error" rows cover a parking-ref publish failure; `RUN_STOP_REASON
 | ----------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `runner.log`      | Always (created at run start, finalized at exit by `tee` drain).          | Full runner stdout + stderr.                                  |
 | `discovery.json`  | Always for runs that pass the `discovery` pre-flight invariant.            | Pretty-printed JSON array returned by `tracker-snapshot --list`. |
-| `<NN>.log` (narrowed) / `<feature>/<NN>.log` (drain) | Per implement dispatch. | Container stdout + stderr from `claude -p "/implement <ref>"`. Drain mode nests under a feature subdir so per-issue artifacts don't collide across features. |
-| `<NN>.exit` / `<feature>/<NN>.exit` | Per implement dispatch. | Container exit code (forensics only — classifier ignores it). |
-| `<NN>-<step>-<label>.log` / `<feature>/<NN>-<step>-<label>.log` | Per post-implement step dispatch (one per walk step that ran; e.g. `01-01-review.log`). | Container stdout + stderr from the step dispatch. |
+| `<NN>.stdout.jsonl` (narrowed) / `<feature>/<NN>.stdout.jsonl` (drain) | Per implement dispatch. | Container stdout: the streamed structured-event trace (`claude … --output-format stream-json --verbose`). What the classifier and summary extraction read. Drain mode nests under a feature subdir so per-issue artifacts don't collide across features. |
+| `<NN>.stderr.log` / `<feature>/<NN>.stderr.log` | Per implement dispatch. | Container stderr (diagnostics). Forensics only — never a detection input. |
+| `<NN>.summary.md` / `<feature>/<NN>.summary.md` | Per implement dispatch. | The agent's closing message, extracted from the terminal `result` event. The skim-the-outcome artifact the SUMMARY table links. |
+| `<NN>.exit` / `<feature>/<NN>.exit` | Per implement dispatch. | Container exit code (the classifier's Rung-2 input). |
+| `<NN>-<step>-<label>.{stdout.jsonl,stderr.log,summary.md}` / `<feature>/…` | Per post-implement step dispatch (one set per walk step that ran; e.g. `01-01-review.stdout.jsonl`). | The same three per-dispatch artifacts as the implement stage, for the step dispatch. |
 | `SUMMARY.md`      | Always (written by `finalize_run` from EXIT trap).                         | Narrowed modes: feature heading + flat per-issue table. Drain mode: per-feature sections (`## <feature> — drained` with nested table, or `## <feature> — skipped: <reason>` / `## <feature> — feature-snapshot-failed` one-liner). Pre-flight aborts replace the table with a single line naming the invariant. When any dispatch parked work to a parking ref, a `## Unpulled parked work` section (one `git pull runner <feature>` recipe per parked feature) follows the table; when `finalize_run` swept any stale parking ref, a `## Swept parking refs` section is appended after the body. |
 
 ### Files written under `.runner-state/aborted/<feature>/`

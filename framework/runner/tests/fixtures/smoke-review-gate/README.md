@@ -27,7 +27,7 @@ After the runner drains the queue with this manifest:
    the threshold.
    - If no Critical findings → issue promoted to `done`.
    - If Critical findings → issue stays at `in-review`.
-4. Step logs: `01-01-review.log` and `01-02-gate.log` both exist.
+4. Step event streams: `01-01-review.stdout.jsonl` and `01-02-gate.stdout.jsonl` both exist.
 5. `SUMMARY.md` records `done` (clean path) or `left-for-human` (blocked path).
 
 For a trivial marker-write issue, the review is expected to be clean
@@ -97,9 +97,9 @@ cp -R framework/runner/tests/fixtures/smoke-review-gate/issues \
 git -C "$ws" show smoke-review-gate:.features/smoke-review-gate/issues/01-stamp-marker.md | grep '^status:'
 # → status: done
 
-# Both step logs exist (drain mode nests logs under the feature slug).
-ls "$ws/.runner-state/runs/"*/smoke-review-gate/01-01-review.log
-ls "$ws/.runner-state/runs/"*/smoke-review-gate/01-02-gate.log
+# Both step event streams exist (drain mode nests logs under the feature slug).
+ls "$ws/.runner-state/runs/"*/smoke-review-gate/01-01-review.stdout.jsonl
+ls "$ws/.runner-state/runs/"*/smoke-review-gate/01-02-gate.stdout.jsonl
 
 # SUMMARY.md shows done.
 grep 'done' "$ws/.runner-state/runs/"*/SUMMARY.md

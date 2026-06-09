@@ -1,3 +1,0 @@
-Error: getaddrinfo ENOTFOUND api.anthropic.com
-    at GetAddrInfoReqWrap.onlookup [as oncomplete] (dns.js:66:26)
-exit status 1

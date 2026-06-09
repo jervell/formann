@@ -171,36 +171,125 @@ classify_item_action() {
   esac
 }
 
-# Detect whether a dispatch log carries a transport-class failure signature.
-# Returns exit 0 (true) when the log is empty/whitespace-only or contains a
-# recognised transport-failure pattern; exit 1 (false) otherwise.
+# Extract the last complete `result` event line from a streamed-event artifact.
+# Greps the candidate `"type":"result"` lines (cheap) and returns the last one
+# that parses as JSON. Empty output when the stream is absent, empty, or carries
+# no complete result event (e.g. a truncated tail). Fail-safe: any jq/grep
+# failure degrades to empty, never an error that propagates.
 #
-# Transport-class signatures (one pattern per line — complete policy list):
-#   API Error: 5[0-9][0-9]<sp>  — Anthropic server-side error (500, 502, 503, …);
-#                                  trailing space disambiguates from 5-digit codes
-#   API Error: 429<sp>           — rate-limit exhaustion; trailing space as above
-#   fetch failed                 — network-layer fetch failure (CLI / npm)
-#   ECONNRESET                   — TCP connection reset by peer
-#   ETIMEDOUT                    — TCP connection timeout
-#   getaddrinfo                  — DNS resolution failure
-#   (empty/whitespace-only)      — subprocess crashed before producing any output
+# Pure — reads only the named file. Sourceable from bats.
+_terminal_result_line() {
+  local stream_file="$1"
+  [ -s "$stream_file" ] || return 0
+  local line last=""
+  while IFS= read -r line; do
+    if printf '%s' "$line" | jq -e '.type == "result"' >/dev/null 2>&1; then
+      last="$line"
+    fi
+  done < <(grep -F '"type":"result"' "$stream_file" 2>/dev/null || true)
+  printf '%s' "$last"
+}
+
+# Decide whether a dispatch is a transport-class crash to retry, from its stdout
+# event stream and exit code (issue #71's locked two-rung contract; #70). stderr
+# is never read — the spike proved it carries no transport signal.
 #
-# Pure — no globals, no I/O beyond the log file. Sourceable from bats.
-# NOTE: empty log + nonzero exit is treated as a transport crash. Test stubs
-# for non-transport failures must write at least one non-whitespace line to
-# the log file; otherwise this predicate will misclassify them.
+# Rung 1 — the terminal `result` event's is_error / api_error_status:
+#   is_error false                               → success (not a crash)
+#   is_error true + status in {429} ∪ {500–599}  → transport crash → retry
+#   is_error true + status null/absent           → connection-layer fault (DNS /
+#                                                   connect / reset / timeout, no
+#                                                   HTTP response) → retry
+#   is_error true + any other status (4xx, …)    → genuine failure (not a crash)
+# If the terminal result line is truncated and fails strict jq, a lenient
+# byte-level extraction of the same two keys is attempted before Rung 2.
+#
+# Rung 2 — reached only when no result event is recoverable:
+#   nonzero exit (incl. empty/whitespace stdout)  → conservative transport-suspect → retry
+#   clean exit 0 with no parseable result         → indeterminate → defer (not a crash)
+#
+# Fail-safe by construction: every step degrades to the next on any parse/IO
+# surprise; the final rung always yields a defined verdict, never an error that
+# aborts the run. Returns 0 (crash → retry) or 1 (not a crash). Pure — reads
+# only the stream file. Sourceable from bats.
 is_transport_crash() {
-  local log_file="$1"
-  # Empty or whitespace-only log — subprocess exited before producing output.
-  if [ ! -s "$log_file" ] || [ -z "$(tr -d '[:space:]' <"$log_file")" ]; then
+  local stream_file="$1" exit_code="${2:-}"
+
+  # Rung 1 — structured verdict from the terminal result event.
+  local result_line
+  result_line="$(_terminal_result_line "$stream_file")"
+  if [ -n "$result_line" ]; then
+    local is_error api_status
+    is_error="$(printf '%s' "$result_line" | jq -r '.is_error' 2>/dev/null || true)"
+    api_status="$(printf '%s' "$result_line" \
+      | jq -r 'if has("api_error_status") then (.api_error_status | tostring) else "absent" end' \
+      2>/dev/null || true)"
+    case "$is_error" in
+      false) return 1 ;;
+      true)
+        case "$api_status" in
+          null|absent) return 0 ;;
+          429)         return 0 ;;
+          5[0-9][0-9]) return 0 ;;
+          *)           return 1 ;;
+        esac
+        ;;
+      # Neither true nor false → malformed; fall through to the lenient path.
+    esac
+  fi
+
+  # Rung 1 (lenient) — a truncated final result line that failed strict jq.
+  # Recover the same two keys by regex from the last result-ish line.
+  local raw_line
+  raw_line="$(grep -F '"type":"result"' "$stream_file" 2>/dev/null | tail -n 1 || true)"
+  if [ -n "$raw_line" ]; then
+    local lenient_err lenient_status
+    lenient_err="$(printf '%s' "$raw_line" \
+      | grep -oE '"is_error"[[:space:]]*:[[:space:]]*(true|false)' \
+      | grep -oE 'true|false' | tail -n 1 || true)"
+    if [ "$lenient_err" = "false" ]; then return 1; fi
+    if [ "$lenient_err" = "true" ]; then
+      if printf '%s' "$raw_line" | grep -qE '"api_error_status"[[:space:]]*:[[:space:]]*null'; then
+        return 0
+      fi
+      lenient_status="$(printf '%s' "$raw_line" \
+        | grep -oE '"api_error_status"[[:space:]]*:[[:space:]]*[0-9]+' \
+        | grep -oE '[0-9]+' | tail -n 1 || true)"
+      case "$lenient_status" in
+        429|5[0-9][0-9]) return 0 ;;
+        "")              return 0 ;;
+        *)               return 1 ;;
+      esac
+    fi
+  fi
+
+  # Rung 2 — safety net (no recoverable result event).
+  if [ -n "$exit_code" ] && [ "$exit_code" != "0" ]; then
     return 0
   fi
-  # Signature-based detection. The API Error patterns require a trailing space
-  # (matching the claude CLI's exact output format) to avoid false positives on
-  # 5-digit or 4-digit status codes (e.g. "API Error: 5009").
-  grep -qE \
-    'API Error: 5[0-9][0-9] |API Error: 429 |fetch failed|ECONNRESET|ETIMEDOUT|getaddrinfo' \
-    "$log_file"
+  return 1
+}
+
+# Extract the agent's closing message from a streamed-event artifact, for the
+# per-dispatch readable summary (issue #71). Prints the terminal `result`
+# event's `.result` text. When no result event is recoverable (truncated /
+# empty / crashed stream), prints a short placeholder naming the condition so
+# the skim file is never silently empty. Fail-safe: always returns 0.
+#
+# Pure — reads only the named file. Sourceable from bats.
+extract_result_summary() {
+  local stream_file="$1"
+  local result_line result_text
+  result_line="$(_terminal_result_line "$stream_file")"
+  if [ -n "$result_line" ]; then
+    result_text="$(printf '%s' "$result_line" | jq -r '.result // empty' 2>/dev/null || true)"
+    if [ -n "$result_text" ]; then
+      printf '%s\n' "$result_text"
+      return 0
+    fi
+  fi
+  printf '(no result event in the dispatch stream — no closing message; see the .stderr.log and .exit artifacts)\n'
+  return 0
 }
 
 # Pre-dispatch sync-base selector. Pure function — takes a pre-computed
@@ -429,9 +518,9 @@ format_end_of_run_table() {
 # SUMMARY.md content for a normal run (loop drained or interrupted).
 # Reads `feature|nn|ref|outcome|duration|step_logs|attempt_count|propagation`
 # records on stdin (fields past `outcome` are optional — when `step_logs` is
-# non-empty, the row's logs cell adds `<NN>-<suffix>.log` links alongside
-# `<NN>.log` for each colon-separated suffix in `step_logs` (e.g. `01-review`,
-# `01-review-and-gate:02-fix:03-review-and-gate`);
+# non-empty, the row's logs cell adds `<NN>-<suffix>.summary.md` links alongside
+# `<NN>.summary.md` for each colon-separated suffix in `step_logs` (e.g.
+# `01-review`, `01-review-and-gate:02-fix:03-review-and-gate`);
 # `propagation` is the indicator string from `propagate_feature` —
 # `propagated → host`, `parked → runner/<branch>`, or empty). The
 # `propagation` column shows the indicator verbatim, or `-` when empty.
@@ -462,11 +551,11 @@ format_summary_md() {
       attempt_count=(NF >= 7 ? $7+0 : 1);
       prop=(NF >= 8 && $8 != "") ? $8 : "-";
       if (attempt_count > 1) { out = out " (" attempt_count " attempts)" }
-      logs = sprintf("[%s.log](%s.log)", nn, nn);
+      logs = sprintf("[%s.summary.md](%s.summary.md)", nn, nn);
       if (review != "") {
         nsteps = split(review, rsteps, ":");
         for (si = 1; si <= nsteps; si++) {
-          logs = logs " [" nn "-" rsteps[si] ".log](" nn "-" rsteps[si] ".log)";
+          logs = logs " [" nn "-" rsteps[si] ".summary.md](" nn "-" rsteps[si] ".summary.md)";
         }
       }
       printf "| %s | %s | %s | %s | %s |\n", ref, out, humanize_dur(dur), prop, logs;
@@ -489,10 +578,10 @@ format_summary_md() {
 #
 # `I` rows belong to the most recent preceding `F|<slug>|drained` section.
 # `step_logs` is a colon-separated list of walk-step log suffixes (e.g. `01-review`)
-# alongside `<ref>.log`. `propagation` is the indicator string from
+# alongside `<ref>.summary.md`. `propagation` is the indicator string from
 # `propagate_feature` — `propagated → host`, `parked → runner/<branch>`,
-# or empty. Log paths in multi-feature mode embed the feature segment of the
-# ref (`<feature>/<NN>.log`) so per-issue artifacts don't collide across
+# or empty. Summary paths in multi-feature mode embed the feature segment of the
+# ref (`<feature>/<NN>.summary.md`) so per-issue artifacts don't collide across
 # features that share `<NN>`. The `propagation` column shows the indicator
 # verbatim, or `-` when empty; an end-of-run "## Unpulled parked work"
 # section follows when any dispatch parked, and is omitted entirely when no
@@ -554,11 +643,11 @@ format_multi_feature_summary_md() {
       attempt_count=(NF >= 8 ? $8+0 : 1);
       prop=(NF >= 9 && $9 != "") ? $9 : "-";
       if (attempt_count > 1) { out = out " (" attempt_count " attempts)" }
-      logs = sprintf("[%s/%s.log](%s/%s.log)", feature, nn, feature, nn);
+      logs = sprintf("[%s/%s.summary.md](%s/%s.summary.md)", feature, nn, feature, nn);
       if (review != "") {
         nsteps = split(review, rsteps, ":");
         for (si = 1; si <= nsteps; si++) {
-          logs = logs " [" feature "/" nn "-" rsteps[si] ".log](" feature "/" nn "-" rsteps[si] ".log)";
+          logs = logs " [" feature "/" nn "-" rsteps[si] ".summary.md](" feature "/" nn "-" rsteps[si] ".summary.md)";
         }
       }
       printf "| %s | %s | %s | %s | %s |\n", ref, out, humanize_dur(dur), prop, logs;
@@ -699,10 +788,10 @@ RUN_DISPATCHES=()
 # `drained`, `skip:<reason>`, `feature-snapshot-failed` (see the gate
 # evaluator). Single-feature / single-issue modes don't populate this.
 RUN_FEATURE_OUTCOMES=()
-# Per-issue log layout. `flat` (default — single-feature / single-issue
-# modes) writes <run-dir>/<NN>.log; `nested` (drain mode) writes
-# <run-dir>/<feature>/<NN>.log so per-issue artifacts don't collide
-# when multiple features share an <NN>. dispatch_one reads this.
+# Per-issue artifact layout. `flat` (default — single-feature / single-issue
+# modes) writes <run-dir>/<NN>.{stdout.jsonl,stderr.log,summary.md,exit};
+# `nested` (drain mode) writes <run-dir>/<feature>/<NN>.* so per-issue artifacts
+# don't collide when multiple features share an <NN>. dispatch_one reads this.
 RUN_LOG_LAYOUT="flat"
 RUNNER_TEE_PID=""
 RUNNER_LOG_FIFO=""
@@ -772,7 +861,7 @@ stop_runner_log_capture() {
 # `01-review-and-gate:02-fix:03-review-and-gate` for an unrolled iterate
 # manifest). Empty when no post-implement steps ran (implement-only run or
 # interrupted before the walk). Formatters split on `:` to generate per-step
-# log links (`<NN>-<suffix>.log`) alongside `<NN>.log` in the SUMMARY table.
+# summary links (`<NN>-<suffix>.summary.md`) alongside `<NN>.summary.md` in the SUMMARY table.
 # `attempt_count` (default 1) is the data hook for the retry slice; the
 # formatters render `(N attempts)` only when N > 1, so it is silent here.
 # `propagation` is the value of $RUNNER_LAST_PROPAGATION at record time —
@@ -1553,8 +1642,10 @@ collect_binding_env() {
 # review-and-gate dispatch. Both stages run in fresh sandbox containers
 # with the same image, network, runner-checkout mount, mvn cache mount,
 # and OAuth token environment — they differ only in the command they
-# hand to `claude`. Captures dispatch stdout+stderr to $log_file. Returns
-# the docker exit code.
+# hand to `claude`. Splits the dispatch's stdout (the pure event stream) into
+# `<base>.stdout.jsonl` and its stderr (diagnostic/crash text) into
+# `<base>.stderr.log` — two separate artifacts, not a merged file. Returns the
+# docker exit code.
 #
 # To make Ctrl-C actionable, we run docker in the background with
 # `--cidfile` and let the SIGINT/SIGTERM trap (`handle_signal`) read the
@@ -1562,22 +1653,23 @@ collect_binding_env() {
 # escalate to SIGKILL if the container is still alive past
 # `RUNNER_KILL_GRACE_SECONDS`.
 #
-# Args: $1 = log_file, $2..$N = command + args to pass after the image.
+# Args: $1 = log_base (the per-dispatch artifact base path; children
+#       `.stdout.jsonl` / `.stderr.log` derive from it), $2..$N = command +
+#       args to pass after the image.
 run_sandbox_container() {
-  local log_file="$1"
+  local log_base="$1"
   shift
   local cid_file
   cid_file="$HOST_RUNNER_STATE/dispatch.cid"
   rm -f "$cid_file"
   IN_FLIGHT_CID_FILE="$cid_file"
 
-  # `-t` allocates a PTY so claude sees a TTY and line-buffers stdout
-  # instead of full-buffering. Without it, the dispatch produces zero
-  # observable output for the duration of the run (claude only flushes
-  # at process exit), making `tail -f <log>` useless and a hung
-  # dispatch indistinguishable from a slow one. Side effect: PTY
-  # translates `\n` to `\r\n` in the log file; cat/grep/tail handle it
-  # transparently.
+  # No `-t` (PTY). Streamed structured events (`--output-format stream-json
+  # --verbose`, set by the callers) flush per line over a plain pipe, so the
+  # PTY line-buffering workaround the print-mode dispatch needed is obsolete —
+  # and dropping the PTY removes the `\r\n` / escape-sequence noise it injected
+  # into every saved log (see ADR-0010). stdout is the pure event stream and
+  # stderr is diagnostic text; they are split into separate artifacts below.
   # `.formann` is a per-host symlink (untracked) pointing at the Formann
   # framework checkout — `.claude/skills/<name>` symlinks resolve through
   # it. The runner-checkout doesn't carry `.formann` (it's outside the
@@ -1630,7 +1722,7 @@ run_sandbox_container() {
   local binding_env
   binding_env="$(collect_binding_env "$HOST_REPO/docs/formann/issue-tracker/sandbox-env")" || return 1
 
-  docker run --rm -t \
+  docker run --rm \
     --cidfile "$cid_file" \
     --network "$NET_NAME" \
     -v "$HOST_CHECKOUT:$RUNNER_CONTAINER_REPO_PATH" \
@@ -1645,7 +1737,7 @@ run_sandbox_container() {
     --env-file <(printf '%s\n' "$binding_env") \
     "$RUNNER_IMAGE_NAME" \
     "$@" \
-    >"$log_file" 2>&1 &
+    >"$log_base.stdout.jsonl" 2>"$log_base.stderr.log" &
   local docker_pid=$!
 
   # `wait` is interruptible by traps. main() runs with `set -e`, but a
@@ -1687,28 +1779,51 @@ run_sandbox_container() {
   return "$rc"
 }
 
-# Classify the transport-crash type from a log file for use in runner.log
-# retry lines. Returns one of: "API Error: 5xx", "API Error: 429",
-# "network-timeout", or "empty-log". Assumes is_transport_crash already fired.
+# Cosmetic label for the runner.log transport-retry line. Reads the same stdout
+# event stream (and may read the human-readable result text); it NEVER feeds the
+# retry decision — that is is_transport_crash's job alone (issue #71). Assumes
+# is_transport_crash already fired. Returns one of: "API Error: 429",
+# "API Error: 5xx", "connection-fault[ (<cause>)]", "empty-output",
+# "API Error: <status>", or "no-result (exit <n>)".
+#
+# Args: $1 = stdout event stream; $2 = exit code (for the no-result label).
 _transport_crash_class() {
-  local log_file="$1"
-  if [ ! -s "$log_file" ] || [ -z "$(tr -d '[:space:]' <"$log_file")" ]; then
-    echo "empty-log"
-  elif grep -qE 'API Error: 429 ' "$log_file"; then
-    echo "API Error: 429"
-  elif grep -qE 'API Error: 5[0-9][0-9] ' "$log_file"; then
-    echo "API Error: 5xx"
-  else
-    echo "network-timeout"
+  local stream_file="$1" exit_code="${2:-}"
+  if [ ! -s "$stream_file" ] || [ -z "$(tr -d '[:space:]' <"$stream_file" 2>/dev/null)" ]; then
+    echo "empty-output"
+    return 0
   fi
+  local result_line api_status
+  result_line="$(_terminal_result_line "$stream_file")"
+  if [ -n "$result_line" ]; then
+    api_status="$(printf '%s' "$result_line" \
+      | jq -r 'if has("api_error_status") then (.api_error_status | tostring) else "absent" end' \
+      2>/dev/null || true)"
+    case "$api_status" in
+      429)         echo "API Error: 429" ;;
+      5[0-9][0-9]) echo "API Error: 5xx" ;;
+      null|absent)
+        local result_text cause
+        result_text="$(printf '%s' "$result_line" | jq -r '.result // empty' 2>/dev/null || true)"
+        cause="$(printf '%s' "$result_text" | grep -oE '\([A-Za-z]+\)' | tail -n 1 || true)"
+        if [ -n "$cause" ]; then echo "connection-fault $cause"; else echo "connection-fault"; fi
+        ;;
+      *)           echo "API Error: $api_status" ;;
+    esac
+    return 0
+  fi
+  echo "no-result (exit ${exit_code:-?})"
 }
 
 # Wrap a sandbox-dispatch call with bounded exponential backoff on transport-
-# class failures. Calls `dispatch_fn "$log_file" "$@"`. On non-zero exit AND
-# `is_transport_crash "$log_file"` firing, archives the failed log as
-# `<log_file>.attempt-<n>`, sleeps the next backoff from
+# class failures. Calls `dispatch_fn "$log_base" "$@"`. On non-zero exit AND
+# `is_transport_crash "$log_base.stdout.jsonl" "$rc"` firing, archives the
+# failed attempt's artifacts as `<base>.stdout.jsonl.attempt-<n>` and
+# `<base>.stderr.log.attempt-<n>`, sleeps the next backoff from
 # RUNNER_TRANSPORT_RETRY_BACKOFFS (1-second poll loop so Ctrl-C exits
-# promptly), and retries up to RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS.
+# promptly), and retries up to RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS. The retry
+# budget and backoff schedule are unchanged from print mode — only the
+# detection source moved (the structured result event, not a log grep).
 #
 # Stops retrying when: dispatch succeeds; the predicate does not fire;
 # RUNNER_DISABLE_TRANSPORT_RETRY=1; budget exhausted; or the runner-checkout's
@@ -1716,12 +1831,13 @@ _transport_crash_class() {
 # committed, so retrying would replay /implement over a half-committed state).
 #
 # Sets TRANSPORT_RETRY_ATTEMPTS (global) to the actual attempt count.
-# Returns the final attempt's exit code; the final log stays at `$log_file`.
+# Returns the final attempt's exit code; the final stream stays at
+# `<base>.stdout.jsonl`.
 #
-# Args: $1=log_file  $2=dispatch_fn  [remaining args forwarded to dispatch_fn]
+# Args: $1=log_base  $2=dispatch_fn  [remaining args forwarded to dispatch_fn]
 # Sourceable from bats.
 with_transport_retry() {
-  local log_file="$1" dispatch_fn="$2"
+  local log_base="$1" dispatch_fn="$2"
   shift 2
 
   local max="$RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS"
@@ -1737,19 +1853,21 @@ with_transport_retry() {
   while true; do
     attempt=$(( attempt + 1 ))
     rc=0
-    "$dispatch_fn" "$log_file" "$@" || rc=$?
+    "$dispatch_fn" "$log_base" "$@" || rc=$?
 
     # Exit the retry loop when: success, retry disabled, not a transport crash,
     # or budget exhausted.
     if [ "$rc" -eq 0 ] \
         || [ "${RUNNER_DISABLE_TRANSPORT_RETRY:-0}" = "1" ] \
-        || ! is_transport_crash "$log_file" \
+        || ! is_transport_crash "$log_base.stdout.jsonl" "$rc" \
         || [ "$attempt" -ge "$max" ]; then
       break
     fi
 
-    # Archive this attempt's log before the next attempt overwrites it.
-    cp "$log_file" "${log_file}.attempt-${attempt}"
+    # Archive this attempt's artifacts before the next attempt overwrites them.
+    cp "$log_base.stdout.jsonl" "${log_base}.stdout.jsonl.attempt-${attempt}" 2>/dev/null || true
+    [ -f "$log_base.stderr.log" ] \
+      && cp "$log_base.stderr.log" "${log_base}.stderr.log.attempt-${attempt}" 2>/dev/null || true
 
     # Defensive guard: if the runner-checkout advanced between attempts, a
     # previous attempt committed partial work — retrying would replay
@@ -1772,7 +1890,7 @@ with_transport_retry() {
     backoff="${backoff:-240}"
 
     local crash_class next_attempt
-    crash_class="$(_transport_crash_class "${log_file}.attempt-${attempt}")"
+    crash_class="$(_transport_crash_class "${log_base}.stdout.jsonl.attempt-${attempt}" "$rc")"
     next_attempt=$(( attempt + 1 ))
     echo "[$(now_clock)] runner: transport-crash detected ($crash_class) — retrying in ${backoff}s (attempt $next_attempt of $max)"
 
@@ -1797,14 +1915,15 @@ with_transport_retry() {
   return "$rc"
 }
 
-# Implement-dispatch wrapper: hands `claude -p "/implement <ref>"` to
-# the sandbox via the transport-retry layer. Tracker-snapshot delta is the
-# source of truth for outcome classification — exit code is captured for
-# forensics only.
+# Implement-dispatch wrapper: hands `claude -p "/implement <ref>"` to the
+# sandbox via the transport-retry layer, in streamed structured-event mode.
+# Tracker-snapshot delta is the source of truth for the success/failure
+# outcome (`classify_outcome` ignores the exit code); the exit code feeds only
+# the transport-crash classifier's Rung-2 safety net (`is_transport_crash`).
 run_dispatch_container() {
-  local ref="$1" log_file="$2"
-  with_transport_retry "$log_file" run_sandbox_container \
-    claude -p "/implement $ref" --dangerously-skip-permissions
+  local ref="$1" log_base="$2"
+  with_transport_retry "$log_base" run_sandbox_container \
+    claude -p "/implement $ref" --output-format stream-json --verbose --dangerously-skip-permissions
 }
 
 # Item-dispatch wrapper: cats the manifest item's prompt, appends the
@@ -1812,11 +1931,11 @@ run_dispatch_container() {
 # the sandbox via the transport-retry layer. Tracker-snapshot delta +
 # exit code drive `classify_item_action` in `walk_post_implement_steps`.
 run_item_container() {
-  local ref="$1" log_file="$2" prompt_path="$3"
+  local ref="$1" log_base="$2" prompt_path="$3"
   local prompt_text
   prompt_text="$(cat "$prompt_path")"$'\n'"$ref"
-  with_transport_retry "$log_file" run_sandbox_container \
-    claude -p "$prompt_text" --dangerously-skip-permissions
+  with_transport_retry "$log_base" run_sandbox_container \
+    claude -p "$prompt_text" --output-format stream-json --verbose --dangerously-skip-permissions
 }
 
 # === Runner remote registration =============================================
@@ -2190,7 +2309,7 @@ walk_post_implement_steps() {
     else
       step_logs="$step_logs:$step_suffix"
     fi
-    local item_log_file="$log_dir/$log_basename-$step_suffix.log"
+    local item_log_base="$log_dir/$log_basename-$step_suffix"
 
     # Emit the "starting" progress line for this item.
     local item_start_clock
@@ -2205,9 +2324,12 @@ walk_post_implement_steps() {
     item_started_at=$(date +%s)
 
     local item_rc=0
-    run_item_container "$ref" "$item_log_file" "$item_path" || item_rc=$?
+    run_item_container "$ref" "$item_log_base" "$item_path" || item_rc=$?
     local item_attempts="${TRANSPORT_RETRY_ATTEMPTS:-1}"
     total_attempts="$item_attempts"
+
+    # Extract the agent's closing message into the per-step readable summary.
+    extract_result_summary "$item_log_base.stdout.jsonl" >"$item_log_base.summary.md"
 
     local post_item_head
     post_item_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
@@ -2218,8 +2340,11 @@ walk_post_implement_steps() {
       item_has_runner_commits=1
     fi
 
+    # Transport-crash is decided from the structured result event plus the exit
+    # code (is_transport_crash's two-rung contract); the exit-nonzero pre-guard
+    # is gone — the structured verdict is authoritative even on a clean exit.
     local item_transport_crash=false
-    if [ "$item_rc" != "0" ] && is_transport_crash "$item_log_file"; then
+    if is_transport_crash "$item_log_base.stdout.jsonl" "$item_rc"; then
       item_transport_crash=true
     fi
 
@@ -2289,7 +2414,7 @@ walk_post_implement_steps() {
         format_progress_outcome "$(now_clock)" "$ref" "$item_label" "$item_progress_label" "$item_duration"
         local flag_type="technical"
         [ "$item_transport_crash" = "true" ] && flag_type="transport"
-        write_abort_flag "$feature" "$nn" "$item_label" "$item_rc" "$item_log_file" "$flag_type"
+        write_abort_flag "$feature" "$nn" "$item_label" "$item_rc" "$item_log_base.stdout.jsonl" "$flag_type"
         if [ "$item_has_runner_commits" -eq 1 ]; then
           if ! propagate_feature "$feature"; then
             local halt_duration
@@ -2383,8 +2508,8 @@ dispatch_one() {
     log_basename="$nn"
     mkdir -p "$run_dir"
   fi
-  local log_file="$log_dir/$log_basename.log"
-  local exit_file="$log_dir/$log_basename.exit"
+  local log_base="$log_dir/$log_basename"
+  local exit_file="$log_base.exit"
 
   local pre_json post_implement_json
   if ! pre_json="$(take_snapshot "$feature")"; then
@@ -2424,15 +2549,21 @@ dispatch_one() {
   pre_implement_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
 
   local impl_rc=0
-  run_dispatch_container "$ref" "$log_file" || impl_rc=$?
+  run_dispatch_container "$ref" "$log_base" || impl_rc=$?
   local impl_attempts="${TRANSPORT_RETRY_ATTEMPTS:-1}"
   echo "$impl_rc" > "$exit_file"
+
+  # Extract the agent's closing message into the per-dispatch readable summary.
+  extract_result_summary "$log_base.stdout.jsonl" >"$log_base.summary.md"
 
   local post_implement_head
   post_implement_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
 
+  # Transport-crash is decided from the structured result event plus the exit
+  # code (is_transport_crash's two-rung contract); the structured verdict is
+  # authoritative, so no exit-nonzero pre-guard.
   local impl_transport_crash=false
-  if [ "$impl_rc" != "0" ] && is_transport_crash "$log_file"; then
+  if is_transport_crash "$log_base.stdout.jsonl" "$impl_rc"; then
     impl_transport_crash=true
   fi
 
@@ -2554,7 +2685,7 @@ dispatch_one() {
     if [ "$post_eligible" = "true" ]; then
       local impl_flag_type="technical"
       [ "$classifier_verdict" = "dispatch-aborted" ] && impl_flag_type="transport"
-      write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_file" "$impl_flag_type"
+      write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_base.stdout.jsonl" "$impl_flag_type"
     fi
     local impl_abort_outcome="FAIL"
     [ "$classifier_verdict" = "dispatch-aborted" ] && impl_abort_outcome="dispatch-aborted"
