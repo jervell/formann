@@ -148,7 +148,7 @@ Set `RUNNER_DISABLE_TRANSPORT_RETRY=1` to skip the retry layer entirely (useful 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS` | `4` | Maximum total attempts (including the first) |
-| `RUNNER_TRANSPORT_RETRY_BACKOFFS` | `"30 90 240"` | Space-separated list of wait seconds for attempts 1→2, 2→3, 3→4, … |
+| `RUNNER_TRANSPORT_RETRY_BACKOFFS` | `"30 90 240"` | Space-separated list of wait seconds for attempts 1→2, 2→3, 3→4, … If the list is shorter than the attempt budget, the last entry is reused for the remaining gaps |
 | `RUNNER_DISABLE_TRANSPORT_RETRY` | `0` | Set to `1` to bypass all retry logic |
 
 ## Resuming after a technical failure

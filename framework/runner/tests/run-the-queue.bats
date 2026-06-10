@@ -625,6 +625,28 @@ _setup_retry_test() {
   [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 3 ]
 }
 
+@test "with_transport_retry — backoff list shorter than budget: gaps past the end reuse the last entry" {
+  _setup_retry_test
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=5
+  RUNNER_TRANSPORT_RETRY_BACKOFFS="1 2"
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$1.stdout.jsonl"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 5 ]
+  # Sleep calls: backoff[0]=1 + backoff[1]=2 + last entry reused for the
+  # remaining two gaps (2 + 2) = 7 total
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 7 ]
+}
+
 @test "with_transport_retry — non-transport failure: no retry, exit code passed through, no archival" {
   _setup_retry_test
   local log_file="$BATS_TEST_TMPDIR/test.log"

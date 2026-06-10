@@ -1949,10 +1949,11 @@ with_transport_retry() {
     # Select the wait before the next attempt. `attempt` is 1-based and
     # awk fields are 1-based, so attempt=1 picks field 1 (wait before
     # attempt 2), attempt=2 picks field 2 (wait before attempt 3), etc.
-    # If the configured list is shorter than max, fall back to the final
-    # default backoff so the schedule never runs off the end.
+    # If the configured list is shorter than max, reuse the last entry so
+    # the schedule never runs off the end. The 240 default is reachable
+    # only when the list is empty.
     local backoff
-    backoff="$(echo "$backoffs" | awk -v n="$attempt" '{print $n}')"
+    backoff="$(echo "$backoffs" | awk -v n="$attempt" '{ if (n > NF) n = NF; print $n }')"
     backoff="${backoff:-240}"
 
     local crash_class next_attempt
