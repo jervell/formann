@@ -90,6 +90,23 @@ RUNNER_KILL_GRACE_SECONDS=10
 # situations where the operator wants to fail fast.
 : "${RUNNER_DISABLE_TRANSPORT_RETRY:=0}"
 
+# Window-exhausted retry policy (issue #75). An exhausted five-hour usage
+# window is not a transport blip: the dispatch dies in ~400ms with a
+# well-formed stream whose `rate_limit_event` carries `status:"rejected"`
+# (and usually a `resetsAt` epoch), dressed as a 429 terminal result. Burning
+# the bounded transport backoff against a quota that is hours from returning
+# is pointless, so the runner sleeps until resetsAt + 60s slack (fixed, not
+# configurable) and re-dispatches instead.
+#
+# RUNNER_WINDOW_RETRY_FALLBACK_WAIT — seconds to wait when the rejected
+# event carries no resetsAt. RUNNER_WINDOW_RETRY_MAX_WAITS — window-waits
+# allowed per dispatch before giving up with outcome `window-exhausted`.
+: "${RUNNER_WINDOW_RETRY_FALLBACK_WAIT:=3600}"
+: "${RUNNER_WINDOW_RETRY_MAX_WAITS:=2}"
+# When set to 1, the rejected-event check is skipped entirely and a window-
+# exhausted 429 degrades to the transport path exactly as before #75.
+: "${RUNNER_DISABLE_WINDOW_RETRY:=0}"
+
 # When set to 1, no liveness renderer is spawned — the dispatch runs exactly
 # as on a detached terminal. Useful for testing and for operators who don't
 # want the live line.
@@ -285,6 +302,82 @@ is_transport_crash() {
   return 1
 }
 
+# Extract the last parseable `rate_limit_event` line from a streamed-event
+# artifact. `rate_limit_event` lines can be injected mid-NDJSON-line,
+# corrupting adjacent lines (claude-code#49640) — unparseable candidates are
+# skipped, in the same fail-safe style as `_terminal_result_line`. Empty
+# output when the stream is absent, empty, or carries no parseable
+# rate_limit_event.
+#
+# Pure — reads only the named file. Sourceable from bats.
+_last_rate_limit_event_line() {
+  local stream_file="$1"
+  [ -s "$stream_file" ] || return 0
+  local line last=""
+  while IFS= read -r line; do
+    if printf '%s' "$line" | jq -e '.type == "rate_limit_event"' >/dev/null 2>&1; then
+      last="$line"
+    fi
+  done < <(grep -F '"type":"rate_limit_event"' "$stream_file" 2>/dev/null || true)
+  printf '%s' "$last"
+}
+
+# Window-exhausted detection predicate (issue #75): the last parseable
+# `rate_limit_event` in the dispatch's stdout stream has `status:"rejected"`.
+# Any rateLimitType qualifies. Detection never keys on assistant/result text —
+# the human-readable wording varies across CLI versions; only the structured
+# event is stable. Returns 0 (window exhausted) or 1. Fail-safe: any parse
+# surprise degrades to 1 (not exhausted), never an error that aborts a run.
+#
+# Pure — reads only the stream file. Sourceable from bats.
+is_window_exhausted() {
+  local stream_file="$1"
+  local ev
+  ev="$(_last_rate_limit_event_line "$stream_file")"
+  [ -n "$ev" ] || return 1
+  [ "$(printf '%s' "$ev" | jq -r '.rate_limit_info.status // empty' 2>/dev/null || true)" = "rejected" ]
+}
+
+# Extract `resetsAt` (epoch seconds) from the stream's last parseable
+# rate_limit_event. Empty when the event or the field is absent or
+# non-numeric. Pure — reads only the stream file. Sourceable from bats.
+window_resets_at() {
+  local stream_file="$1"
+  local ev v
+  ev="$(_last_rate_limit_event_line "$stream_file")"
+  [ -n "$ev" ] || return 0
+  v="$(printf '%s' "$ev" | jq -r '.rate_limit_info.resetsAt // empty' 2>/dev/null || true)"
+  case "$v" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  printf '%s' "$v"
+}
+
+# rateLimitType label from the stream's last parseable rate_limit_event, for
+# the wait-start progress line. "unknown" when absent. Pure. Sourceable.
+window_rate_limit_type() {
+  local stream_file="$1"
+  local ev
+  ev="$(_last_rate_limit_event_line "$stream_file")"
+  if [ -z "$ev" ]; then
+    echo "unknown"
+    return 0
+  fi
+  printf '%s' "$ev" | jq -r '.rate_limit_info.rateLimitType // "unknown"' 2>/dev/null \
+    || echo "unknown"
+}
+
+# Seconds to wait before re-dispatching after a window rejection: the time
+# until resetsAt plus a fixed 60s slack. A resetsAt at-or-before now degrades
+# to the bare 60s slack — no special case. Args: $1=resetsAt $2=now (both
+# epoch seconds). Pure. Sourceable from bats.
+window_wait_seconds() {
+  local resets_at="$1" now="$2"
+  local delta=$(( resets_at - now ))
+  [ "$delta" -lt 0 ] && delta=0
+  echo $(( delta + 60 ))
+}
+
 # Extract the agent's closing message from a streamed-event artifact, for the
 # per-dispatch readable summary (issue #71). Prints the terminal `result`
 # event's `.result` text. When no result event is recoverable (truncated /
@@ -410,6 +503,14 @@ binding_native_ref() {
 now_ts() { date +"%Y%m%d-%H%M%S"; }
 now_clock() { date +"%H:%M:%S"; }
 
+# HH:MM:SS local clock for an epoch timestamp. BSD date takes `-r <epoch>`;
+# GNU date treats `-r` as a file reference and needs `-d @<epoch>` — try BSD
+# first, fall back to GNU.
+epoch_clock() {
+  local epoch="$1"
+  date -r "$epoch" +"%H:%M:%S" 2>/dev/null || date -d "@$epoch" +"%H:%M:%S"
+}
+
 # === Output formatters (pure) ==============================================
 #
 # These take inputs and emit text — no I/O beyond stdin/stdout, no globals.
@@ -427,16 +528,20 @@ now_clock() { date +"%H:%M:%S"; }
 # dispatch uses that item's manifest label (e.g. `review`).
 #
 # Outcome label vocabulary by stage:
-#   implement:   in-review | done | dispatch-aborted | FAIL | halt → FAIL
-#   <item-label>: clean → done | left-for-human | review-aborted | gate-failed | halt → gate-failed | halt → runaway
+#   implement:   in-review | done | dispatch-aborted | window-exhausted | FAIL | halt → FAIL
+#   <item-label>: clean → done | left-for-human | review-aborted | window-exhausted | gate-failed | halt → gate-failed | halt → runaway
 #
 # Combined per-iteration outcome (used in the end-of-run table and
-# SUMMARY.md row): `done | left-for-human | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL | halt → runaway`.
+# SUMMARY.md row): `done | left-for-human | gate-failed | review-aborted | dispatch-aborted | window-exhausted | in-review | FAIL | halt → runaway`.
 #   done             — AFK + walk item reached done/wontfix/absent (stop-success)
 #   left-for-human   — AFK + walk exhausted, issue still at in-review (no abort flag)
 #   gate-failed      — AFK + item dispatch errored or off-mission
 #   review-aborted   — AFK + item subprocess transport-crashed (empty/5xx/429/network log)
 #   dispatch-aborted — implement subprocess transport-crashed
+#   window-exhausted — dispatch (implement or item) still usage-window-rejected after
+#                      RUNNER_WINDOW_RETRY_MAX_WAITS window-waits (quota structurally
+#                      insufficient, not a blip; the abort flag's dispatch: field
+#                      names the stage)
 #   in-review        — interrupt between implement and walk start (walk not run)
 #   FAIL             — implement-stage failure (classifier, propagation, container)
 #   halt → runaway   — AFK + post-implement step pushed issue back to ready-for-agent (run halted)
@@ -451,6 +556,32 @@ format_progress_start() {
 format_progress_outcome() {
   local clock="$1" ref="$2" stage="$3" label="$4" duration="$5"
   printf '[%s] %s %s → %s (%s)\n' "$clock" "$ref" "$stage" "$label" "$(humanize_duration "$duration")"
+}
+
+# Window-wait progress lines (issue #75). Two static lines per wait — no
+# heartbeat, no liveness renderer during the wait. Mirrored into runner.log
+# by the existing tee capture, like every other progress line.
+
+# Wait-start form when the rejected event carried a resetsAt: absolute
+# deadline clock, humanized wait length, and `wait N of M`.
+format_window_wait_line() {
+  local clock="$1" rl_type="$2" deadline_clock="$3" wait_seconds="$4" wait_n="$5" max_waits="$6"
+  printf '[%s] runner: usage window exhausted (%s) — waiting until %s (%s; wait %s of %s)\n' \
+    "$clock" "$rl_type" "$deadline_clock" "$(humanize_duration "$wait_seconds")" \
+    "$wait_n" "$max_waits"
+}
+
+# Wait-start form when the rejected event carried no resetsAt: names the
+# fallback so the operator can tell a guessed wait from a known deadline.
+format_window_wait_fallback_line() {
+  local clock="$1" rl_type="$2" wait_seconds="$3" wait_n="$4" max_waits="$5"
+  printf '[%s] runner: usage window exhausted (%s) — resetsAt absent; waiting %ss (fallback; wait %s of %s)\n' \
+    "$clock" "$rl_type" "$wait_seconds" "$wait_n" "$max_waits"
+}
+
+# Resume form: emitted right before the post-wait re-dispatch.
+format_window_resume_line() {
+  printf '[%s] runner: usage window reset — retrying dispatch\n' "$1"
 }
 
 # End-of-run table. Reads `feature|nn|ref|outcome|duration|review_present|attempt_count|propagation`
@@ -756,14 +887,17 @@ fail_invariant() {
 #
 # The maintainer removes the flag with `rm` to re-include the ref.
 # Flag format (plain text, no parser needed):
-#   type: technical|transport
+#   type: technical|transport|window
 #   dispatch: implement|<item-label>
 #   at: <ISO-8601 UTC>
 #   exit: <container exit code>
 #   log: <repo-relative path to dispatch log>
 #
 # `type` distinguishes transport-class failures (API 5xx/429, network errors,
-# empty log) from genuine technical failures (model error, bad brief, etc.).
+# empty log) and window-exhausted failures (usage window still rejected after
+# the window-wait budget — the quota is structurally insufficient, not a blip
+# to `rm` and re-run) from genuine technical failures (model error, bad
+# brief, etc.).
 #
 # Args: $1=feature  $2=nn  $3=dispatch(implement|<item-label>)  $4=exit_code  $5=log_file
 #       [$6=type (default: technical)]
@@ -1450,15 +1584,25 @@ ensure_runner_checkout() {
   fi
 }
 
-# 0. Transport-retry knob sanity. RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS feeds
+# 0. Retry knob sanity. RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS feeds
 #    with_transport_retry's budget check `[ "$attempt" -ge "$max" ]`; a
 #    non-numeric value makes that test error and evaluate false, so the
 #    budget would never trip and a persistent transport crash would retry
-#    without bound. Refuse up front instead.
+#    without bound. The numeric window knobs (issue #75) feed the analogous
+#    `[ "$waits" -ge "$max_waits" ]` budget check and the wait-loop bound in
+#    with_window_retry, with the same failure mode. Refuse up front instead.
 check_retry_knobs() {
   case "$RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS" in
     ''|*[!0-9]*) fail_invariant "retry-knobs" \
       "RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS must be a whole number, got '$RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS'";;
+  esac
+  case "$RUNNER_WINDOW_RETRY_FALLBACK_WAIT" in
+    ''|*[!0-9]*) fail_invariant "retry-knobs" \
+      "RUNNER_WINDOW_RETRY_FALLBACK_WAIT must be a whole number, got '$RUNNER_WINDOW_RETRY_FALLBACK_WAIT'";;
+  esac
+  case "$RUNNER_WINDOW_RETRY_MAX_WAITS" in
+    ''|*[!0-9]*) fail_invariant "retry-knobs" \
+      "RUNNER_WINDOW_RETRY_MAX_WAITS must be a whole number, got '$RUNNER_WINDOW_RETRY_MAX_WAITS'";;
   esac
 }
 
@@ -1885,6 +2029,19 @@ run_sandbox_container() {
   return "$rc"
 }
 
+# Window-exhausted gate inside the transport-retry loop (issue #75). A
+# rejected usage window arrives dressed as a 429 result event, which
+# is_transport_crash would classify as transport — burning the bounded
+# backoff budget against a quota that is hours from returning. Checked
+# before the transport rung so the accompanying 429 never consumes the
+# transport budget; `with_window_retry` owns the wait-and-retry. Always
+# false (gate closed) when RUNNER_DISABLE_WINDOW_RETRY=1, restoring the
+# pre-#75 transport path.
+_window_exhausted_gate() {
+  [ "${RUNNER_DISABLE_WINDOW_RETRY:-0}" = "1" ] && return 1
+  is_window_exhausted "$1"
+}
+
 # Cosmetic label for the runner.log transport-retry line. Reads the same stdout
 # event stream (and may read the human-readable result text); it NEVER feeds the
 # retry decision — that is is_transport_crash's job alone (issue #71). Assumes
@@ -1960,19 +2117,25 @@ with_transport_retry() {
     rc=0
     "$dispatch_fn" "$log_base" "$@" || rc=$?
 
-    # Exit the retry loop when: success, retry disabled, not a transport crash,
-    # or budget exhausted.
+    # Exit the retry loop when: success, retry disabled, window-exhausted
+    # (the rejected-window 429 is with_window_retry's class, not transport's —
+    # checked before the transport rung so it never consumes this budget),
+    # not a transport crash, or budget exhausted.
     if [ "$rc" -eq 0 ] \
         || [ "${RUNNER_DISABLE_TRANSPORT_RETRY:-0}" = "1" ] \
+        || _window_exhausted_gate "$log_base.stdout.jsonl" \
         || ! is_transport_crash "$log_base.stdout.jsonl" "$rc" \
         || [ "$attempt" -ge "$max" ]; then
       break
     fi
 
-    # Archive this attempt's artifacts before the next attempt overwrites them.
-    cp "$log_base.stdout.jsonl" "${log_base}.stdout.jsonl.attempt-${attempt}" 2>/dev/null || true
+    # Archive this attempt's artifacts before the next attempt overwrites
+    # them. TRANSPORT_RETRY_ATTEMPT_OFFSET (set by with_window_retry) keeps
+    # the .attempt-<n> numbering continuous across window-wait rounds.
+    local archive_n=$(( ${TRANSPORT_RETRY_ATTEMPT_OFFSET:-0} + attempt ))
+    cp "$log_base.stdout.jsonl" "${log_base}.stdout.jsonl.attempt-${archive_n}" 2>/dev/null || true
     [ -f "$log_base.stderr.log" ] \
-      && cp "$log_base.stderr.log" "${log_base}.stderr.log.attempt-${attempt}" 2>/dev/null || true
+      && cp "$log_base.stderr.log" "${log_base}.stderr.log.attempt-${archive_n}" 2>/dev/null || true
 
     # Defensive guard: if the runner-checkout advanced between attempts, a
     # previous attempt committed partial work — retrying would replay
@@ -1996,7 +2159,7 @@ with_transport_retry() {
     backoff="${backoff:-240}"
 
     local crash_class next_attempt
-    crash_class="$(_transport_crash_class "${log_base}.stdout.jsonl.attempt-${attempt}" "$rc")"
+    crash_class="$(_transport_crash_class "${log_base}.stdout.jsonl.attempt-${archive_n}" "$rc")"
     next_attempt=$(( attempt + 1 ))
     echo "[$(now_clock)] runner: transport-crash detected ($crash_class) — retrying in ${backoff}s (attempt $next_attempt of $max)"
 
@@ -2021,6 +2184,104 @@ with_transport_retry() {
   return "$rc"
 }
 
+# Wrap with_transport_retry with the window-exhausted retry class (issue
+# #75). After a failed round whose stream's last parseable rate_limit_event
+# has `status:"rejected"`, sleeps until resetsAt + 60s slack (fixed; a past
+# resetsAt degrades to the bare 60s) — or RUNNER_WINDOW_RETRY_FALLBACK_WAIT
+# when the event carries no resetsAt — then re-dispatches. Window-waits do
+# not consume the transport budget: each round re-enters with_transport_retry
+# with a fresh attempt counter, while archived artifacts continue the same
+# `.attempt-<n>` numbering via TRANSPORT_RETRY_ATTEMPT_OFFSET.
+#
+# Bounded by RUNNER_WINDOW_RETRY_MAX_WAITS per dispatch; on a further
+# rejection past the budget the wrapper gives up and sets
+# WINDOW_RETRY_GAVE_UP=1 for the caller's outcome labeling (combined outcome
+# `window-exhausted`, abort-flag type `window`). The wait is the
+# interruptible 1s-poll pattern: Ctrl-C mid-wait returns the dispatch's exit
+# code so the run's stop reason stays "interrupted" and no abort flag is
+# written. No liveness renderer runs during the wait — the two static
+# progress lines (wait-start, resume) are the operator surface, mirrored
+# into runner.log by the existing capture.
+#
+# Sets TRANSPORT_RETRY_ATTEMPTS to the cumulative attempt count across all
+# rounds (the SUMMARY `(N attempts)` input). Returns the final round's exit
+# code; the final stream stays at `<base>.stdout.jsonl`.
+#
+# Args: $1=log_base  $2=dispatch_fn  [remaining args forwarded]
+# Sourceable from bats.
+with_window_retry() {
+  local log_base="$1" dispatch_fn="$2"
+  shift 2
+
+  local max_waits="$RUNNER_WINDOW_RETRY_MAX_WAITS"
+  local waits=0 rc=0 total_attempts=0
+  WINDOW_RETRY_GAVE_UP=0
+
+  while true; do
+    rc=0
+    TRANSPORT_RETRY_ATTEMPT_OFFSET="$total_attempts"
+    with_transport_retry "$log_base" "$dispatch_fn" "$@" || rc=$?
+    TRANSPORT_RETRY_ATTEMPT_OFFSET=0
+    total_attempts=$(( total_attempts + ${TRANSPORT_RETRY_ATTEMPTS:-1} ))
+
+    # Exit when: success, window retry disabled, interrupted, or the round
+    # did not die window-exhausted.
+    if [ "$rc" -eq 0 ] \
+        || [ "${RUNNER_DISABLE_WINDOW_RETRY:-0}" = "1" ] \
+        || [ "${RUNNER_INTERRUPTED:-0}" -eq 1 ] \
+        || ! is_window_exhausted "$log_base.stdout.jsonl"; then
+      break
+    fi
+    if [ "$waits" -ge "$max_waits" ]; then
+      # A rejection past the wait budget means the quota is structurally
+      # insufficient for this dispatch, not a blip — give up.
+      WINDOW_RETRY_GAVE_UP=1
+      break
+    fi
+    waits=$(( waits + 1 ))
+
+    # Archive the rejected round's artifacts, continuing the transport
+    # wrapper's .attempt-<n> numbering.
+    cp "$log_base.stdout.jsonl" "${log_base}.stdout.jsonl.attempt-${total_attempts}" 2>/dev/null || true
+    [ -f "$log_base.stderr.log" ] \
+      && cp "$log_base.stderr.log" "${log_base}.stderr.log.attempt-${total_attempts}" 2>/dev/null || true
+
+    local resets_at rl_type wait_seconds now
+    resets_at="$(window_resets_at "$log_base.stdout.jsonl")"
+    rl_type="$(window_rate_limit_type "$log_base.stdout.jsonl")"
+    now="$(date +%s)"
+    if [ -n "$resets_at" ]; then
+      wait_seconds="$(window_wait_seconds "$resets_at" "$now")"
+      format_window_wait_line "$(now_clock)" "$rl_type" \
+        "$(epoch_clock $(( now + wait_seconds )))" "$wait_seconds" "$waits" "$max_waits"
+    else
+      wait_seconds="$RUNNER_WINDOW_RETRY_FALLBACK_WAIT"
+      format_window_wait_fallback_line "$(now_clock)" "$rl_type" \
+        "$wait_seconds" "$waits" "$max_waits"
+    fi
+
+    # 1-second poll loop so RUNNER_INTERRUPTED cuts the wait short — the
+    # run's stop reason stays "interrupted", not "window-exhausted".
+    local elapsed=0
+    while [ "$elapsed" -lt "$wait_seconds" ]; do
+      if [ "${RUNNER_INTERRUPTED:-0}" -eq 1 ]; then
+        TRANSPORT_RETRY_ATTEMPTS="$total_attempts"
+        return "$rc"
+      fi
+      sleep 1
+      elapsed=$(( elapsed + 1 ))
+    done
+    if [ "${RUNNER_INTERRUPTED:-0}" -eq 1 ]; then
+      TRANSPORT_RETRY_ATTEMPTS="$total_attempts"
+      return "$rc"
+    fi
+    format_window_resume_line "$(now_clock)"
+  done
+
+  TRANSPORT_RETRY_ATTEMPTS="$total_attempts"
+  return "$rc"
+}
+
 # Implement-dispatch wrapper: hands `claude -p "/implement <ref>"` to the
 # sandbox via the transport-retry layer, in streamed structured-event mode.
 # Tracker-snapshot delta is the source of truth for the success/failure
@@ -2030,7 +2291,7 @@ run_dispatch_container() {
   local ref="$1" log_base="$2"
   local model_args=()
   [ -n "${ARG_MODEL:-}" ] && model_args=(--model "$ARG_MODEL")
-  with_transport_retry "$log_base" run_sandbox_container \
+  with_window_retry "$log_base" run_sandbox_container \
     claude -p "/implement $ref" --output-format stream-json --verbose --dangerously-skip-permissions \
     "${model_args[@]+"${model_args[@]}"}"
 }
@@ -2045,7 +2306,7 @@ run_item_container() {
   prompt_text="$(cat "$prompt_path")"$'\n'"$ref"
   local model_args=()
   [ -n "${ARG_MODEL:-}" ] && model_args=(--model "$ARG_MODEL")
-  with_transport_retry "$log_base" run_sandbox_container \
+  with_window_retry "$log_base" run_sandbox_container \
     claude -p "$prompt_text" --output-format stream-json --verbose --dangerously-skip-permissions \
     "${model_args[@]+"${model_args[@]}"}"
 }
@@ -2444,6 +2705,7 @@ walk_post_implement_steps() {
     local item_rc=0
     run_item_container "$ref" "$item_log_base" "$item_path" || item_rc=$?
     local item_attempts="${TRANSPORT_RETRY_ATTEMPTS:-1}"
+    local item_window_gave_up="${WINDOW_RETRY_GAVE_UP:-0}"
     total_attempts="$item_attempts"
 
     # Extract the agent's closing message into the per-step readable summary.
@@ -2521,8 +2783,13 @@ walk_post_implement_steps() {
         ;;
 
       fail)
+        # window-exhausted takes precedence over the transport flavour — the
+        # rejected window's accompanying 429 still reads as a transport crash.
         local item_combined_label item_progress_label
-        if [ "$item_transport_crash" = "true" ]; then
+        if [ "$item_window_gave_up" = "1" ]; then
+          item_progress_label="window-exhausted"
+          item_combined_label="window-exhausted"
+        elif [ "$item_transport_crash" = "true" ]; then
           item_progress_label="review-aborted"
           item_combined_label="review-aborted"
         else
@@ -2532,6 +2799,7 @@ walk_post_implement_steps() {
         format_progress_outcome "$(now_clock)" "$ref" "$item_label" "$item_progress_label" "$item_duration"
         local flag_type="technical"
         [ "$item_transport_crash" = "true" ] && flag_type="transport"
+        [ "$item_window_gave_up" = "1" ] && flag_type="window"
         write_abort_flag "$feature" "$nn" "$item_label" "$item_rc" "$item_log_base.stdout.jsonl" "$flag_type"
         if [ "$item_has_runner_commits" -eq 1 ]; then
           if ! propagate_feature "$feature"; then
@@ -2675,6 +2943,7 @@ dispatch_one() {
   local impl_rc=0
   run_dispatch_container "$ref" "$log_base" || impl_rc=$?
   local impl_attempts="${TRANSPORT_RETRY_ATTEMPTS:-1}"
+  local impl_window_gave_up="${WINDOW_RETRY_GAVE_UP:-0}"
   echo "$impl_rc" > "$exit_file"
 
   # Extract the agent's closing message into the per-dispatch readable summary.
@@ -2749,9 +3018,11 @@ dispatch_one() {
   impl_duration=$(( impl_ended_at - started_at ))
 
   # Implement stage outcome label: in-review|done from the post-snapshot
-  # on classifier success, dispatch-aborted on transport crash, FAIL otherwise.
-  # /implement normally lands at in-review; a maintainer-adjusted brief
-  # may land at done.
+  # on classifier success, window-exhausted when the window-retry wrapper
+  # gave up (takes precedence over the transport flavour — the accompanying
+  # 429 still reads as a transport crash), dispatch-aborted on transport
+  # crash, FAIL otherwise. /implement normally lands at in-review; a
+  # maintainer-adjusted brief may land at done.
   local impl_label="FAIL"
   if [ "$classifier_verdict" = "success" ]; then
     local post_status
@@ -2761,6 +3032,8 @@ dispatch_one() {
       in-review|done) impl_label="$post_status" ;;
       *)              impl_label="FAIL" ;;
     esac
+  elif [ "$impl_window_gave_up" = "1" ]; then
+    impl_label="window-exhausted"
   elif [ "$classifier_verdict" = "dispatch-aborted" ]; then
     impl_label="dispatch-aborted"
   fi
@@ -2809,10 +3082,12 @@ dispatch_one() {
     if [ "$post_eligible" = "true" ]; then
       local impl_flag_type="technical"
       [ "$classifier_verdict" = "dispatch-aborted" ] && impl_flag_type="transport"
+      [ "$impl_window_gave_up" = "1" ] && impl_flag_type="window"
       write_abort_flag "$feature" "$nn" "implement" "$impl_rc" "$log_base.stdout.jsonl" "$impl_flag_type"
     fi
     local impl_abort_outcome="FAIL"
     [ "$classifier_verdict" = "dispatch-aborted" ] && impl_abort_outcome="dispatch-aborted"
+    [ "$impl_window_gave_up" = "1" ] && impl_abort_outcome="window-exhausted"
     record_dispatch "$feature" "$nn" "$ref" "$impl_abort_outcome" "$impl_duration" "" "$impl_attempts"
     return 1
   fi

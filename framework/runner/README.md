@@ -94,6 +94,7 @@ combined-outcome column. The combined-outcome vocabulary is:
 | `gate-failed` | Gate dispatch errored or landed on an off-mission status. Runner writes a `type: technical` abort flag and continues. |
 | `review-aborted` | Gate subprocess transport-crashed (empty log, API 5xx/429, network error) and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
 | `dispatch-aborted` | Implement subprocess transport-crashed and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
+| `window-exhausted` | The dispatch (implement or walk item — the abort flag's `dispatch:` field names the stage) still died usage-window-rejected after `RUNNER_WINDOW_RETRY_MAX_WAITS` window-waits. The quota is structurally insufficient for this dispatch, not a blip to `rm` and re-run. Runner writes a `type: window` abort flag and continues. |
 | `in-review` | AFK iteration interrupted between implement-finish and the start of the post-implement walk: implement landed `in-review`, the interrupt pre-empted the first walk step, and the iteration is recorded at its implement outcome. |
 | `FAIL` | Implement-stage failure (classifier verdict, container error, or parking-ref publish failure). Any `tracker:` work the dispatch did commit (notably the comment `/implement` posts on a bail) is still propagated to the host so it shows up on your branch when you return. |
 | `halt → runaway` | A post-implement step drove the issue back to `ready-for-agent` (eligible) — a misconfigured manifest that would otherwise re-dispatch the same ref forever. The runner halts the entire run immediately. No abort flag (the issue is eligible, not stuck); the maintainer fixes the manifest. |
@@ -153,6 +154,29 @@ Set `RUNNER_DISABLE_TRANSPORT_RETRY=1` to skip the retry layer entirely (useful 
 | `RUNNER_TRANSPORT_RETRY_BACKOFFS` | `"30 90 240"` | Space-separated list of wait seconds for attempts 1→2, 2→3, 3→4, … If the list is shorter than the attempt budget, the last entry is reused for the remaining gaps |
 | `RUNNER_DISABLE_TRANSPORT_RETRY` | `0` | Set to `1` to bypass all retry logic |
 
+## Window-exhausted retry
+
+An exhausted usage window (e.g. the account's five-hour window with no overage credit) is a distinct retryable class, not a transport blip: the dispatch dies in under a second with a well-formed event stream whose `rate_limit_event` carries `status:"rejected"` (and usually a `resetsAt` epoch), dressed as a 429 terminal result. Detection reads only that structured event — never the assistant/result text, whose wording varies across CLI versions — and skips unparseable `rate_limit_event` lines (they can be injected mid-NDJSON-line, corrupting adjacent lines).
+
+When a failed dispatch's stream ends window-rejected, the runner — instead of burning the transport backoff budget against a quota that is hours from returning — sleeps until `resetsAt` plus a fixed 60-second slack (a `resetsAt` already in the past degrades to the bare 60s; no cap on a single sleep) and re-dispatches. When the rejected event carries no `resetsAt`, it waits `RUNNER_WINDOW_RETRY_FALLBACK_WAIT` seconds instead. At most `RUNNER_WINDOW_RETRY_MAX_WAITS` window-waits per dispatch; a further rejection past that budget records the combined outcome `window-exhausted` and a `type: window` abort flag.
+
+Window-waits do not consume the transport-retry budget, and the transport attempt counter resets after each window-wait; archived per-attempt logs continue the same `.attempt-<N>` numbering, and the SUMMARY's `(N attempts)` suffix counts all rounds. The wait is a 1-second poll loop, so `Ctrl-C` exits immediately (stop reason `interrupted`, no abort flag). No liveness line is painted during the wait; the operator surface is two static progress lines, mirrored into `runner.log`:
+
+```
+[09:25:57] runner: usage window exhausted (five_hour) — waiting until 13:17:00 (3h 51m; wait 1 of 2)
+[13:17:00] runner: usage window reset — retrying dispatch
+```
+
+(the parenthesized type is the event's `rateLimitType`; when the event carries no `resetsAt` the first line reads `— resetsAt absent; waiting 3600s (fallback; wait 1 of 2)`).
+
+**Knobs** (the numeric ones get the same pre-flight non-numeric refusal as the transport knobs):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `RUNNER_WINDOW_RETRY_FALLBACK_WAIT` | `3600` | Seconds to wait when the rejected event carries no `resetsAt` |
+| `RUNNER_WINDOW_RETRY_MAX_WAITS` | `2` | Window-waits allowed per dispatch before giving up with `window-exhausted` |
+| `RUNNER_DISABLE_WINDOW_RETRY` | `0` | Set to `1` to skip the rejected-event check entirely — a window-exhausted 429 then degrades to the transport path |
+
 ## Resuming after a technical failure
 
 When a dispatch fails and the issue could otherwise be re-picked (implement failure with the issue still eligible, or gate failure), the runner writes a plain-text abort flag at `.runner-state/aborted/<feature>/<NN>`. Eligibility selection skips flagged refs on every subsequent run, preventing infinite re-dispatch across restarts.
@@ -162,9 +186,10 @@ The flag's first line identifies the failure class:
 ```
 type: technical   # model error, bad brief, or other non-transport cause
 type: transport   # transport-class crash: API 5xx/429, network error, or empty log
+type: window      # usage window still rejected after the window-wait budget
 ```
 
-A `type: transport` flag means the dispatch hit a transport-class fault — the terminal `result` event reported a retryable error (HTTP 429 / 5xx, or a connection-layer fault with no HTTP status), or the dispatch died with no recoverable result event and a nonzero exit. The failure is infrastructure, not a problem with the brief or implementation. A `type: technical` flag means the dispatch produced a result event indicating a genuine failure (e.g. a non-transport 4xx). The `log` field points at the dispatch's event-stream artifact; its `.stderr.log` sibling holds diagnostics. Sample flag with the full layout:
+A `type: transport` flag means the dispatch hit a transport-class fault — the terminal `result` event reported a retryable error (HTTP 429 / 5xx, or a connection-layer fault with no HTTP status), or the dispatch died with no recoverable result event and a nonzero exit. The failure is infrastructure, not a problem with the brief or implementation. A `type: technical` flag means the dispatch produced a result event indicating a genuine failure (e.g. a non-transport 4xx). A `type: window` flag means the dispatch was still usage-window-rejected after `RUNNER_WINDOW_RETRY_MAX_WAITS` window-waits — the account's quota is structurally insufficient for this dispatch, so re-running without more quota (or a smaller slice) will hit the same wall. The `log` field points at the dispatch's event-stream artifact; its `.stderr.log` sibling holds diagnostics. Sample flag with the full layout:
 
 ```
 type: transport
