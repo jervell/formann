@@ -771,6 +771,30 @@ _setup_retry_test() {
   [ "$(cat "$SANDBOX_CALL_COUNT_FILE")" -ge 2 ]
 }
 
+@test "env-overridable defaults — exported overrides survive runner source; unset falls back to documented defaults" {
+  # This test exercises the environment path: variables must be exported before
+  # the runner is sourced, and the runner must not stomp them with plain
+  # assignments. It fails against plain `VAR=val` and passes after conversion
+  # to `: "\${VAR:=val}"`.
+
+  # Part 1: pre-exported values must survive.
+  local out
+  out=$(
+    export RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=7
+    export RUNNER_TRANSPORT_RETRY_BACKOFFS="5 10 15"
+    bash -c "source '$RUNNER_SCRIPT'; printf '%s\n' \"\$RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS\" \"\$RUNNER_TRANSPORT_RETRY_BACKOFFS\""
+  )
+  [ "$out" = "$(printf '7\n5 10 15')" ]
+
+  # Part 2: documented defaults (4 attempts, "30 90 240") must apply when unset.
+  out=$(bash -c "
+    unset RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS RUNNER_TRANSPORT_RETRY_BACKOFFS
+    source '$RUNNER_SCRIPT'
+    printf '%s\n' \"\$RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS\" \"\$RUNNER_TRANSPORT_RETRY_BACKOFFS\"
+  ")
+  [ "$out" = "$(printf '4\n30 90 240')" ]
+}
+
 # === check_manifest ===========================================================
 #
 # Pre-flight invariant: the consumer-owned manifest must exist and be valid

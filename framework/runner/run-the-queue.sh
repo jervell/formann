@@ -78,8 +78,8 @@ RUNNER_KILL_GRACE_SECONDS=10
 # comfortably covers the observed ~270s blip; the step sizes keep mid-blip
 # waits short while the total budget stays bounded under 6 minutes. Four
 # attempts total: initial + three retries spaced by the backoff schedule.
-RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=4
-RUNNER_TRANSPORT_RETRY_BACKOFFS="30 90 240"
+: "${RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS:=4}"
+: "${RUNNER_TRANSPORT_RETRY_BACKOFFS:=30 90 240}"
 # When set to 1, the wrapper short-circuits to a single attempt regardless of
 # is_transport_crash's verdict — useful for testing and declared-outage
 # situations where the operator wants to fail fast.
