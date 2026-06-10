@@ -5560,6 +5560,89 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
   [ "$ISSUE_NN" = "01" ]
 }
 
+# === parse_args — --model flag ============================================
+
+@test "parse_args — --model sets ARG_MODEL in all modes (drain)" {
+  ARG_FEATURE=""
+  ARG_ISSUE_REF=""
+  ARG_MODEL=""
+  ISSUE_FEATURE=""
+  ISSUE_NN=""
+  RUN_MODE=""
+
+  parse_args --model claude-opus-4-8
+  [ "$ARG_MODEL" = "claude-opus-4-8" ]
+  [ "$RUN_MODE" = "drain" ]
+}
+
+@test "parse_args — --model combined with --feature" {
+  ARG_FEATURE=""
+  ARG_ISSUE_REF=""
+  ARG_MODEL=""
+  ISSUE_FEATURE=""
+  ISSUE_NN=""
+  RUN_MODE=""
+
+  parse_args --feature my-feature --model claude-haiku-4-5-20251001
+  [ "$ARG_MODEL" = "claude-haiku-4-5-20251001" ]
+  [ "$RUN_MODE" = "loop" ]
+}
+
+@test "parse_args — --model without value exits 2 with usage diagnostic" {
+  ARG_FEATURE=""
+  ARG_ISSUE_REF=""
+  ARG_MODEL=""
+  ISSUE_FEATURE=""
+  ISSUE_NN=""
+  RUN_MODE=""
+
+  run parse_args --model
+  assert_failure 2
+  assert_output --partial "--model requires"
+}
+
+# === run_dispatch_container / run_item_container — --model flag ===========
+
+@test "run_dispatch_container — passes --model when ARG_MODEL is set" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  ARG_MODEL="claude-opus-4-8"
+  run_dispatch_container "#74" "$BATS_TEST_TMPDIR/base"
+  grep -q -- '--model claude-opus-4-8' "$cap"
+}
+
+@test "run_dispatch_container — no --model flag when ARG_MODEL is empty" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  ARG_MODEL=""
+  run_dispatch_container "#74" "$BATS_TEST_TMPDIR/base"
+  ! grep -q -- '--model' "$cap"
+}
+
+@test "run_item_container — passes --model when ARG_MODEL is set" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  local prompt="$BATS_TEST_TMPDIR/step.md"
+  printf 'Do the review step.\n' >"$prompt"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  ARG_MODEL="claude-sonnet-4-6"
+  run_item_container "#74" "$BATS_TEST_TMPDIR/base" "$prompt"
+  grep -q -- '--model claude-sonnet-4-6' "$cap"
+}
+
+@test "run_item_container — no --model flag when ARG_MODEL is empty" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  local prompt="$BATS_TEST_TMPDIR/step.md"
+  printf 'Do the review step.\n' >"$prompt"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  ARG_MODEL=""
+  run_item_container "#74" "$BATS_TEST_TMPDIR/base" "$prompt"
+  ! grep -q -- '--model' "$cap"
+}
+
 # === check_discovery — discovery.json persistence =========================
 
 @test "finalize_run — drain mode writes per-feature-section SUMMARY.md" {
