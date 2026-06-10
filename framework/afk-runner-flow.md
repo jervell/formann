@@ -13,7 +13,7 @@ Conventions:
 
 | Source                                       | What it provides                                                                                            |
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| CLI arguments                                | Three modes — **bare invocation** (drain every active feature), `--feature <slug>` (narrow to one feature), `--issue <ref>` (single-dispatch). |
+| CLI arguments                                | Three modes — **bare invocation** (drain every active feature), `--feature <slug>` (narrow to one feature), `--issue <ref>` (single-dispatch). Optional `--model <id>` overrides the model for every dispatch in the run. |
 | Host repo                                    | Host's HEAD and working tree are not consulted — runner is independent of local state. `tracker-snapshot --list` returns the slugs to consider; per-feature gates handle the rest at iteration time. |
 | Keychain                                     | OAuth token at service `claude-code-oauth`, account `anthropic` (macOS Keychain / libsecret / keyctl).      |
 | Docker daemon                                | Image `afk-runner-sandbox`, network `afk-runner-sandbox` (with RFC1918-deny rules), volume `runner-mvn-cache-<feature>` (created lazily per drained feature). |

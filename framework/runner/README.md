@@ -3,11 +3,13 @@
 Bash-driven runner that drains a feature's `ready-for-agent + AFK` queue by
 dispatching `/implement` per issue inside a sandboxed Docker container.
 
-`run-the-queue.sh` has three invocation forms:
+`run-the-queue.sh` has three invocation forms, each accepting an optional `--model <id>` flag:
 
 - **Bare invocation** (`run-the-queue.sh`, no args) — **drain mode**. Walks every active feature returned by `tracker-snapshot --list` (the discovery output, persisted to `<run-dir>/discovery.json`) and drains the ones it's allowed to touch. Features skipped for per-feature reasons (`fetch-failed`, `feature-snapshot-failed`, `queue-empty`) produce a SUMMARY row and the run continues. This is the scheduled-job shape: fire the runner regardless of which branch you have checked out; every authorized AFK queue advances.
 - **`--feature <slug>`** — **loop mode**. Narrows to one feature; refuses loudly on a structural gate failure (`unknown-feature`).
 - **`--issue <feature>/<NN>`** — **single-dispatch mode**. Dispatches one ref; refuses loudly on eligibility gate failures.
+
+`--model <id>` overrides the model for every dispatch in the run (implement stage and each post-implement walk item). An unknown id is rejected by the CLI inside the container and surfaces as a normal dispatch failure — the runner keeps no model whitelist. When the flag is given, the model appears in the SUMMARY.md run line and `runner.log`; without it, behavior is byte-identical to prior runs.
 
 Drain mode stops on: every feature considered (`completed`); Ctrl-C (`interrupted`); or `tracker-snapshot --list` itself failing (`preflight-abort: discovery`).
 

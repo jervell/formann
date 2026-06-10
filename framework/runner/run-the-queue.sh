@@ -2,9 +2,14 @@
 # AFK runner.
 #
 # Usage:
-#   run-the-queue.sh                            # drain mode — every active feature
-#   run-the-queue.sh --feature <slug>           # loop mode — one feature
-#   run-the-queue.sh --issue <feature>/<NN>     # single-dispatch mode
+#   run-the-queue.sh [--model <id>]                            # drain mode — every active feature
+#   run-the-queue.sh [--model <id>] --feature <slug>           # loop mode — one feature
+#   run-the-queue.sh [--model <id>] --issue <feature>/<NN>     # single-dispatch mode
+#
+# `--model <id>` overrides the model for every dispatch in the run (implement
+# and each walk item). An unknown id is rejected by the CLI inside the
+# container and surfaces as a normal dispatch failure. Without the flag,
+# the CLI defaults apply and output is byte-identical to prior behavior.
 #
 # Bare invocation walks every feature returned by `tracker-snapshot --list`
 # and drains the ones it's allowed to touch (per-feature gate decides).
@@ -524,14 +529,20 @@ format_end_of_run_table() {
 # An end-of-run "## Unpulled parked work" section follows the table whenever
 # any dispatch parked; it is omitted entirely when no dispatch parked.
 # `end_state` is the verb used in the run line — "ended" or "interrupted".
+# Optional $7 = model id (when set, appended to the run line as ", model: <id>").
 format_summary_md() {
-  local feature="$1" ts="$2" start_clock="$3" end_clock="$4" end_state="$5" stop_reason="$6"
+  local feature="$1" ts="$2" start_clock="$3" end_clock="$4" end_state="$5" stop_reason="$6" \
+        model="${7:-}"
   # Capture once so the table awk and the parked-work aggregator both see the
   # same records without the caller having to materialize them twice.
   local records
   records="$(cat)"
   printf '# AFK runner — %s\n\n' "$feature"
-  printf -- '- Run: %s (started %s, %s %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock"
+  if [ -n "$model" ]; then
+    printf -- '- Run: %s (started %s, %s %s, model: %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock" "$model"
+  else
+    printf -- '- Run: %s (started %s, %s %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock"
+  fi
   printf -- '- Stop reason: %s\n\n' "$stop_reason"
   printf '| issue | outcome | duration | propagation | logs |\n'
   printf '|-------|---------|----------|-------------|------|\n'
@@ -583,14 +594,20 @@ format_summary_md() {
 # verbatim, or `-` when empty; an end-of-run "## Unpulled parked work"
 # section follows when any dispatch parked, and is omitted entirely when no
 # dispatch parked.
+# Optional $6 = model id (when set, appended to the run line as ", model: <id>").
 format_multi_feature_summary_md() {
-  local ts="$1" start_clock="$2" end_clock="$3" end_state="$4" stop_reason="$5"
+  local ts="$1" start_clock="$2" end_clock="$3" end_state="$4" stop_reason="$5" \
+        model="${6:-}"
   # Capture once so the per-feature renderer and `format_parked_ledger` both
   # see the same records.
   local records
   records="$(cat)"
   printf '# AFK runner — multi-feature drain\n\n'
-  printf -- '- Run: %s (started %s, %s %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock"
+  if [ -n "$model" ]; then
+    printf -- '- Run: %s (started %s, %s %s, model: %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock" "$model"
+  else
+    printf -- '- Run: %s (started %s, %s %s)\n' "$ts" "$start_clock" "$end_state" "$end_clock"
+  fi
   printf -- '- Stop reason: %s\n\n' "$stop_reason"
   printf '%s' "$records" | awk -F'|' '
     function humanize_dur(s,    h,m,r) {
@@ -944,11 +961,11 @@ finalize_run() {
       if [ "$RUN_MODE" = "drain" ]; then
         print_multi_feature_records | format_multi_feature_summary_md \
           "$RUN_TS" "$RUN_START_CLOCK" "$end_clock" \
-          "$end_state" "$stop_reason" >"$RUN_DIR/SUMMARY.md"
+          "$end_state" "$stop_reason" "${ARG_MODEL:-}" >"$RUN_DIR/SUMMARY.md"
       else
         print_dispatch_records | format_summary_md \
           "$RUN_FEATURE" "$RUN_TS" "$RUN_START_CLOCK" "$end_clock" \
-          "$end_state" "$stop_reason" >"$RUN_DIR/SUMMARY.md"
+          "$end_state" "$stop_reason" "${ARG_MODEL:-}" >"$RUN_DIR/SUMMARY.md"
       fi
       # Append swept parking refs section when at least one ref was swept.
       if [ "${#RUN_SWEPT_REFS[@]}" -gt 0 ]; then
@@ -969,6 +986,7 @@ finalize_run() {
 
 ARG_ISSUE_REF=""
 ARG_FEATURE=""
+ARG_MODEL=""
 RUN_MODE=""           # "single" | "loop" | "drain", set by parse_args
 ISSUE_FEATURE=""
 ISSUE_NN=""
@@ -1001,8 +1019,16 @@ parse_args() {
         ARG_FEATURE="$2"
         shift 2
         ;;
+      --model)
+        if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+          echo "runner: --model requires an argument" >&2
+          exit 2
+        fi
+        ARG_MODEL="$2"
+        shift 2
+        ;;
       -h|--help)
-        sed -n '2,55p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
       *)
@@ -2002,8 +2028,11 @@ with_transport_retry() {
 # the transport-crash classifier's Rung-2 safety net (`is_transport_crash`).
 run_dispatch_container() {
   local ref="$1" log_base="$2"
+  local model_args=()
+  [ -n "${ARG_MODEL:-}" ] && model_args=(--model "$ARG_MODEL")
   with_transport_retry "$log_base" run_sandbox_container \
-    claude -p "/implement $ref" --output-format stream-json --verbose --dangerously-skip-permissions
+    claude -p "/implement $ref" --output-format stream-json --verbose --dangerously-skip-permissions \
+    "${model_args[@]+"${model_args[@]}"}"
 }
 
 # Item-dispatch wrapper: cats the manifest item's prompt, appends the
@@ -2014,8 +2043,11 @@ run_item_container() {
   local ref="$1" log_base="$2" prompt_path="$3"
   local prompt_text
   prompt_text="$(cat "$prompt_path")"$'\n'"$ref"
+  local model_args=()
+  [ -n "${ARG_MODEL:-}" ] && model_args=(--model "$ARG_MODEL")
   with_transport_retry "$log_base" run_sandbox_container \
-    claude -p "$prompt_text" --output-format stream-json --verbose --dangerously-skip-permissions
+    claude -p "$prompt_text" --output-format stream-json --verbose --dangerously-skip-permissions \
+    "${model_args[@]+"${model_args[@]}"}"
 }
 
 # === Runner remote registration =============================================
@@ -3186,6 +3218,9 @@ main() {
   RUN_FEATURE="$TARGET_FEATURE"
   setup_run_dir
   start_runner_log_capture
+  if [ -n "${ARG_MODEL:-}" ]; then
+    echo "[$(now_clock)] model: $ARG_MODEL"
+  fi
   # `finalize_run` writes SUMMARY.md, prints the end-of-run table, and
   # releases the lock — see its definition for the pre-flight vs. normal
   # branches. Installed *before* `preflight` so a `fail_invariant` exit
