@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-10
+
 ### Added
 - AFK runner accepts `run-the-queue.sh --model <id>` to run every dispatch on the chosen model instead of the CLI default.
 - AFK runner shows a live status line in the terminal while a dispatch is running. `RUNNER_DISABLE_LIVENESS=1` disables it.
