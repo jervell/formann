@@ -36,6 +36,6 @@ Each dispatch (the implement stage and each post-implement walk step) writes a f
 - `<NN>.stdout.jsonl` — the streamed-event trace (the classifier's and summary extraction's input).
 - `<NN>.stderr.log` — diagnostics, retained for forensics only; never a detection input.
 - `<NN>.summary.md` — the agent's closing message, extracted from the terminal `result` event (the skim-the-outcome artifact the end-of-run SUMMARY links).
-- `<NN>.exit` — the container exit code (the classifier's Rung-2 input).
+- `<NN>.exit` — the container exit code (the classifier's Rung-2 input). Implement stage only; walk steps don't persist their exit code.
 
 The end-of-run SUMMARY's per-dispatch link points at the readable `.summary.md`; the event trace and diagnostics sit beside it on disk, discoverable by the naming convention documented in `runner/README.md`.

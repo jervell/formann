@@ -3284,7 +3284,7 @@ afk-runner|02|afk-runner/02|FAIL|18|'
   echo "$result" | grep -q -- '- Stop reason: queue-empty$' || { echo "$result"; false; }
   # Per-issue table headers + rows. The `propagation` column is new; records
   # without a propagation field show `-`. The `logs` column carries one or two
-  # links depending on whether the iteration produced a `<NN>-review.log`.
+  # links depending on whether the iteration produced a `<NN>-review.summary.md`.
   echo "$result" | grep -q '^| issue | outcome | duration | propagation | logs |$' || { echo "$result"; false; }
   echo "$result" | grep -qF '| afk-runner/01 | in-review | 42s | - | [01.summary.md](01.summary.md) |' || { echo "$result"; false; }
   echo "$result" | grep -qF '| afk-runner/02 | FAIL | 18s | - | [02.summary.md](02.summary.md) |' || { echo "$result"; false; }
@@ -3292,7 +3292,7 @@ afk-runner|02|afk-runner/02|FAIL|18|'
 
 @test "format_summary_md — walk-bearing rows include step-log links" {
   # step_logs field is a colon-sep list of step suffixes (e.g. "01-review").
-  # Each suffix produces a "<NN>-<suffix>.log" link alongside "<NN>.log".
+  # Each suffix produces a "<NN>-<suffix>.summary.md" link alongside "<NN>.summary.md".
   input='afk-runner|01|afk-runner/01|done|42|01-review
 afk-runner|02|afk-runner/02|left-for-human|36|01-review
 afk-runner|03|afk-runner/03|gate-failed|11|01-review

@@ -312,8 +312,9 @@ comment must reach the host before the next iteration's
 container-died-before-commit failure leaves `pre_head == post_head`,
 so the propagation branch is a no-op for it.
 
-A transport crash — the dispatch container died for an infrastructure
-reason (`impl_rc` nonzero and the log matches `is_transport_crash`) —
+A transport crash — the dispatch hit an infrastructure fault
+(`is_transport_crash`: the terminal `result` event reports a retryable
+error, or no result event is recoverable and the exit is nonzero) —
 sets `impl_transport_crash`, which flips the classifier's non-success
 verdict from `failure` to `dispatch-aborted`: the abort flag carries
 `type=transport` instead of `technical`, and the recorded outcome is
@@ -339,47 +340,47 @@ the classifier runs.
              ▼
    walk_post_implement_steps(RESOLVED_MANIFEST)
              │
-   ┌─ next manifest item ───────────────────────────────────────────────────┐
-   │                                                                         │
-   │   pre_item_head = git rev-parse HEAD (runner-checkout)                  │
+   ┌─ next manifest item ──────────────────────────────────────────────────────┐
+   │                                                                           │
+   │   pre_item_head = git rev-parse HEAD (runner-checkout)                    │
    │   run_item_container(item prompt + ref) ─► <NN>-<step>-<label>.{stdout.jsonl,stderr.log,summary.md} │
-   │   post_item_head = git rev-parse HEAD (runner-checkout)                 │
-   │   item_has_commits = (pre_item_head != post_item_head)                  │
-   │   item_transport_crash = (item_rc != 0 && is_transport_crash(log))      │
-   │             │                                                           │
-   │             ▼                                                           │
-   │   post = take_snapshot(feature)                                         │
-   │             │                                                           │
-   │   [post-item snapshot ok?]                                              │
-   │        ├─ no ─► park committed work (when item_has_commits):            │
-   │        │          • park error    → RUN_STOP_REASON = propagation-error;│
-   │        │                            record FAIL; ret 1                  │
-   │        │          • park ok / none → RUN_STOP_REASON =                  │
+   │   post_item_head = git rev-parse HEAD (runner-checkout)                   │
+   │   item_has_commits = (pre_item_head != post_item_head)                    │
+   │   item_transport_crash = is_transport_crash(<NN>-….stdout.jsonl, item_rc) │
+   │             │                                                             │
+   │             ▼                                                             │
+   │   post = take_snapshot(feature)                                           │
+   │             │                                                             │
+   │   [post-item snapshot ok?]                                                │
+   │        ├─ no ─► park committed work (when item_has_commits):              │
+   │        │          • park error    → RUN_STOP_REASON = propagation-error;  │
+   │        │                            record FAIL; ret 1                    │
+   │        │          • park ok / none → RUN_STOP_REASON =                    │
    │        │                            snapshot-failed-mid-dispatch:post-<label>; │
-   │        │                            record FAIL; ret 1                  │
-   │        ▼ yes                                                            │
-   │   action = classify_item_action(post status, item_rc)                  │
-   │        (status + exit code only; nonzero exit ─► fail)                  │
-   │             │                                                           │
-   │        [action?]                                                        │
-   │        │                                                                │
-   │        ├─ stop-success ─► propagate (when item_has_commits; park error  │
-   │        │                   ─► record gate-failed, propagation-error,    │
-   │        │                   ret 1); record done; ret 0                   │
-   │        │                                                                │
-   │        ├─ fail ─► write_abort_flag(<label>; type=transport on review-   │
-   │        │          aborted, else technical); propagate (when commits;    │
-   │        │          park error ─► propagation-error); record gate-failed  │
-   │        │          / review-aborted; ret 1                              │
-   │        │                                                                │
-   │        ├─ terminate-run ─► propagate (when commits); RUN_STOP_REASON =  │
-   │        │                   runaway-halt(<ref>); record halt → runaway;  │
-   │        │                   ret 1   (no abort flag — issue is eligible)  │
-   │        │                                                                │
-   │        └─ continue ─► propagate (when commits; park error ─► record     │
-   │             gate-failed, propagation-error, ret 1); next manifest item  │
-   │                                                                         │
-   └─ items exhausted, issue still in-review ───────────────────────────────┘
+   │        │                            record FAIL; ret 1                    │
+   │        ▼ yes                                                              │
+   │   action = classify_item_action(post status, item_rc)                     │
+   │        (status + exit code only; nonzero exit ─► fail)                    │
+   │             │                                                             │
+   │        [action?]                                                          │
+   │        │                                                                  │
+   │        ├─ stop-success ─► propagate (when item_has_commits; park error    │
+   │        │                   ─► record gate-failed, propagation-error,      │
+   │        │                   ret 1); record done; ret 0                     │
+   │        │                                                                  │
+   │        ├─ fail ─► write_abort_flag(<label>; type=transport on review-     │
+   │        │          aborted, else technical); propagate (when commits;      │
+   │        │          park error ─► propagation-error); record gate-failed    │
+   │        │          / review-aborted; ret 1                                 │
+   │        │                                                                  │
+   │        ├─ terminate-run ─► propagate (when commits); RUN_STOP_REASON =    │
+   │        │                   runaway-halt(<ref>); record halt → runaway;    │
+   │        │                   ret 1   (no abort flag — issue is eligible)    │
+   │        │                                                                  │
+   │        └─ continue ─► propagate (when commits; park error ─► record       │
+   │             gate-failed, propagation-error, ret 1); next manifest item    │
+   │                                                                           │
+   └─ items exhausted, issue still in-review ──────────────────────────────────┘
              │
              ▼
    record left-for-human; ret 0   (no abort flag)

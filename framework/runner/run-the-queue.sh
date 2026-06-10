@@ -298,7 +298,7 @@ extract_result_summary() {
       return 0
     fi
   fi
-  printf '(no result event in the dispatch stream — no closing message; see the .stderr.log and .exit artifacts)\n'
+  printf '(no result event in the dispatch stream — no closing message; see the .stderr.log sibling for diagnostics)\n'
   return 0
 }
 
@@ -1888,9 +1888,8 @@ _transport_crash_class() {
 # failed attempt's artifacts as `<base>.stdout.jsonl.attempt-<n>` and
 # `<base>.stderr.log.attempt-<n>`, sleeps the next backoff from
 # RUNNER_TRANSPORT_RETRY_BACKOFFS (1-second poll loop so Ctrl-C exits
-# promptly), and retries up to RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS. The retry
-# budget and backoff schedule are unchanged from print mode — only the
-# detection source moved (the structured result event, not a log grep).
+# promptly), and retries up to RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS. Detection
+# reads the structured result event in the stdout stream, never a log grep.
 #
 # Stops retrying when: dispatch succeeds; the predicate does not fire;
 # RUNNER_DISABLE_TRANSPORT_RETRY=1; budget exhausted; or the runner-checkout's
@@ -2414,8 +2413,8 @@ walk_post_implement_steps() {
     fi
 
     # Transport-crash is decided from the structured result event plus the exit
-    # code (is_transport_crash's two-rung contract); the exit-nonzero pre-guard
-    # is gone — the structured verdict is authoritative even on a clean exit.
+    # code (is_transport_crash's two-rung contract). The structured verdict is
+    # authoritative even on a clean exit, so the call is unconditional.
     local item_transport_crash=false
     if is_transport_crash "$item_log_base.stdout.jsonl" "$item_rc"; then
       item_transport_crash=true
@@ -2639,8 +2638,8 @@ dispatch_one() {
   post_implement_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
 
   # Transport-crash is decided from the structured result event plus the exit
-  # code (is_transport_crash's two-rung contract); the structured verdict is
-  # authoritative, so no exit-nonzero pre-guard.
+  # code (is_transport_crash's two-rung contract). The structured verdict is
+  # authoritative even on a clean exit, so the call is unconditional.
   local impl_transport_crash=false
   if is_transport_crash "$log_base.stdout.jsonl" "$impl_rc"; then
     impl_transport_crash=true

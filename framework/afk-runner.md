@@ -409,7 +409,7 @@ type: technical
 dispatch: implement
 at: 2026-05-07T14:23:11Z
 exit: 137
-log: .runner-state/runs/20260507-142133/03.log
+log: .runner-state/runs/20260507-142133/03.stdout.jsonl
 ```
 
 The `dispatch` field is `implement` for implement-stage failures and the manifest item's label (e.g. `review`) for post-implement step failures. The flag is written in two cases:
