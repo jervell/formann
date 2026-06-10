@@ -151,6 +151,7 @@ _run_installer() {
   grep -q "temurin-25-jdk" "$CONSUMER/runner/Dockerfile"
   grep -q "@anthropic-ai/claude-code" "$CONSUMER/runner/Dockerfile"
   grep -q "RUNNER_UID" "$CONSUMER/runner/Dockerfile"
+  grep -q "ENV TERM=dumb" "$CONSUMER/runner/Dockerfile"
   grep -q "ulimit -c 0" "$CONSUMER/runner/Dockerfile"
   grep -q "ulimit -c soft=" "$CONSUMER/runner/Dockerfile"
   grep -q "ulimit -Hc" "$CONSUMER/runner/Dockerfile"

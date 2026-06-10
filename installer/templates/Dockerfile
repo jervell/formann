@@ -7,6 +7,10 @@ FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Dispatches run without a TTY, leaving TERM unset; tools that shell out to
+# tput (e.g. `bats -p`) hard-fail without it.
+ENV TERM=dumb
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
