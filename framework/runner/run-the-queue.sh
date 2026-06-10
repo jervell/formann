@@ -1424,6 +1424,18 @@ ensure_runner_checkout() {
   fi
 }
 
+# 0. Transport-retry knob sanity. RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS feeds
+#    with_transport_retry's budget check `[ "$attempt" -ge "$max" ]`; a
+#    non-numeric value makes that test error and evaluate false, so the
+#    budget would never trip and a persistent transport crash would retry
+#    without bound. Refuse up front instead.
+check_retry_knobs() {
+  case "$RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS" in
+    ''|*[!0-9]*) fail_invariant "retry-knobs" \
+      "RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS must be a whole number, got '$RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS'";;
+  esac
+}
+
 # 3. Docker daemon responds.
 check_docker_daemon() {
   if ! docker info >/dev/null 2>&1; then
@@ -1504,6 +1516,7 @@ retrieve_oauth_token() {
 # alongside summary writing.
 preflight() {
   acquire_lock
+  check_retry_knobs                      # invariant 0: env knob sanity
   check_discovery                        # invariant 1: tracker-snapshot --list
   ensure_runner_remote                   # invariant 1b: runner remote
   if ! ensure_runner_checkout_exists >&2; then  # invariant 2a (clone-existence)
@@ -1951,9 +1964,9 @@ with_transport_retry() {
     # attempt 2), attempt=2 picks field 2 (wait before attempt 3), etc.
     # If the configured list is shorter than max, reuse the last entry so
     # the schedule never runs off the end. The 240 default is reachable
-    # only when the list is empty.
+    # only when the list has no entries.
     local backoff
-    backoff="$(echo "$backoffs" | awk -v n="$attempt" '{ if (n > NF) n = NF; print $n }')"
+    backoff="$(echo "$backoffs" | awk -v n="$attempt" '{ if (NF > 0 && n > NF) n = NF; print $n }')"
     backoff="${backoff:-240}"
 
     local crash_class next_attempt

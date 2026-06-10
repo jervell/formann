@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - AFK runner saves dispatch logs split per stream (`<NN>.stdout.jsonl`, `<NN>.stderr.log`, `<NN>.summary.md`) instead of one raw capture.
-- AFK runner retries transient transport faults instead of failing the dispatch; genuine request errors still fail fast.
+- AFK runner retries transient transport faults instead of failing the dispatch; genuine request errors still fail fast. `RUNNER_TRANSPORT_RETRY_*` env knobs tune the budget and backoffs.
 - Runner Dockerfile template scaffolds Eclipse Temurin JDK 25 instead of 21. Existing consumers are unaffected — the installer never overwrites an existing `runner/Dockerfile`.
 
 ## [0.3.0] - 2026-06-04

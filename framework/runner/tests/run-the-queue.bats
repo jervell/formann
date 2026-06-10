@@ -647,6 +647,28 @@ _setup_retry_test() {
   [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 7 ]
 }
 
+@test "with_transport_retry — whitespace-only backoff list: no entries, the 240 default applies" {
+  _setup_retry_test
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=2
+  RUNNER_TRANSPORT_RETRY_BACKOFFS="   "
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$1.stdout.jsonl"
+    return 1
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 2 ]
+  # One gap; a whitespace-only list has no entries, so the 240 default
+  # applies — not a zero-second wait
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 240 ]
+}
+
 @test "with_transport_retry — non-transport failure: no retry, exit code passed through, no archival" {
   _setup_retry_test
   local log_file="$BATS_TEST_TMPDIR/test.log"
@@ -796,8 +818,8 @@ _setup_retry_test() {
 @test "env-overridable defaults — exported overrides survive runner source; unset falls back to documented defaults" {
   # This test exercises the environment path: variables must be exported before
   # the runner is sourced, and the runner must not stomp them with plain
-  # assignments. It fails against plain `VAR=val` and passes after conversion
-  # to `: "\${VAR:=val}"`.
+  # assignments — sourcing must apply the `: "\${VAR:=val}"` defaults only
+  # when the variables arrive unset.
 
   # Part 1: pre-exported values must survive.
   local out
@@ -815,6 +837,29 @@ _setup_retry_test() {
     printf '%s\n' \"\$RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS\" \"\$RUNNER_TRANSPORT_RETRY_BACKOFFS\"
   ")
   [ "$out" = "$(printf '4\n30 90 240')" ]
+}
+
+# === check_retry_knobs ========================================================
+#
+# Pre-flight invariant: RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS must be a whole
+# number. It feeds with_transport_retry's budget check `[ "$attempt" -ge
+# "$max" ]`; a non-numeric value makes that test error and evaluate false,
+# so the budget would never trip and a persistent transport crash would
+# retry without bound.
+
+@test "check_retry_knobs — non-numeric max attempts fails with the retry-knobs invariant message" {
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS="four"
+  trap - EXIT
+
+  run check_retry_knobs
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"runner: retry-knobs:"* ]]
+  [[ "$output" == *"four"* ]]
+}
+
+@test "check_retry_knobs — whole-number max attempts passes" {
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=7
+  check_retry_knobs
 }
 
 # === check_manifest ===========================================================
