@@ -273,7 +273,7 @@ Two pure functions in `run-the-queue.sh`. Both take JSON snapshots and return a 
 
 ### `classify_outcome` — implement stage
 
-Inputs: pre-dispatch snapshot, post-dispatch snapshot, ref, and a transport-crash boolean (true when `is_transport_crash` classified the dispatch a transport-class failure from its terminal `result` event plus exit code — HTTP 429/5xx, a connection-layer fault with no HTTP status, or a death with no recoverable result event and a nonzero exit; see [`runner/README.md`](runner/README.md)).
+Inputs: pre-dispatch snapshot, post-dispatch snapshot, ref, and a transport-crash boolean (true when `is_transport_crash` classified the dispatch a transport-class failure from its terminal `result` event plus exit code — HTTP 429/5xx, a connection-layer fault with no HTTP status, or a death with no recoverable result event and a nonzero exit; see [`runner/README.md`](runner/README.md)). A 429 accompanied by a rejected `rate_limit_event` is the separate window-exhausted class, handled by the window-retry wrapper before the transport machinery sees it (ADR-0010 amendment, issue #75).
 
 | Pre status         | Post status     | Verdict                                                          |
 | ------------------ | --------------- | --------------------------------------------------------------- |
@@ -309,6 +309,7 @@ An **absent** ref (guard 2) is `stop-success`, not a failure: the github-issues 
 | `gate-failed`      | AFK iteration; a post-implement step's dispatch errored or left the issue on an off-mission status. Runner writes a `type: technical` abort flag and continues. |
 | `review-aborted`   | AFK iteration; a step subprocess transport-crashed (HTTP 429/5xx, a connection-layer fault, or a death with no recoverable result event) and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
 | `dispatch-aborted` | The implement subprocess transport-crashed and exhausted its retries. Runner writes a `type: transport` abort flag and continues. |
+| `window-exhausted` | The dispatch (implement or walk item — the abort flag's `dispatch:` field names the stage) was still usage-window-rejected after its window-waits (see `runner/README.md`, "Window-exhausted retry"). Runner writes a `type: window` abort flag and continues. |
 | `in-review`        | AFK iteration interrupted between implement-finish and the start of the post-implement walk — implement landed `in-review`, the interrupt pre-empted the first step, and the iteration is recorded at its implement outcome. |
 | `FAIL`             | Implement-stage failure (classifier verdict, container error, or parking-ref publish failure). Runner writes an abort flag where applicable and continues. |
 | `halt → runaway`   | A post-implement step drove the issue back to `ready-for-agent` (a misconfigured manifest). The runner halts the entire run immediately. No abort flag — the issue is eligible, not stuck. |

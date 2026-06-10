@@ -109,6 +109,10 @@ _Avoid_: "status line"; "spinner" (there is no spinner — the event cadence is 
 What an in-flight **Dispatch** is doing right now, derived from the latest relevant streamed event. Exactly three: **running-tool** (an assistant event carrying a tool-use block; labeled with the tool name and its target), **thinking** (a tool-result event; the model is working out its next turn), and **retry/backoff** (a `system`/`api_retry` event; the CLI is retrying a transport fault internally, the label carries attempt/max and a reason, and each new attempt is a phase change so the time-in-phase resets).
 _Avoid_: "state", "activity" (the **Liveness line** renders a phase)
 
+**Window-exhausted**:
+The failure class of a **Dispatch** that died because the account's usage window (e.g. the five-hour window with no overage credit) is used up — detected from the stream's last parseable `rate_limit_event` carrying `status:"rejected"`, never from result text. Distinct from a transport crash (the quota returns on its own at a known `resetsAt`, so the **Runner** sleeps until then plus a 60s slack and re-dispatches instead of burning the bounded transport backoff) and from a genuine request error (which keeps failing fast). After `RUNNER_WINDOW_RETRY_MAX_WAITS` window-waits in one dispatch, the runner gives up with the combined outcome `window-exhausted` and a `type: window` abort flag: the quota is structurally insufficient for the dispatch, not a blip to `rm` and re-run.
+_Avoid_: "rate-limited" (ambiguous — a transient 429 is transport-class; this class is specifically the rejected usage window)
+
 ### Installer
 
 **Installer**:

@@ -355,6 +355,69 @@ _fx_exit() { cat "$BATS_TEST_DIRNAME/fixtures/transport-crashes/$1.exit"; }
   [[ "$(_transport_crash_class "$(_fx etimedout)" 137)" == no-result* ]]
 }
 
+# === is_window_exhausted / window_resets_at — window-exhausted detection =====
+#
+# Issue #75: an exhausted five-hour usage window arrives dressed as a 429
+# result event, but its stable signal is the stream's `rate_limit_event`
+# with `status:"rejected"`. Detection never keys on assistant/result text;
+# unparseable rate_limit_event lines (claude-code#49640 mid-line injection)
+# are skipped fail-safe.
+
+_wfx() { printf '%s/fixtures/window-exhausted/%s.stdout.jsonl' "$BATS_TEST_DIRNAME" "$1"; }
+
+@test "is_window_exhausted — rejected rate_limit_event is window-exhausted" {
+  is_window_exhausted "$(_wfx rejected)"
+}
+
+@test "is_window_exhausted — rejected event without resetsAt is still window-exhausted" {
+  is_window_exhausted "$(_wfx rejected-no-resetsat)"
+}
+
+@test "is_window_exhausted — corrupt mid-line injection is skipped; parseable rejected event detected" {
+  is_window_exhausted "$(_wfx rejected-corrupt)"
+}
+
+@test "is_window_exhausted — corrupt stream yields a verdict with no parse error on stderr" {
+  local err
+  err="$(is_window_exhausted "$(_wfx rejected-corrupt)" 2>&1 1>/dev/null)" || true
+  [ -z "$err" ]
+}
+
+@test "is_window_exhausted — allowed-only events are not window-exhausted" {
+  ! is_window_exhausted "$(_wfx allowed)"
+}
+
+@test "is_window_exhausted — the last parseable rate_limit_event wins (rejected then allowed)" {
+  ! is_window_exhausted "$(_wfx rejected-then-allowed)"
+}
+
+@test "is_window_exhausted — transport-class streams without rate_limit_event are not window-exhausted" {
+  ! is_window_exhausted "$(_fx http429)"
+  ! is_window_exhausted "$(_fx http503)"
+  ! is_window_exhausted "$(_fx empty)"
+  ! is_window_exhausted "$(_fx garbage)"
+}
+
+@test "window_resets_at — extracts the rejected event's resetsAt epoch" {
+  [ "$(window_resets_at "$(_wfx rejected)")" = "1781017200" ]
+}
+
+@test "window_resets_at — empty when the rejected event carries no resetsAt" {
+  [ -z "$(window_resets_at "$(_wfx rejected-no-resetsat)")" ]
+}
+
+@test "window_rate_limit_type — names the event's rateLimitType" {
+  [ "$(window_rate_limit_type "$(_wfx rejected)")" = "five_hour" ]
+}
+
+@test "window_wait_seconds — future resetsAt waits the delta plus 60s slack" {
+  [ "$(window_wait_seconds 1000 900)" = "160" ]
+}
+
+@test "window_wait_seconds — past resetsAt degrades to the bare 60s slack" {
+  [ "$(window_wait_seconds 900 1000)" = "60" ]
+}
+
 # === extract_result_summary — readable closing message (AC #6) ===============
 
 @test "extract_result_summary — control stream yields the agent's closing message" {
@@ -758,6 +821,264 @@ _setup_retry_test() {
   [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
 }
 
+# === with_window_retry ========================================================
+#
+# Issue #75: the window-exhausted retry class. A dispatch that dies with the
+# usage window exhausted (last parseable rate_limit_event has
+# status:"rejected") sleeps until resetsAt + 60s slack and re-dispatches,
+# instead of burning the bounded transport backoff. Window-waits are bounded
+# by RUNNER_WINDOW_RETRY_MAX_WAITS; the transport attempt counter resets
+# after each wait while archived artifacts continue the same .attempt-<n>
+# numbering. All tests shim `sleep` to a no-op recorder; wait lengths are
+# verified by counting `sleep 1` calls. Streams use resetsAt:0 (in the past)
+# so the wait degrades to the deterministic bare 60s slack.
+
+_setup_window_retry_test() {
+  _setup_retry_test
+  RUNNER_WINDOW_RETRY_FALLBACK_WAIT=3600
+  RUNNER_WINDOW_RETRY_MAX_WAITS=2
+  RUNNER_DISABLE_WINDOW_RETRY=0
+  WINDOW_RETRY_GAVE_UP=0
+  WIN_OUT="$BATS_TEST_TMPDIR/window-out"
+  : >"$WIN_OUT"
+}
+
+# Write a window-exhausted dispatch stream. $1 = stream file;
+# $2 = resetsAt epoch, or "" for a rejected event with no resetsAt key.
+_emit_rejected_stream() {
+  if [ -n "$2" ]; then
+    printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":%s,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}\n' "$2" >"$1"
+  else
+    printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}\n' >"$1"
+  fi
+  printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"Claude AI usage limit reached"}\n' >>"$1"
+}
+
+@test "with_transport_retry — rejected window breaks out after one attempt: the 429 never consumes the transport budget" {
+  _setup_window_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() { _emit_rejected_stream "$1.stdout.jsonl" 0; return 1; }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ ! -f "${log_file}.stdout.jsonl.attempt-1" ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "with_window_retry — exhausted window then success: waits 60s slack, re-dispatches, attempts=2" {
+  _setup_window_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  local call_file="$BATS_TEST_TMPDIR/calls"
+  echo 0 >"$call_file"
+  fake_dispatch() {
+    local n; n=$(( $(cat "$call_file") + 1 )); echo "$n" >"$call_file"
+    if [ "$n" -eq 1 ]; then
+      _emit_rejected_stream "$1.stdout.jsonl" 0
+      return 1
+    fi
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n' >"$1.stdout.jsonl"
+    return 0
+  }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 2 ]
+  [ "$WINDOW_RETRY_GAVE_UP" -eq 0 ]
+  # The rejected round's artifacts are archived like transport retries.
+  [ -f "${log_file}.stdout.jsonl.attempt-1" ]
+  grep -q '"rejected"' "${log_file}.stdout.jsonl.attempt-1"
+  # Past resetsAt degrades to the bare 60s slack; no transport backoff fired.
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 60 ]
+  # Wait-start line: rateLimitType, absolute deadline, humanized wait, wait N of M.
+  grep -q 'runner: usage window exhausted (five_hour) — waiting until ' "$WIN_OUT"
+  grep -q '(1m 0s; wait 1 of 2)' "$WIN_OUT"
+  grep -Eq 'waiting until [0-9]{2}:[0-9]{2}:[0-9]{2}' "$WIN_OUT"
+  # Resume line emitted on retry.
+  grep -q 'runner: usage window reset — retrying dispatch' "$WIN_OUT"
+}
+
+@test "with_window_retry — rejected event without resetsAt: fallback wait, line names the fallback" {
+  _setup_window_retry_test
+  RUNNER_WINDOW_RETRY_FALLBACK_WAIT=7
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  local call_file="$BATS_TEST_TMPDIR/calls"
+  echo 0 >"$call_file"
+  fake_dispatch() {
+    local n; n=$(( $(cat "$call_file") + 1 )); echo "$n" >"$call_file"
+    if [ "$n" -eq 1 ]; then
+      _emit_rejected_stream "$1.stdout.jsonl" ""
+      return 1
+    fi
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n' >"$1.stdout.jsonl"
+    return 0
+  }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 7 ]
+  grep -q 'resetsAt absent; waiting 7s (fallback; wait 1 of 2)' "$WIN_OUT"
+}
+
+@test "with_window_retry — third exhaustion at MAX_WAITS=2 gives up: WINDOW_RETRY_GAVE_UP=1, attempts=3" {
+  _setup_window_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() { _emit_rejected_stream "$1.stdout.jsonl" 0; return 1; }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$WINDOW_RETRY_GAVE_UP" -eq 1 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 3 ]
+  # Two waits of 60s each; the third rejection breaks without waiting.
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 120 ]
+  grep -q '(1m 0s; wait 1 of 2)' "$WIN_OUT"
+  grep -q '(1m 0s; wait 2 of 2)' "$WIN_OUT"
+  # Rounds 1 and 2 archived; the final round's stream stays at log_file.
+  [ -f "${log_file}.stdout.jsonl.attempt-1" ]
+  [ -f "${log_file}.stdout.jsonl.attempt-2" ]
+  [ ! -f "${log_file}.stdout.jsonl.attempt-3" ]
+  [ -f "${log_file}.stdout.jsonl" ]
+}
+
+@test "with_window_retry — allowed-only events keep the transport path byte-identical (no wait)" {
+  _setup_window_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    cp "$BATS_TEST_DIRNAME/fixtures/window-exhausted/allowed.stdout.jsonl" "$1.stdout.jsonl"
+    return 1
+  }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$WINDOW_RETRY_GAVE_UP" -eq 0 ]
+  # Transport budget consumed exactly as today: 3 attempts, backoffs 1+2 seconds.
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 3 ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 3 ]
+  ! grep -q 'usage window' "$WIN_OUT"
+}
+
+@test "with_window_retry — genuine 4xx keeps failing fast through the wrapper" {
+  _setup_window_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() {
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":400,"result":"API Error: 400 invalid request"}\n' >"$1.stdout.jsonl"
+    return 42
+  }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 42 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+  ! grep -q 'usage window' "$WIN_OUT"
+}
+
+@test "with_window_retry — RUNNER_DISABLE_WINDOW_RETRY=1 restores today's transport path on a rejected stream" {
+  _setup_window_retry_test
+  RUNNER_DISABLE_WINDOW_RETRY=1
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() { _emit_rejected_stream "$1.stdout.jsonl" 0; return 1; }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$WINDOW_RETRY_GAVE_UP" -eq 0 ]
+  # The rejected-event check is skipped entirely: the 429 burns the
+  # transport budget exactly as before #75.
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 3 ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 3 ]
+  ! grep -q 'usage window' "$WIN_OUT"
+}
+
+@test "with_window_retry — interrupt during the window wait returns promptly without a resume line" {
+  _setup_window_retry_test
+  sleep() {
+    echo "$@" >>"$SLEEP_ARGS_FILE"
+    RUNNER_INTERRUPTED=1
+  }
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  fake_dispatch() { _emit_rejected_stream "$1.stdout.jsonl" 0; return 1; }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [ "$RUNNER_INTERRUPTED" -eq 1 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 1 ]
+  ! grep -q 'usage window reset' "$WIN_OUT"
+}
+
+@test "with_window_retry — attempt numbering continues across transport and window rounds; transport counter resets" {
+  _setup_window_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  local call_file="$BATS_TEST_TMPDIR/calls"
+  echo 0 >"$call_file"
+  fake_dispatch() {
+    local n; n=$(( $(cat "$call_file") + 1 )); echo "$n" >"$call_file"
+    case "$n" in
+      1)
+        printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$1.stdout.jsonl"
+        return 1
+        ;;
+      2)
+        _emit_rejected_stream "$1.stdout.jsonl" 0
+        return 1
+        ;;
+      *)
+        printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n' >"$1.stdout.jsonl"
+        return 0
+        ;;
+    esac
+  }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  # 2 attempts in round 1 (transport crash + rejected) + 1 in round 2.
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 3 ]
+  # .attempt-1 = the 500 transport crash (archived by the transport wrapper);
+  # .attempt-2 = the rejected round (archived by the window wrapper) — the
+  # numbering is continuous, nothing overwritten.
+  grep -q '"api_error_status":500' "${log_file}.stdout.jsonl.attempt-1"
+  grep -q '"rejected"' "${log_file}.stdout.jsonl.attempt-2"
+  grep -q '"is_error":false' "${log_file}.stdout.jsonl"
+  # Transport backoff (1s after the 500) + window wait (60s slack) = 61 sleeps.
+  # The fresh round-2 budget proves window-waits don't consume transport attempts.
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 61 ]
+}
+
 @test "dispatch_one — retry-then-success: second attempt succeeds, .attempt-1 archived, no abort flag" {
   setup_dispatch_one_test
   # Shim sleep to no-op and use small backoffs so the test runs in milliseconds.
@@ -815,6 +1136,78 @@ _setup_retry_test() {
   [ "$(cat "$SANDBOX_CALL_COUNT_FILE")" -ge 2 ]
 }
 
+@test "dispatch_one — implement window give-up: outcome window-exhausted, abort flag type window" {
+  setup_dispatch_one_test
+  sleep() { :; }
+  RUNNER_WINDOW_RETRY_MAX_WAITS=1
+  RUNNER_WINDOW_RETRY_FALLBACK_WAIT=1
+  RUNNER_DISABLE_WINDOW_RETRY=0
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=3
+  RUNNER_TRANSPORT_RETRY_BACKOFFS="0 0 0"
+
+  # The snapshot never advances: the issue stays ready-for-agent and
+  # eligible, so the classifier reads failure and the abort-flag gate
+  # sees an issue the next iteration would re-pick.
+  take_snapshot() {
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
+  }
+
+  # Every sandbox round dies window-exhausted (past resetsAt → 60s slack,
+  # no-op'd by the sleep shim above).
+  run_sandbox_container() {
+    local lf="$1"
+    printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":0,"rateLimitType":"five_hour"}}\n' >"$lf.stdout.jsonl"
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"Claude AI usage limit reached"}\n' >>"$lf.stdout.jsonl"
+    : >"$lf.stderr.log"
+    return 1
+  }
+  run_dispatch_container() {
+    local ref="$1" log_file="$2"
+    with_window_retry "$log_file" run_sandbox_container \
+      claude -p "/implement $ref" --dangerously-skip-permissions
+  }
+  propagate_feature() { :; }
+
+  RUNNER_INTERRUPTED=0
+  RUN_DISPATCHES=()
+  local out="$BATS_TEST_TMPDIR/dispatch-out"
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR" >"$out"
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  # Combined outcome is the new label, not dispatch-aborted or FAIL.
+  [[ "${RUN_DISPATCHES[0]}" == *"|window-exhausted|"* ]]
+  grep -q 'implement → window-exhausted' "$out"
+  # The abort flag carries the new type.
+  grep -q '^type: window$' "$HOST_ABORT_DIR/f/01"
+  grep -q '^dispatch: implement$' "$HOST_ABORT_DIR/f/01"
+}
+
+@test "dispatch_one — walk-item window give-up: outcome window-exhausted, abort flag keyed by item label" {
+  setup_dispatch_one_test
+  install_afk_snapshots in-review
+  # The item dispatch gave up after its window waits: the retry wrapper
+  # reports a nonzero exit with WINDOW_RETRY_GAVE_UP=1.
+  run_item_container() { WINDOW_RETRY_GAVE_UP=1; TRANSPORT_RETRY_ATTEMPTS=3; return 1; }
+  propagate_feature() { :; }
+
+  RUNNER_INTERRUPTED=0
+  RUN_DISPATCHES=()
+  local out="$BATS_TEST_TMPDIR/dispatch-out"
+  set +e
+  dispatch_one "f" "01" "$TEST_RUN_DIR" >"$out"
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  [[ "${RUN_DISPATCHES[0]}" == *"|window-exhausted|"* ]]
+  grep -q 'review → window-exhausted' "$out"
+  grep -q '^type: window$' "$HOST_ABORT_DIR/f/01"
+  grep -q '^dispatch: review$' "$HOST_ABORT_DIR/f/01"
+}
+
 @test "env-overridable defaults — exported overrides survive runner source; unset falls back to documented defaults" {
   # This test exercises the environment path: variables must be exported before
   # the runner is sourced, and the runner must not stomp them with plain
@@ -860,6 +1253,54 @@ _setup_retry_test() {
 @test "check_retry_knobs — whole-number max attempts passes" {
   RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=7
   check_retry_knobs
+}
+
+@test "check_retry_knobs — non-numeric window fallback wait fails with the retry-knobs invariant message" {
+  RUNNER_WINDOW_RETRY_FALLBACK_WAIT="an hour"
+  trap - EXIT
+
+  run check_retry_knobs
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"runner: retry-knobs:"* ]]
+  [[ "$output" == *"RUNNER_WINDOW_RETRY_FALLBACK_WAIT"* ]]
+  [[ "$output" == *"an hour"* ]]
+}
+
+@test "check_retry_knobs — non-numeric window max waits fails with the retry-knobs invariant message" {
+  RUNNER_WINDOW_RETRY_MAX_WAITS="two"
+  trap - EXIT
+
+  run check_retry_knobs
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"runner: retry-knobs:"* ]]
+  [[ "$output" == *"RUNNER_WINDOW_RETRY_MAX_WAITS"* ]]
+  [[ "$output" == *"two"* ]]
+}
+
+@test "check_retry_knobs — whole-number window knobs pass" {
+  RUNNER_WINDOW_RETRY_FALLBACK_WAIT=1800
+  RUNNER_WINDOW_RETRY_MAX_WAITS=3
+  check_retry_knobs
+}
+
+@test "env-overridable window knobs — exported overrides survive runner source; unset falls back to documented defaults" {
+  # Part 1: pre-exported values must survive.
+  local out
+  out=$(
+    export RUNNER_WINDOW_RETRY_FALLBACK_WAIT=900
+    export RUNNER_WINDOW_RETRY_MAX_WAITS=5
+    export RUNNER_DISABLE_WINDOW_RETRY=1
+    bash -c "source '$RUNNER_SCRIPT'; printf '%s\n' \"\$RUNNER_WINDOW_RETRY_FALLBACK_WAIT\" \"\$RUNNER_WINDOW_RETRY_MAX_WAITS\" \"\$RUNNER_DISABLE_WINDOW_RETRY\""
+  )
+  [ "$out" = "$(printf '900\n5\n1')" ]
+
+  # Part 2: documented defaults (3600, 2, 0) must apply when unset.
+  out=$(bash -c "
+    unset RUNNER_WINDOW_RETRY_FALLBACK_WAIT RUNNER_WINDOW_RETRY_MAX_WAITS RUNNER_DISABLE_WINDOW_RETRY
+    source '$RUNNER_SCRIPT'
+    printf '%s\n' \"\$RUNNER_WINDOW_RETRY_FALLBACK_WAIT\" \"\$RUNNER_WINDOW_RETRY_MAX_WAITS\" \"\$RUNNER_DISABLE_WINDOW_RETRY\"
+  ")
+  [ "$out" = "$(printf '3600\n2\n0')" ]
 }
 
 # === check_manifest ===========================================================
