@@ -51,6 +51,15 @@ mkdir -p "$ws/docs/formann"
 ln -s ../../.formann/bindings/issue-tracker/local-markdown \
       "$ws/docs/formann/issue-tracker"
 cp -RP .claude "$ws/.claude"
+
+# Installer-produced files the runner requires: pre-flight aborts
+# without `runner/manifest.md`, and `CLAUDE.md` is the project memory
+# the dispatch container auto-loads at /repo. Both are committed (not
+# gitignored), matching what the installer leaves in a real consumer.
+mkdir -p "$ws/runner"
+cp installer/templates/manifest.md "$ws/runner/manifest.md"
+cp installer/templates/claude-md-snippet.md "$ws/CLAUDE.md"
+
 cat >"$ws/.gitignore" <<'EOF'
 /.formann
 /docs/formann/issue-tracker
