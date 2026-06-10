@@ -1079,6 +1079,40 @@ _emit_rejected_stream() {
   [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 61 ]
 }
 
+@test "with_window_retry — checkout-advance guard: window-exhausted round with advanced HEAD gives up without waiting" {
+  _setup_window_retry_test
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  local call_file="$BATS_TEST_TMPDIR/calls"
+  echo 0 >"$call_file"
+  # The dispatch commits partial work to the runner-checkout, then dies
+  # window-rejected — the mid-run exhaustion case.
+  fake_dispatch() {
+    local n; n=$(( $(cat "$call_file") + 1 )); echo "$n" >"$call_file"
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "partial work"
+    _emit_rejected_stream "$1.stdout.jsonl" 0
+    return 1
+  }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ]
+  # Exactly one dispatch invocation — no re-dispatch over the partial commit.
+  [ "$(cat "$call_file")" -eq 1 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 1 ]
+  # Gave up through the same signal as the wait-budget give-up.
+  [ "$WINDOW_RETRY_GAVE_UP" -eq 1 ]
+  # Zero sleeps — the guard fires before the window wait.
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 0 ]
+  # The give-up line names the checkout-advance guard on the wrapper's
+  # stdout (the tee-captured channel), so runner.log explains the no-wait.
+  grep -q 'runner: usage window exhausted (five_hour) — runner-checkout HEAD advanced; giving up without waiting' "$WIN_OUT"
+  ! grep -q 'waiting until' "$WIN_OUT"
+}
+
 @test "dispatch_one — retry-then-success: second attempt succeeds, .attempt-1 archived, no abort flag" {
   setup_dispatch_one_test
   # Shim sleep to no-op and use small backoffs so the test runs in milliseconds.

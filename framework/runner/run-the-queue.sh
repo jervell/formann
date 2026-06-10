@@ -584,6 +584,15 @@ format_window_resume_line() {
   printf '[%s] runner: usage window reset — retrying dispatch\n' "$1"
 }
 
+# Give-up form for the checkout-advance guard (issue #76): emitted instead
+# of a wait-start line when the runner-checkout HEAD advanced during a
+# window-exhausted round, so runner.log explains why no wait happened.
+format_window_giveup_line() {
+  local clock="$1" rl_type="$2"
+  printf '[%s] runner: usage window exhausted (%s) — runner-checkout HEAD advanced; giving up without waiting\n' \
+    "$clock" "$rl_type"
+}
+
 # End-of-run table. Reads `feature|nn|ref|outcome|duration|review_present|attempt_count|propagation`
 # records on stdin (one per line — fields past `outcome` are optional and
 # `review_present` is unused here). Emits a header row, one row per record,
@@ -2196,7 +2205,12 @@ with_transport_retry() {
 # Bounded by RUNNER_WINDOW_RETRY_MAX_WAITS per dispatch; on a further
 # rejection past the budget the wrapper gives up and sets
 # WINDOW_RETRY_GAVE_UP=1 for the caller's outcome labeling (combined outcome
-# `window-exhausted`, abort-flag type `window`). The wait is the
+# `window-exhausted`, abort-flag type `window`). Gives up the same way —
+# without waiting — when the runner-checkout HEAD advanced since the first
+# round (issue #76): the round committed partial work before dying
+# window-rejected, and re-dispatching would replay /implement over a
+# half-committed state (the same refusal as with_transport_retry's
+# checkout-advance guard). The wait is the
 # interruptible 1s-poll pattern: Ctrl-C mid-wait returns the dispatch's exit
 # code so the run's stop reason stays "interrupted" and no abort flag is
 # written. No liveness renderer runs during the wait — the two static
@@ -2217,6 +2231,14 @@ with_window_retry() {
   local waits=0 rc=0 total_attempts=0
   WINDOW_RETRY_GAVE_UP=0
 
+  # Capture the runner-checkout HEAD before the first round so the
+  # checkout-advance guard below can see an advance from any round. The
+  # transport wrapper's own guard cannot: each round re-enters
+  # with_transport_retry, which captures a fresh baseline, and its
+  # window-exhausted gate breaks out before its guard is reached.
+  local initial_head
+  initial_head="$(git -C "${HOST_CHECKOUT:-}" rev-parse HEAD 2>/dev/null || true)"
+
   while true; do
     rc=0
     TRANSPORT_RETRY_ATTEMPT_OFFSET="$total_attempts"
@@ -2232,6 +2254,24 @@ with_window_retry() {
         || ! is_window_exhausted "$log_base.stdout.jsonl"; then
       break
     fi
+    # Checkout-advance guard (issue #76), mirroring with_transport_retry's:
+    # an advanced runner-checkout HEAD means this round committed partial
+    # work before dying window-rejected — waiting out the window and
+    # re-dispatching would replay /implement over a half-committed state.
+    # Give up through the wait-budget's signal so the outcome labeling
+    # (combined outcome `window-exhausted`, abort-flag type `window`) is
+    # unchanged: the maintainer reconciles either way.
+    if [ -n "$initial_head" ]; then
+      local current_head
+      current_head="$(git -C "$HOST_CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
+      if [ "$current_head" != "$initial_head" ]; then
+        format_window_giveup_line "$(now_clock)" \
+          "$(window_rate_limit_type "$log_base.stdout.jsonl")"
+        WINDOW_RETRY_GAVE_UP=1
+        break
+      fi
+    fi
+
     if [ "$waits" -ge "$max_waits" ]; then
       # A rejection past the wait budget means the quota is structurally
       # insufficient for this dispatch, not a blip — give up.
