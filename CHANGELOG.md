@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- AFK runner resolves the repo's default branch deliberately (`RUNNER_DEFAULT_BRANCH` override, then the host's `origin/HEAD`, then `main`/`master`; loud failure otherwise) instead of trusting the runner-checkout's clone-time `origin/HEAD`. New feature branches lazy-init from the resolved branch's current host tip, so a feature created after the checkout was cloned is dispatched instead of being skipped `queue-empty`.
+
 ## [0.4.0] - 2026-06-10
 
 ### Added

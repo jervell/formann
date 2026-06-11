@@ -179,6 +179,23 @@ Window-waits do not consume the transport-retry budget, and the transport attemp
 | `RUNNER_WINDOW_RETRY_MAX_WAITS` | `2` | Window-waits allowed per dispatch before giving up with `window-exhausted` |
 | `RUNNER_DISABLE_WINDOW_RETRY` | `0` | Set to `1` to skip the rejected-event check entirely — a window-exhausted 429 then degrades to the transport path |
 
+## Default-branch resolution
+
+When a feature's branch doesn't exist on host yet, the runner lazy-initializes it from the repo's default branch — based on that branch's *current host tip*, fetched at sync time. The same resolution drives the lazy-init preserve-commits guard and the unborn-HEAD recovery. The default branch is resolved deliberately (`resolve_default_branch`), in precedence order:
+
+1. `RUNNER_DEFAULT_BRANCH` — operator override.
+2. The host repo's own `refs/remotes/origin/HEAD` — when the host was cloned from a real upstream, this is the upstream's default branch.
+3. `refs/heads/main`, then `refs/heads/master`, on host.
+4. Loud failure naming the override knob. Never a silent fallback.
+
+Two sources are explicitly forbidden: the host's currently-checked-out branch and the runner-checkout's clone-time `origin/HEAD`. Both are accidents of timing — for a clone of a local non-bare repo, `origin/HEAD` is whatever branch the host happened to have checked out at clone time, never an authoritative default-branch signal.
+
+**Knob:**
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `RUNNER_DEFAULT_BRANCH` | (empty) | Override the resolved default branch; empty means auto-resolve per the precedence above |
+
 ## Resuming after a technical failure
 
 When a dispatch fails and the issue could otherwise be re-picked (implement failure with the issue still eligible, or gate failure), the runner writes a plain-text abort flag at `.runner-state/aborted/<feature>/<NN>`. Eligibility selection skips flagged refs on every subsequent run, preventing infinite re-dispatch across restarts.
