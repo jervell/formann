@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-12
+
 ### Added
 - Maven builds inside the AFK sandbox resolve artifacts that exist only in the host's `~/.m2/repository` (mounted read-only); downloads still land in the per-feature cache volume.
 
