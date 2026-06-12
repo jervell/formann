@@ -30,7 +30,7 @@ Report the resolved slug before proceeding.
 
 4. **Confirm the feature is archived.** Resolve the parent issue per the **Read the feature** verb in `docs/formann/issue-tracker/BINDING.md`. If it's closed and carries `formann:archived`, continue. Otherwise invoke `/triage` with "archive `<slug>`" — interactive `[human]`-row walks are expected, not a hang. Stop if `/triage` refuses.
 
-5. **Reconcile `CHANGELOG.md`.** Compare `[Unreleased]` against `git log --oneline main..HEAD`. Follow the rules at `~/.claude/skills/commit/CHANGELOG.rules.md`. Present proposed edits before writing.
+5. **Reconcile `CHANGELOG.md`.** Compare `[Unreleased]` against `git log --oneline main..HEAD`. Follow the rules at `~/.claude/skills/commit/CHANGELOG.rules.md`. If changelog is already updated, ensure they adhere to the rules. Extreme diligence is required, changelog entries related to this feature must adhere STRICTLY to the rules. Present proposed edits before writing.
 
 6. **Clear resolved inbox entries.** Read `.inbox.md` and any linked files under `.inbox/`. Delete any entry this feature resolved — both the bullet and the body file if it has one.
 
