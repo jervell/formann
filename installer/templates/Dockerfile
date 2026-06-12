@@ -11,6 +11,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # tput (e.g. `bats -p`) hard-fail without it.
 ENV TERM=dumb
 
+# UTF-8 locale — without it the JVM (and other filename-sensitive tooling)
+# decodes paths as ASCII and chokes on non-ASCII file names. C.UTF-8 is built
+# into Debian; no locales package needed.
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
@@ -18,7 +24,6 @@ RUN apt-get update \
       git \
       gnupg \
       jq \
-      maven \
       wget \
  && rm -rf /var/lib/apt/lists/*
 
@@ -30,6 +35,22 @@ RUN wget -qO- https://packages.adoptium.net/artifactory/api/gpg/key/public \
  && apt-get update \
  && apt-get install -y --no-install-recommends temurin-25-jdk \
  && rm -rf /var/lib/apt/lists/*
+
+# Apache Maven, pinned from the Apache archive. Debian's apt package is frozen
+# at 3.8.x, which silently ignores maven.repo.local.tail (see MAVEN_ARGS
+# below) — the local-artifact read-through needs 3.9+. A repo that ships its
+# own mvnw takes precedence simply by being invoked as ./mvnw.
+ARG MAVEN_VERSION=3.9.16
+RUN curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+      | tar -xz -C /opt \
+ && ln -s "/opt/apache-maven-${MAVEN_VERSION}/bin/mvn" /usr/local/bin/mvn
+
+# The runner bind-mounts the host's ~/.m2/repository read-only at
+# /home/runner/.m2-host. The tail setting makes every Maven build read
+# through to it for artifacts that only exist locally (e.g. locally-built
+# snapshots of personal libraries), while downloads still land in the
+# writable per-feature cache volume.
+ENV MAVEN_ARGS="-Dmaven.repo.local.tail=/home/runner/.m2-host -Dmaven.repo.local.tail.ignoreAvailability=true"
 
 # GitHub CLI (github-issues binding) and bats (framework test suite).
 RUN wget -qO /usr/share/keyrings/githubcli-archive-keyring.gpg \

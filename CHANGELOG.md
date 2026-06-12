@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Maven builds inside the AFK sandbox resolve artifacts that exist only in the host's `~/.m2/repository` (mounted read-only); downloads still land in the per-feature cache volume.
+
+### Changed
+- Runner Dockerfile template installs Maven 3.9 from the Apache archive instead of Debian's apt package, and sets a UTF-8 locale.
+
 ## [0.4.0] - 2026-06-10
 
 ### Added

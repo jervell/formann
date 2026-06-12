@@ -1979,6 +1979,7 @@ run_sandbox_container() {
     -v "$HOST_REPO/docs/formann:$RUNNER_CONTAINER_REPO_PATH/docs/formann:ro" \
     ${claude_mounts[@]+"${claude_mounts[@]}"} \
     -v "$MVN_VOLUME:$RUNNER_CONTAINER_M2_PATH" \
+    -v "$HOME/.m2/repository:/home/runner/.m2-host:ro" \
     --env-file <(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOKEN") \
     --env-file <(printf 'GIT_AUTHOR_NAME=%s\nGIT_AUTHOR_EMAIL=%s\nGIT_COMMITTER_NAME=%s\nGIT_COMMITTER_EMAIL=%s\n' \
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL" \
