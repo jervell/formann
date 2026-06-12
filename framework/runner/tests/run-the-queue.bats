@@ -5534,6 +5534,43 @@ SHIM
   [ "$(git -C "$HOST_CHECKOUT" rev-parse refs/heads/f)" = "$ahead_sha" ]
 }
 
+@test "ensure_runner_checkout_on_branch — lazy-init guard refuses when the host default has advanced past the unpublished commits' base" {
+  # Regression (#77 rework): the sync-time fetch runs before the guard, so
+  # the guard compares against the host default's *freshest* tip. When the
+  # unpublished commits were based on an older default tip and the default
+  # has since advanced, the two tips have diverged — the old "default is
+  # ancestor of local" check was false and the guard silently skipped,
+  # letting the lazy-init reset orphan the commits. The guard must fire
+  # whenever the local tip holds anything the default doesn't.
+  HOST_REPO="$BATS_TEST_TMPDIR/guard-diverged-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/guard-diverged-checkout"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "base: initial main commit"
+
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+
+  # Unpublished work on f, based on the clone-time main tip. No host branch
+  # and no parking ref — a prior dispatch's propagation failed entirely.
+  git -C "$HOST_CHECKOUT" checkout --quiet -b f
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "unpublished work on f"
+  local ahead_sha
+  ahead_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  # Host main advances past the unpublished commits' base (e.g. another
+  # feature merged between runs) — local f and fresh main now diverge.
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "main advances after the clone"
+
+  run ensure_runner_checkout_on_branch "f"
+
+  [ "$status" -ne 0 ]
+  [ "$(git -C "$HOST_CHECKOUT" rev-parse refs/heads/f)" = "$ahead_sha" ]
+}
+
 # === next_eligible_feature — outer-loop selection =========================
 #
 # Analogue of next_eligible_ref but at the feature level. Picks the next

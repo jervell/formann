@@ -1522,14 +1522,17 @@ ensure_runner_checkout_on_branch() {
     # the destructive step and halt, leaving the branch ref intact so the
     # maintainer can recover the commit from the runner-checkout's reflog.
     # Compares against the just-fetched tracking ref of the resolved default
-    # branch rather than hardcoding `main`.
+    # branch rather than hardcoding `main`. The question is "does the local
+    # tip hold anything the default doesn't?" — fires when the local tip is
+    # not an ancestor of the default tip, covering both the strictly-ahead
+    # and the diverged case (default advanced past the commits' base). A
+    # merge-base error fail-closes into the guard rather than skipping it.
     local local_branch_tip default_tip
     local_branch_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
     default_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "refs/remotes/origin/$default_branch" 2>/dev/null || true)"
-    if [ -n "$local_branch_tip" ] && [ -n "$default_tip" ] \
-        && [ "$local_branch_tip" != "$default_tip" ] \
-        && git -C "$HOST_CHECKOUT" merge-base --is-ancestor "$default_tip" "$local_branch_tip" 2>/dev/null; then
-      echo "runner: ensure_runner_checkout_on_branch: lazy-init guard — refs/heads/$branch ($local_branch_tip) is ahead of the default branch $default_branch with no host branch and no parking ref; aborting to preserve commits" >&2
+    if [ -n "$local_branch_tip" ] \
+        && ! git -C "$HOST_CHECKOUT" merge-base --is-ancestor "$local_branch_tip" "$default_tip" 2>/dev/null; then
+      echo "runner: ensure_runner_checkout_on_branch: lazy-init guard — refs/heads/$branch ($local_branch_tip) holds commits the default branch $default_branch lacks, with no host branch and no parking ref; aborting to preserve commits" >&2
       return 1
     fi
     if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "refs/remotes/origin/$default_branch" >&2; then
