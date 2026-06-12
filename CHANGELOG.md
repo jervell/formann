@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Runner Dockerfile template installs Maven 3.9 from the Apache archive instead of Debian's apt package, and sets a UTF-8 locale.
 
+### Fixed
+- AFK runner no longer skips features created after the runner-checkout was cloned (`queue-empty`). `RUNNER_DEFAULT_BRANCH` overrides the default branch.
+
 ## [0.4.0] - 2026-06-10
 
 ### Added

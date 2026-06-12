@@ -112,6 +112,12 @@ RUNNER_KILL_GRACE_SECONDS=10
 # want the live line.
 : "${RUNNER_DISABLE_LIVENESS:=0}"
 
+# Operator override for the repo's default branch — the base for
+# lazy-initialized feature branches and the recovery target for an unborn
+# runner-checkout HEAD. Empty (the default) means auto-resolve; see
+# resolve_default_branch for the precedence chain.
+: "${RUNNER_DEFAULT_BRANCH:=}"
+
 # === Pure logic ============================================================
 #
 # These functions take JSON inputs and return string outputs. No I/O, no
@@ -1367,6 +1373,46 @@ ensure_runner_checkout_exists() {
   fi
 }
 
+# Resolve the repo's default branch — the base for lazy-initialized feature
+# branches and the recovery target for an unborn runner-checkout HEAD.
+# Resolution is deliberate, in precedence order:
+#
+#   1. RUNNER_DEFAULT_BRANCH — operator override.
+#   2. Host's own refs/remotes/origin/HEAD — when the host was cloned from a
+#      real upstream, this is the upstream's default branch.
+#   3. refs/heads/main, then refs/heads/master, on host.
+#   4. Loud failure naming the override knob. Never a silent fallback.
+#
+# Two sources are explicitly forbidden (#77): the host's currently-checked-out
+# HEAD and the runner-checkout's clone-time origin/HEAD. Both are accidents of
+# timing — for a clone of a local non-bare repo, origin/HEAD is whatever
+# branch the source happened to have checked out at clone time, never an
+# authoritative default-branch signal.
+#
+# Prints the branch name (no refs/heads/ prefix) on stdout; returns 1 with a
+# stderr diagnostic when nothing resolves.
+resolve_default_branch() {
+  if [ -n "${RUNNER_DEFAULT_BRANCH:-}" ]; then
+    printf '%s\n' "$RUNNER_DEFAULT_BRANCH"
+    return 0
+  fi
+  local upstream_default
+  upstream_default="$(git -C "$HOST_REPO" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+  if [ -n "$upstream_default" ]; then
+    printf '%s\n' "$upstream_default"
+    return 0
+  fi
+  local candidate
+  for candidate in main master; do
+    if git -C "$HOST_REPO" show-ref --quiet --verify "refs/heads/$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  echo "runner: resolve_default_branch: cannot determine the default branch — host has no refs/remotes/origin/HEAD and neither refs/heads/main nor refs/heads/master exists; set RUNNER_DEFAULT_BRANCH to the default branch's name" >&2
+  return 1
+}
+
 # 2b. Runner-checkout is synced to the named branch's tip on host.
 #     Branch-parameterized: the runner-checkout is a single clone that
 #     gets branch-switched per drained feature inside the drain loop.
@@ -1403,21 +1449,16 @@ ensure_runner_checkout_on_branch() {
   # against the now-valid HEAD.
   if ! git -C "$HOST_CHECKOUT" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
     local default_branch
-    default_branch="$(git -C "$HOST_CHECKOUT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
-    if [ -z "$default_branch" ]; then
-      git -C "$HOST_CHECKOUT" remote set-head origin --auto >/dev/null 2>&1 || true
-      default_branch="$(git -C "$HOST_CHECKOUT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
-    fi
-    if [ -z "$default_branch" ]; then
-      echo "runner: ensure_runner_checkout_on_branch: refs/remotes/origin/HEAD missing after 'git remote set-head origin --auto' — set it manually with 'git -C $HOST_CHECKOUT remote set-head origin --auto'" >&2
+    if ! default_branch="$(resolve_default_branch)"; then
+      echo "runner: ensure_runner_checkout_on_branch: default-branch resolution failed (unborn-HEAD recovery)" >&2
       return 1
     fi
-    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git fetch origin (unborn-HEAD recovery) failed" >&2
+    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin "$default_branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git fetch origin $default_branch (unborn-HEAD recovery) failed" >&2
       return 1
     fi
-    if ! git -C "$HOST_CHECKOUT" update-ref "refs/heads/$default_branch" "refs/remotes/origin/HEAD" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git update-ref refs/heads/$default_branch origin/HEAD (unborn-HEAD recovery) failed" >&2
+    if ! git -C "$HOST_CHECKOUT" update-ref "refs/heads/$default_branch" "refs/remotes/origin/$default_branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git update-ref refs/heads/$default_branch origin/$default_branch (unborn-HEAD recovery) failed" >&2
       return 1
     fi
     if ! git -C "$HOST_CHECKOUT" symbolic-ref HEAD "refs/heads/$default_branch" >&2; then
@@ -1459,46 +1500,47 @@ ensure_runner_checkout_on_branch() {
   parking_tip="$(git -C "$HOST_REPO" rev-parse --verify "refs/remotes/runner/$branch" 2>/dev/null || true)"
 
   if [ -z "$host_tip" ] && [ -z "$parking_tip" ]; then
+    # Neither the host branch nor a parking ref exists yet — first dispatch
+    # for a slug whose branch was never pre-created on host. Initialize the
+    # runner-checkout's branch from the default branch's *current host tip*:
+    # resolve the default deliberately (resolve_default_branch, #77), fetch it
+    # at sync time, and base the new branch on the fresh tracking ref. The
+    # first propagation's `<slug>:<slug>` refspec is create-on-missing and
+    # will create refs/heads/<slug> on host.
+    local default_branch
+    if ! default_branch="$(resolve_default_branch)"; then
+      echo "runner: ensure_runner_checkout_on_branch: default-branch resolution failed (lazy init for $branch)" >&2
+      return 1
+    fi
+    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin "$default_branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git fetch origin $default_branch (lazy init) failed" >&2
+      return 1
+    fi
     # Guard: the runner-checkout's local refs/heads/<branch> may hold commits
     # from a prior dispatch whose propagation failed. With both host refs absent
     # the checkout -B below would silently destroy that work. Detect this before
     # the destructive step and halt, leaving the branch ref intact so the
     # maintainer can recover the commit from the runner-checkout's reflog.
-    # Resolves the remote default through refs/remotes/origin/HEAD (set by
-    # `git clone`) so the guard tracks whichever branch the remote treats as
-    # default rather than hardcoding `main`.
+    # Compares against the just-fetched tracking ref of the resolved default
+    # branch rather than hardcoding `main`. The question is "does the local
+    # tip hold anything the default doesn't?" — fires when the local tip is
+    # not an ancestor of the default tip, covering both the strictly-ahead
+    # and the diverged case (default advanced past the commits' base). A
+    # merge-base error fail-closes into the guard rather than skipping it.
     local local_branch_tip default_tip
     local_branch_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
-    default_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "refs/remotes/origin/HEAD" 2>/dev/null || true)"
-    if [ -n "$local_branch_tip" ] && [ -n "$default_tip" ] \
-        && [ "$local_branch_tip" != "$default_tip" ] \
-        && git -C "$HOST_CHECKOUT" merge-base --is-ancestor "$default_tip" "$local_branch_tip" 2>/dev/null; then
-      echo "runner: ensure_runner_checkout_on_branch: lazy-init guard — refs/heads/$branch ($local_branch_tip) is ahead of origin's default branch with no host branch and no parking ref; aborting to preserve commits" >&2
+    default_tip="$(git -C "$HOST_CHECKOUT" rev-parse --verify "refs/remotes/origin/$default_branch" 2>/dev/null || true)"
+    if [ -n "$local_branch_tip" ] \
+        && ! git -C "$HOST_CHECKOUT" merge-base --is-ancestor "$local_branch_tip" "$default_tip" 2>/dev/null; then
+      echo "runner: ensure_runner_checkout_on_branch: lazy-init guard — refs/heads/$branch ($local_branch_tip) holds commits the default branch $default_branch lacks, with no host branch and no parking ref; aborting to preserve commits" >&2
       return 1
     fi
-    # Neither the host branch nor a parking ref exists yet — first dispatch for
-    # a slug whose branch was never pre-created on host. Initialize the
-    # runner-checkout's branch from the remote's default branch, discovered via
-    # refs/remotes/origin/HEAD (set automatically by `git clone` at checkout-
-    # creation time). The first propagation's `<slug>:<slug>` refspec is
-    # create-on-missing and will create refs/heads/<slug> on host.
-    if ! git -C "$HOST_CHECKOUT" symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
-      git -C "$HOST_CHECKOUT" remote set-head origin --auto >/dev/null 2>&1 || true
-    fi
-    if ! git -C "$HOST_CHECKOUT" symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
-      echo "runner: ensure_runner_checkout_on_branch: refs/remotes/origin/HEAD missing after 'git remote set-head origin --auto' — set it manually with 'git -C $HOST_CHECKOUT remote set-head origin --auto'" >&2
+    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "refs/remotes/origin/$default_branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch origin/$default_branch (lazy init) failed" >&2
       return 1
     fi
-    if ! git -C "$HOST_CHECKOUT" fetch --quiet origin >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git fetch origin (lazy init) failed" >&2
-      return 1
-    fi
-    if ! git -C "$HOST_CHECKOUT" checkout --quiet -B "$branch" "origin/HEAD" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git checkout -B $branch origin/HEAD (lazy init) failed" >&2
-      return 1
-    fi
-    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "origin/HEAD" >&2; then
-      echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/HEAD (lazy init) failed" >&2
+    if ! git -C "$HOST_CHECKOUT" reset --quiet --hard "refs/remotes/origin/$default_branch" >&2; then
+      echo "runner: ensure_runner_checkout_on_branch: git reset --hard origin/$default_branch (lazy init) failed" >&2
       return 1
     fi
   else

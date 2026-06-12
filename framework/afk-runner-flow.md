@@ -127,7 +127,8 @@ Wraps the per-issue loop and walks every feature in the discovery output.
 │   [feature empty?] ──yes──► RUN_STOP_REASON = "completed"; stop           │
 │         │ no                                                              │
 │         ▼                                                                 │
-│   ensure_runner_checkout_on_branch(feature)  (lazy: inits from origin/HEAD│
+│   ensure_runner_checkout_on_branch(feature)  (lazy: inits from resolved   │
+│                                                default branch's host tip  │
 │                                                if host has no ref yet)    │
 │         │                                                                 │
 │   [fetch failed?] ──yes──► record skip:fetch-failed; next feature         │

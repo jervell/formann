@@ -5180,6 +5180,117 @@ SHIM
   [ "$checkout_head" = "$main_tip" ]
 }
 
+@test "ensure_runner_checkout_on_branch — lazy init bases on host default branch's current tip, not clone-time origin/HEAD" {
+  # Incident repro (#77): the runner-checkout was cloned while host had a
+  # since-deleted feature branch checked out, so the clone's origin/HEAD
+  # points at that branch — for a clone of a local non-bare repo, origin/HEAD
+  # is whatever branch the source had checked out at clone time. Lazy-init
+  # must base a brand-new feature branch on the host default branch's
+  # *current* tip, resolved deliberately — never the clone-time accident.
+  HOST_REPO="$BATS_TEST_TMPDIR/stale-head-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/stale-head-checkout"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "initial main commit"
+
+  # Host is on feature branch x at clone time → clone-time origin/HEAD → x.
+  git -C "$HOST_REPO" checkout --quiet -b x
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "work on x"
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+  [ "$(git -C "$HOST_CHECKOUT" symbolic-ref refs/remotes/origin/HEAD)" = "refs/remotes/origin/x" ]
+
+  # Host moves on: merge x into main, delete x, advance main past the merge.
+  git -C "$HOST_REPO" checkout --quiet main
+  git -C "$HOST_REPO" merge --quiet --no-edit x >/dev/null
+  git -C "$HOST_REPO" branch --quiet -D x
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "new feature content on main"
+  local main_tip
+  main_tip="$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+
+  ensure_runner_checkout_on_branch "new-feature"
+
+  # Runner-checkout must be on new-feature at main's *current* host tip —
+  # not at the stale clone-time tip of the deleted branch x.
+  [ "$(git -C "$HOST_CHECKOUT" symbolic-ref --short HEAD)" = "new-feature" ]
+  [ "$(git -C "$HOST_CHECKOUT" rev-parse HEAD)" = "$main_tip" ]
+}
+
+# === resolve_default_branch — deliberate default-branch resolution (#77) ==
+#
+# Precedence: RUNNER_DEFAULT_BRANCH → host's refs/remotes/origin/HEAD →
+# refs/heads/main → refs/heads/master → loud failure naming the knob.
+# Forbidden sources: host's currently-checked-out HEAD and the
+# runner-checkout's clone-time origin/HEAD.
+
+@test "resolve_default_branch — RUNNER_DEFAULT_BRANCH override wins over every other source" {
+  HOST_REPO="$BATS_TEST_TMPDIR/resolver-override-host"
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "initial"
+  git -C "$HOST_REPO" branch devel
+
+  RUNNER_DEFAULT_BRANCH=devel
+  result="$(resolve_default_branch)"
+  [ "$result" = "devel" ]
+}
+
+@test "resolve_default_branch — host's own origin/HEAD beats the main fallback and the checked-out branch" {
+  # When the host was cloned from a real upstream, its refs/remotes/origin/HEAD
+  # names the upstream's default branch — authoritative even when a local
+  # `main` also exists and the host is checked out somewhere else entirely.
+  HOST_REPO="$BATS_TEST_TMPDIR/resolver-upstream-host"
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=trunk
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "initial"
+  git -C "$HOST_REPO" branch main
+  # Plant the upstream signal: origin/HEAD → origin/trunk.
+  git -C "$HOST_REPO" update-ref refs/remotes/origin/trunk \
+    "$(git -C "$HOST_REPO" rev-parse refs/heads/trunk)"
+  git -C "$HOST_REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+  # Host is checked out on an unrelated branch — must never be consulted.
+  git -C "$HOST_REPO" checkout --quiet -b scratch
+
+  result="$(resolve_default_branch)"
+  [ "$result" = "trunk" ]
+}
+
+@test "resolve_default_branch — falls back to master when no origin/HEAD and no main exist" {
+  HOST_REPO="$BATS_TEST_TMPDIR/resolver-master-host"
+  mkdir -p "$HOST_REPO"
+  # Host checked out on an unrelated branch the whole time — the resolver
+  # must find master by name, not by what HEAD points at.
+  git -C "$HOST_REPO" init --quiet --initial-branch=scratch
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "initial"
+  git -C "$HOST_REPO" branch master
+
+  result="$(resolve_default_branch)"
+  [ "$result" = "master" ]
+}
+
+@test "resolve_default_branch — fails loudly naming the override knob when nothing resolves" {
+  # Host has no origin/HEAD, no main, no master — only the checked-out
+  # branch, which is a forbidden source. The resolver must refuse with a
+  # diagnostic naming RUNNER_DEFAULT_BRANCH, never silently fall back to
+  # whatever HEAD points at.
+  HOST_REPO="$BATS_TEST_TMPDIR/resolver-fail-host"
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=scratch
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "initial"
+
+  run resolve_default_branch
+  [ "$status" -ne 0 ]
+  [ -z "$(echo "$output" | grep -v '^runner:')" ]   # no branch name on stdout
+  echo "$output" | grep -q "RUNNER_DEFAULT_BRANCH"
+}
+
 # === ensure_runner_checkout_on_branch — unborn-HEAD recovery ==============
 
 @test "ensure_runner_checkout_on_branch — unborn HEAD with intact origin/HEAD: recovers and syncs to target branch" {
@@ -5282,10 +5393,53 @@ SHIM
   [ "$changelog" = "main-content" ]
 }
 
-@test "ensure_runner_checkout_on_branch — unborn HEAD with missing refs/remotes/origin/HEAD: returns 1 with diagnostic" {
-  # When the runner-checkout is in unborn-HEAD state and refs/remotes/origin/HEAD
-  # is absent (and set-head --auto cannot restore it), the function must return 1
-  # and emit a diagnostic naming the missing ref. No infinite loop.
+@test "ensure_runner_checkout_on_branch — unborn HEAD recovery resolves the default deliberately, never via the host's checked-out branch" {
+  # The pre-#77 recovery restored the runner-checkout's missing origin/HEAD
+  # with `git remote set-head origin --auto` — for a local non-bare remote
+  # that reads the host's *currently checked-out* branch, a forbidden source.
+  # Recovery must instead resolve the default branch deliberately (host's
+  # refs/heads/main here) and never materialize the host's checked-out
+  # branch in the runner-checkout.
+  HOST_REPO="$BATS_TEST_TMPDIR/unborn-resolve-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/unborn-resolve-checkout"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "initial"
+  git -C "$HOST_REPO" checkout --quiet -b feature
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "feature commit"
+  local feature_tip
+  feature_tip="$(git -C "$HOST_REPO" rev-parse refs/heads/feature)"
+  git -C "$HOST_REPO" checkout --quiet main
+
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+  git -C "$HOST_CHECKOUT" checkout --quiet -b feature "origin/feature"
+
+  # Host wanders off to a scratch branch — the state set-head --auto would see.
+  git -C "$HOST_REPO" checkout --quiet -b scratch
+
+  # Unborn HEAD with the clone-time origin/HEAD gone (e.g. pruned).
+  git -C "$HOST_CHECKOUT" symbolic-ref HEAD refs/heads/feature
+  git -C "$HOST_CHECKOUT" update-ref -d refs/heads/feature
+  git -C "$HOST_CHECKOUT" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || \
+    git -C "$HOST_CHECKOUT" update-ref -d refs/remotes/origin/HEAD 2>/dev/null || true
+
+  ensure_runner_checkout_on_branch "feature"
+
+  # Recovered and synced to the target branch as usual…
+  [ "$(git -C "$HOST_CHECKOUT" symbolic-ref --short HEAD)" = "feature" ]
+  [ "$(git -C "$HOST_CHECKOUT" rev-parse HEAD)" = "$feature_tip" ]
+  # …and the host's checked-out branch never leaked into the recovery.
+  ! git -C "$HOST_CHECKOUT" show-ref --quiet --verify refs/heads/scratch
+}
+
+@test "ensure_runner_checkout_on_branch — unborn HEAD with unreachable origin: returns 1 with diagnostic" {
+  # When the runner-checkout is in unborn-HEAD state and the recovery fetch
+  # of the resolved default branch cannot reach origin, the function must
+  # return 1 and emit a diagnostic naming the failed recovery step. No
+  # infinite loop, no silent fallback.
   HOST_REPO="$BATS_TEST_TMPDIR/unborn-nohead-host"
   HOST_CHECKOUT="$BATS_TEST_TMPDIR/unborn-nohead-checkout"
 
@@ -5300,18 +5454,12 @@ SHIM
   git -C "$HOST_CHECKOUT" symbolic-ref HEAD refs/heads/main
   git -C "$HOST_CHECKOUT" update-ref -d refs/heads/main 2>/dev/null || true
 
-  # Remove refs/remotes/origin/HEAD so detection fails. Use symbolic-ref --delete
-  # because update-ref -d silently no-ops on symrefs in some git versions.
-  git -C "$HOST_CHECKOUT" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || \
-    git -C "$HOST_CHECKOUT" update-ref -d refs/remotes/origin/HEAD 2>/dev/null || true
-
-  # Point origin at a nonexistent path so set-head --auto cannot reach the
-  # remote and therefore cannot restore refs/remotes/origin/HEAD.
+  # Point origin at a nonexistent path so the recovery fetch fails.
   git -C "$HOST_CHECKOUT" remote set-url origin "$BATS_TEST_TMPDIR/nonexistent"
 
   run ensure_runner_checkout_on_branch "main"
   [ "$status" -ne 0 ]
-  echo "$output" | grep -q "refs/remotes/origin/HEAD"
+  echo "$output" | grep -q "unborn-HEAD recovery"
 }
 
 @test "ensure_runner_checkout_on_branch — lazy-init guard refuses when checkout branch is ahead of the remote default" {
@@ -5354,6 +5502,73 @@ SHIM
   local surviving_sha
   surviving_sha="$(git -C "$HOST_CHECKOUT" rev-parse refs/heads/f)"
   [ "$surviving_sha" = "$ahead_sha" ]
+}
+
+@test "ensure_runner_checkout_on_branch — lazy-init guard protects commits even without a clone-time origin/HEAD" {
+  # The guard compares against the resolved default branch's freshly-fetched
+  # tracking ref, not the runner-checkout's clone-time origin/HEAD. Pre-#77
+  # a missing origin/HEAD symref left default_tip empty and the guard
+  # silently skipped — the lazy-init reset then destroyed the unpublished
+  # commits. The guard must refuse regardless of origin/HEAD's state.
+  HOST_REPO="$BATS_TEST_TMPDIR/guard-nohead-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/guard-nohead-checkout"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "base: initial main commit"
+
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+  git -C "$HOST_CHECKOUT" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || \
+    git -C "$HOST_CHECKOUT" update-ref -d refs/remotes/origin/HEAD 2>/dev/null || true
+
+  git -C "$HOST_CHECKOUT" checkout --quiet -b f
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "unpublished work on f"
+  local ahead_sha
+  ahead_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  run ensure_runner_checkout_on_branch "f"
+
+  [ "$status" -ne 0 ]
+  [ "$(git -C "$HOST_CHECKOUT" rev-parse refs/heads/f)" = "$ahead_sha" ]
+}
+
+@test "ensure_runner_checkout_on_branch — lazy-init guard refuses when the host default has advanced past the unpublished commits' base" {
+  # Regression (#77 rework): the sync-time fetch runs before the guard, so
+  # the guard compares against the host default's *freshest* tip. When the
+  # unpublished commits were based on an older default tip and the default
+  # has since advanced, the two tips have diverged — the old "default is
+  # ancestor of local" check was false and the guard silently skipped,
+  # letting the lazy-init reset orphan the commits. The guard must fire
+  # whenever the local tip holds anything the default doesn't.
+  HOST_REPO="$BATS_TEST_TMPDIR/guard-diverged-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/guard-diverged-checkout"
+
+  mkdir -p "$HOST_REPO"
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "base: initial main commit"
+
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+
+  # Unpublished work on f, based on the clone-time main tip. No host branch
+  # and no parking ref — a prior dispatch's propagation failed entirely.
+  git -C "$HOST_CHECKOUT" checkout --quiet -b f
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "unpublished work on f"
+  local ahead_sha
+  ahead_sha="$(git -C "$HOST_CHECKOUT" rev-parse HEAD)"
+
+  # Host main advances past the unpublished commits' base (e.g. another
+  # feature merged between runs) — local f and fresh main now diverge.
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "main advances after the clone"
+
+  run ensure_runner_checkout_on_branch "f"
+
+  [ "$status" -ne 0 ]
+  [ "$(git -C "$HOST_CHECKOUT" rev-parse refs/heads/f)" = "$ahead_sha" ]
 }
 
 # === next_eligible_feature — outer-loop selection =========================
@@ -5756,6 +5971,98 @@ drained_features_count() { wc -l <"$DRAIN_DRAINED_FILE" | tr -d ' '; }
 
   [ "$(drain_outcome_nth 0)" = "alpha|drained" ]
   [ "$(drained_features_count)" = "1" ]
+}
+
+@test "drain_one_feature — incident repro (#77): feature created after a stale clone is dispatched, not skipped queue-empty" {
+  # End-to-end reproduction of the observed incident: the runner-checkout was
+  # cloned while host had feature branch x checked out (clone-time origin/HEAD
+  # → x); x was merged and deleted; a brand-new feature landed on the default
+  # branch with one eligible AFK issue. Pre-#77 the lazy-init based the new
+  # feature branch on the stale clone-time tip — which predates the feature —
+  # so the snapshot saw no issues and the drain skipped queue-empty. The drain
+  # must dispatch the issue. Real ensure_runner_checkout_on_branch and real
+  # take_snapshot via the real local-markdown tracker-snapshot; only the mvn
+  # cache and the per-issue loop are mocked.
+  HOST_REPO="$BATS_TEST_TMPDIR/repro-host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/repro-checkout"
+  HOST_ABORT_DIR="$BATS_TEST_TMPDIR/repro-aborted"
+  mkdir -p "$HOST_REPO" "$HOST_ABORT_DIR"
+
+  # Host repo on main, with the real binding script at the role surface and
+  # a pre-existing .features/ tree (so the stale-tip snapshot reproduces the
+  # incident's queue-empty, not a snapshot crash).
+  git -C "$HOST_REPO" init --quiet --initial-branch=main
+  mkdir -p "$HOST_REPO/docs/formann/issue-tracker" "$HOST_REPO/.features"
+  cp "$HERE/../bindings/issue-tracker/local-markdown/tracker-snapshot" \
+     "$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot"
+  chmod +x "$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot"
+  touch "$HOST_REPO/.features/.gitkeep"
+  git -C "$HOST_REPO" add -A
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --quiet -m "initial main commit"
+
+  # Host is on feature branch x when the runner-checkout is cloned.
+  git -C "$HOST_REPO" checkout --quiet -b x
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "work on x"
+  git clone --quiet "$HOST_REPO" "$HOST_CHECKOUT" >&2
+  [ "$(git -C "$HOST_CHECKOUT" symbolic-ref refs/remotes/origin/HEAD)" = "refs/remotes/origin/x" ]
+
+  # Merge x into main and delete it.
+  git -C "$HOST_REPO" checkout --quiet main
+  git -C "$HOST_REPO" merge --quiet --no-edit x >/dev/null
+  git -C "$HOST_REPO" branch --quiet -D x
+
+  # New feature on the default branch with one eligible AFK issue.
+  mkdir -p "$HOST_REPO/.features/newfeat/issues"
+  cat >"$HOST_REPO/.features/newfeat/issues/01-do-the-thing.md" <<'EOF'
+---
+status: ready-for-agent
+category: enhancement
+type: AFK
+---
+
+# Do the thing
+
+## What to build
+
+A trivial thing.
+
+## Acceptance criteria
+
+- [ ] It does the thing.
+
+## Blocked by
+
+None — can start immediately.
+EOF
+  git -C "$HOST_REPO" add -A
+  git -C "$HOST_REPO" -c user.email=t@t -c user.name=t \
+    commit --quiet -m "newfeat: feature with one eligible issue"
+
+  # Drain harness state; mock only the mvn cache and the per-issue loop.
+  REPRO_DRAINED_FILE="$BATS_TEST_TMPDIR/repro-drained"
+  : >"$REPRO_DRAINED_FILE"
+  ensure_mvn_cache_for() { MVN_VOLUME="repro-mvn"; return 0; }
+  run_loop() {
+    echo "$TARGET_FEATURE" >>"$REPRO_DRAINED_FILE"
+    RUN_STOP_REASON="queue-empty"
+    return 0
+  }
+  RUN_DIR="$BATS_TEST_TMPDIR/repro-run"
+  mkdir -p "$RUN_DIR"
+  RUNNER_INTERRUPTED=0
+  RUN_FEATURE_OUTCOMES=()
+  RUN_DISPATCHES=()
+  RUN_STOP_REASON=""
+  TARGET_FEATURE=""
+  RUN_MODE="drain"
+
+  drain_one_feature "newfeat"
+
+  # The issue is dispatched (per-issue loop reached), not skipped.
+  [ "${RUN_FEATURE_OUTCOMES[0]}" = "newfeat|drained" ]
+  grep -qx "newfeat" "$REPRO_DRAINED_FILE"
 }
 
 @test "drain_one_feature — records skip:fetch-failed when runner-checkout sync fails" {
