@@ -54,11 +54,18 @@ Be honest about certainty. Mark unverified findings with **[UNVERIFIED]** and ex
 
 ## Output format
 
-For each finding:
+Present each finding as its own block, separated by a `---` rule so they're easy to scan. Order findings by severity, highest first. Each block:
 
-- **Location:** `file:line` or code snippet
-- **Problem:** what's wrong, with evidence
-- **Severity:** 🔴 Critical | 🟡 Important | 🟢 Minor
+    ### <emoji> <severity> — <headline>
+
+    **Gist:** …
+    **Problem:** …
+    **Suggested fix:** …
+
+- **Heading:** the severity badge — 🔴 Critical | 🟡 Important | 🟢 Minor, exactly these three, emoji + word — followed by a headline: one descriptive sentence, ≤10 words, naming what's wrong.
+- **Gist:** 1–3 plain-English sentences a cold reader can paraphrase without opening the code. Lead with what breaks or matters, not the mechanism. No code identifiers, file paths, or line numbers.
+- **Problem:** the technical detail — `file:line` and the mechanism — enough for an implementor to locate and understand the issue.
+- **Suggested fix:** one brief sentence pointing at a plausible direction, only when it's obvious. No deep research; don't overstate — it's a pointer, not a verified solution. Omit when nothing's obvious.
 
 End with a **Verification summary**: list the specific things checked, even if clean. If the issue has `[human]` criteria, list them under a **Pending human verification** subheading.
 
