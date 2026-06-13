@@ -41,7 +41,7 @@ The rejected alternative is the earlier `<label> → <namespace>:<name>` grammar
 ## Consequences
 
 - The `runner/` directory in the Consumer's repo is the fixed host-side consumer-prompt root. Consumer prompts placed here shadow framework prompts of the same relative path. This location is a convention, not a configurable path, and is captured in `RUNNER_CONSUMER_PROMPTS_DIR`.
-- The framework's building-block step prompts (`review.md`, `gate.md`, `fix.md`, `review-and-gate.md`) live in `framework/runner/steps/`, the framework root the resolver is pointed at. This keeps the lookup isolated from unrelated framework files in `framework/runner/`.
+- The framework's building-block step prompts (`review.md`, `gate.md`, `fix.md`, `find-and-fix.md`, `review-and-gate.md`) live in `framework/runner/steps/`, the framework root the resolver is pointed at. This keeps the lookup isolated from unrelated framework files in `framework/runner/`.
 - The default manifest contains one entry (`review-and-gate.md`) reproducing the original hardcoded gate stage; a Consumer who leaves it as installed gets exactly the prior behaviour.
 - Implement-only (empty manifest) is a first-class configuration; its `left-for-human` outcome is indistinguishable from a non-empty walk that exhausted without reaching `done`. Both leave the issue at `in-review` for the maintainer with no abort flag.
 - Pre-flight validates the manifest and resolves all references before any Dispatch runs, so configuration errors surface before cost is incurred.

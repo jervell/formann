@@ -119,7 +119,7 @@ When a dispatch fails and leaves an issue stuck (eligible status unchanged, or g
 | `$HOST_REPO/runner/Dockerfile`               | Sandbox image — JDK + Maven + git + the `claude` CLI. Non-root user, workdir `/repo`. Entrypoint inlined. |
 | `framework/runner/setup-network.sh`          | Custom Docker bridge with RFC1918-deny outbound. Public internet stays open.                 |
 | `$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot` | Binding-supplied JSON interface, reached via the role surface. Drives eligibility selection and outcome classification. |
-| `framework/runner/steps/review-and-gate.md`  | Prompt for the default post-implement step (review-and-gate) — runs `review-issue`, classifies, commits. The `steps/` dir also holds the `review.md` / `gate.md` / `fix.md` building-block step prompts. |
+| `framework/runner/steps/review-and-gate.md`  | Prompt for the default post-implement step (review-and-gate) — runs `review-issue`, classifies, commits. The `steps/` dir also holds the `review.md` / `gate.md` / `fix.md` / `find-and-fix.md` building-block step prompts. |
 | `.runner-state/checkout/`                  | Separate git clone; the sandbox mounts this, never the host repo.                            |
 | `.runner-state/runs/<ts>/`                 | Per-run logs, per-issue exit codes, end-of-run `SUMMARY.md`.                                 |
 

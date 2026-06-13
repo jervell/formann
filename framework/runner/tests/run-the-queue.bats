@@ -1373,6 +1373,20 @@ _emit_rejected_stream() {
   [[ "$RESOLVED_MANIFEST" == *"review-and-gate"*"review-and-gate.md"* ]]
 }
 
+@test "check_manifest — find-and-fix building block resolves against the framework steps dir" {
+  HOST_REPO="$BATS_TEST_TMPDIR/with-find-and-fix"
+  mkdir -p "$HOST_REPO/runner"
+  # The documented pre-gate manifest: find-and-fix runs ahead of the default
+  # review-and-gate. Both must resolve against the real HERE/steps building
+  # blocks — this guards that the shipped find-and-fix.md prompt exists.
+  printf 'find-and-fix.md\nreview-and-gate.md\n' >"$HOST_REPO/$RUNNER_MANIFEST_FILE"
+  trap - EXIT
+
+  check_manifest
+  [ -n "$RESOLVED_MANIFEST" ]
+  [[ "$RESOLVED_MANIFEST" == *"find-and-fix"*"find-and-fix.md"* ]]
+}
+
 @test "check_manifest — malformed manifest entry fails with the manifest invariant message" {
   HOST_REPO="$BATS_TEST_TMPDIR/bad-manifest"
   mkdir -p "$HOST_REPO/runner"

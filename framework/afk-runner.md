@@ -251,11 +251,12 @@ Why a separate dispatch (not a slash command, not part of `/implement`)? Indepen
 
 ### Building-block steps
 
-For workflows the fused `review-and-gate` step can't express, the framework ships three single-purpose **building-block steps** in `framework/runner/steps/` a Consumer composes into a custom manifest:
+For workflows the fused `review-and-gate` step can't express, the framework ships four single-purpose **building-block steps** in `framework/runner/steps/` a Consumer composes into a custom manifest:
 
 - **`review.md`** — spawns the `review-issue` agent and posts the severity-tagged findings comment. Changes no issue state.
 - **`gate.md`** — reads the **latest** findings comment and thresholds on `🔴 Critical`: promotes to `done` only when none are present, otherwise leaves the issue at `in-review`. Runs no review of its own.
 - **`fix.md`** — reads the latest findings comment and produces commits. Posts no comment and changes no issue state.
+- **`find-and-fix.md`** — runs `/code-review --fix` over the issue's change-set, commits the fixes, and posts a `Note` describing them. Changes no issue state. Soft-fails: a pass that finds nothing or cannot run leaves the issue at `in-review` for the next step rather than blocking it. Unlike `fix.md` (which reacts to a prior findings comment), it finds the bugs itself and leaves a record.
 
 `review.md` and `gate.md` split the fused default along its single seam: `review-and-gate.md` reviews *and* decides in one dispatch, whereas the pair lets a Consumer swap in their own review (or their own gate) on either side. The handoff is the **review↔gate contract** — because the two steps are separate dispatches sharing no stdout or filesystem, the gate keys on the severity markers (`🔴 Critical` / `🟡 Important` / `🟢 Minor`) carried in the latest findings comment on the tracker, not on a fixed heading. Any review that emits that convention interoperates with the framework `gate`; a custom review that cannot ships its own gate.
 
@@ -263,6 +264,7 @@ Three compositions follow:
 
 - **`[review.md]`** — review-without-gate: findings are posted, the issue stays at `in-review` for the maintainer.
 - **`[review.md, gate.md]`** — reproduces the default's promote-on-clean decision while letting the review half be replaced.
+- **`[find-and-fix.md, review-and-gate.md]`** — fix obvious bugs automatically, then gate: the pre-cleanup pass commits high-confidence fixes and notes them, and the gate reviews the combined result.
 - **`[review-and-gate.md, fix.md, review-and-gate.md, …]`** — an unrolled iterate loop. The walk early-exits the moment a gate reaches `done`, because loop control reads the snapshot status (terminal → stop) and never the dispatch output — a clean gate spends no further dispatches.
 
 GLOSSARY.md (*Building-block step*, *Review↔gate contract*) holds the term definitions.
@@ -486,7 +488,7 @@ framework/
     ├── retrieve-secret.sh                    ← vendored Keychain reader
     ├── retrieve-token.sh                     ← OAuth token wrapper
     ├── review-and-gate.md                    ← default post-implement step prompt
-    ├── review.md / gate.md / fix.md          ← building-block step prompts (custom manifests)
+    ├── review.md / gate.md / fix.md / find-and-fix.md   ← building-block step prompts (custom manifests)
     └── tests/                                ← bats suite (pure logic) + smoke fixture
 
 .runner-state/                                ← per-project, gitignored

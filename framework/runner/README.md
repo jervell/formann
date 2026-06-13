@@ -268,10 +268,13 @@ That prompt instructs the dispatched claude session to:
 A Consumer can replace the default with a custom manifest composed from the
 framework's single-purpose **building-block steps** in `framework/runner/steps/`
 — `review.md` (review and post findings, no state change), `gate.md` (read the
-latest findings and promote on no-Critical, runs no review of its own), and
-`fix.md` (read the latest findings and commit fixes). Compose them for
-review-without-gate (`[review.md]`), a separate review reusing the framework
-gate (`[review.md, gate.md]`), or an unrolled iterate loop
+latest findings and promote on no-Critical, runs no review of its own),
+`fix.md` (read the latest findings and commit fixes), and `find-and-fix.md`
+(run `/code-review --fix` over the change-set, commit the fixes, and note them;
+soft-fails without blocking). Compose them for review-without-gate
+(`[review.md]`), a separate review reusing the framework gate
+(`[review.md, gate.md]`), automatic bug-fixing before the gate
+(`[find-and-fix.md, review-and-gate.md]`), or an unrolled iterate loop
 (`[review-and-gate.md, fix.md, review-and-gate.md, …]`).
 The review→gate handoff is the severity-marker convention in the posted
 findings comment, so any review that emits it interoperates with the

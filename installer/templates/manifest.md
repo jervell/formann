@@ -11,4 +11,10 @@
 # The seeded default runs the fused review-and-gate prompt — the same
 # behaviour as before this manifest existed. Edit to customise the phase
 # or empty this file for implement-only (no automated post-implement step).
+#
+# To fix obvious bugs automatically before the gate, add the find-and-fix
+# building block ahead of review-and-gate (uncomment the line below). It runs
+# /code-review --fix over the issue's change-set, commits the fixes, and notes
+# what it did, leaving the gate to decide whether the work earns `done`.
+# find-and-fix.md
 review-and-gate.md

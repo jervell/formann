@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- AFK runner offers an opt-in `find-and-fix` step that runs `/code-review --fix` over an issue's change-set before the gate, commits the fixes, and posts a note.
+
 ### Changed
 - `review-issue` reviews — and the AFK gate comments that paste them — now present findings in a fixed, severity-ordered block format, not a loose list.
 
