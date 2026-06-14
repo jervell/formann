@@ -25,14 +25,14 @@ An issue reference.
 
 3. **Implement.** Use `/tdd`. For type `HITL` issues, pause at each gate listed in the brief and check in with the maintainer before proceeding.
 
-4. **Verify (self-audit).** Run the project's feedback loops (build, tests). Then enumerate every acceptance criterion from the agent brief and classify each into one of two lanes:
+4. **Verify (self-audit).** Run the project's feedback loops (build, tests) **synchronously in the foreground** — start each, wait for it to finish within the same turn, and read its result before doing anything else. Never background a build or test run and then end your turn intending to collect the result later (no notification "waiters", no "I'll continue once the build prints"): a headless dispatch is single-shot and there is no later (see Constraints). If a feedback loop is slow, narrow its scope (build/test only the affected module) rather than offloading it to the background. Then enumerate every acceptance criterion from the agent brief and classify each into one of two lanes:
 
    - **`verified`** — a test exercises it, OR a one-shot command (`ls`, `cat`, `grep`, `bash <script> | jq`, etc.) settles it. A passing test and a quoted command result are equally good evidence; pick whichever is natural. A **skipped or environment-guarded** test does not count as exercising the criterion — a green summary whose relevant scenarios were skipped is not evidence.
    - **`[human]`** — for a criterion the agent cannot settle here, in either of two ways: (a) the verdict requires human judgment no command can produce (UI feel, layout, copy quality, semantic correctness of generated prose, "does this read naturally to audience X"); or (b) a real command or test settles it but **cannot run in this environment** — it needs a resource only the maintainer can supply (Docker-in-Docker, a credential, a manual or operator-attended step the dispatch container can't provide). For (b), cite the skeleton/artifact the maintainer drives as the Evidence, with the one-line ask. Existence, content-contains, structural shape, and script-output checks that *do* run here are **not** `[human]` — settle them with a command.
 
    If a criterion fits neither lane, return to step 3 and add the missing test or verification. If verify surfaces a defect — failing test, broken build, AC that doesn't hold — fix it, then re-run the full feedback loop from the top. Spot-checking only the fixed item is not enough; the Evidence block must reflect the most recent clean end-to-end run. The output of this audit is the Evidence block published in step 6.
 
-5. **Commit.** Per the project's commit conventions.
+5. **Commit.** Per the project's commit conventions. Commit your work *before* the turn can end — uncommitted changes are not "in progress", they are lost. An end-of-turn working tree that still has uncommitted changes is treated as an aborted dispatch: the checkout is discarded and the issue is parked, so 30 minutes of unwritten-to-git work evaporates. Reaching a clean, committed tree is the minimum bar for the dispatch to have accomplished anything.
 
 6. **Ship for review.** Set the state to `in-review`. Comment with Implementation. The comment **leads with** an `**Evidence**` block (one bullet per acceptance criterion, in brief order), followed by any narrative — "What changed:", "Decisions made:" — needed to explain the approach.
 
@@ -70,7 +70,7 @@ An issue reference.
 - One issue per invocation. Picking the next is a coordinator concern, not the worker's.
 - Honor the issue's type.
 
-  - **AFK runs do not solicit human input** — no `AskUserQuestion`, no plain-text questions that wait for a reply, no "let me know and I'll continue". When you reach a point where you'd otherwise ask:
+  - **AFK runs do not solicit human input** — no `AskUserQuestion`, no plain-text questions that wait for a reply, no "let me know and I'll continue". The dispatch is a single `claude -p` session with no continuation: the instant you end your turn the session is over, whether you were waiting on a human or on a backgrounded build. So never end a turn waiting on work in flight, and never end a turn with a dirty working tree — run feedback loops in the foreground (step 4) and commit before you stop (step 5). When you reach a point where you'd otherwise ask:
     - **Routine choice** (naming, default, style, undocumented detail): pick the most sensible option, record the choice in the implementation summary under a "Decisions made" subsection, continue.
     - **Acceptance criterion requires a resource only the maintainer can supply** (credential to paste, manual production step, real-time judgement): mark that AC's Evidence as `[human]` with a one-line ask ("populate Keychain entry X, then re-run Y"), ship the rest.
     - **Brief is internally inconsistent or contradicts what you find in the codebase**: bail per the "Brief is wrong or insufficient" failure mode.
