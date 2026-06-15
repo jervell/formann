@@ -560,6 +560,54 @@ DOCKEREOF
   grep -q -- 'Do the review step.' "$cap"
 }
 
+# The dispatch is one-shot `claude -p`: it has no loop/scheduler runtime, so
+# ScheduleWakeup and the Cron* tools are non-functional yet still exposed —
+# ScheduleWakeup even reports back that "the harness re-invokes you when the
+# wakeup fires", which never happens under -p, stranding uncommitted work.
+# Disallow them so a dispatch can't reach for a wakeup that never fires.
+# (run_in_background Bash is NOT disallowed — it works under -p: the harness
+# waits for the task and re-invokes the agent on completion.)
+@test "run_dispatch_container — passes --disallowed-tools for the scheduling tools broken under -p" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  run_dispatch_container "#71" "$BATS_TEST_TMPDIR/base"
+  grep -q -- '--disallowed-tools ScheduleWakeup CronCreate CronDelete CronList' "$cap"
+}
+
+@test "run_item_container — passes --disallowed-tools for the scheduling tools broken under -p" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  local prompt="$BATS_TEST_TMPDIR/step.md"
+  printf 'Do the review step.\n' >"$prompt"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  run_item_container "#71" "$BATS_TEST_TMPDIR/base" "$prompt"
+  grep -q -- '--disallowed-tools ScheduleWakeup CronCreate CronDelete CronList' "$cap"
+}
+
+# The dispatch's one-shot lifecycle is true only here (a maintainer running the
+# same skill interactively gets a next turn), so the runner — the authority that
+# makes it one-shot — states it via --append-system-prompt rather than baking it
+# into a skill or rule that also loads in interactive sessions. Both dispatch
+# command-builders must carry it.
+@test "run_dispatch_container — appends the one-shot dispatch preamble to the system prompt" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  run_dispatch_container "#71" "$BATS_TEST_TMPDIR/base"
+  grep -q -- '--append-system-prompt This is a one-shot headless dispatch' "$cap"
+}
+
+@test "run_item_container — appends the one-shot dispatch preamble to the system prompt" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  local prompt="$BATS_TEST_TMPDIR/step.md"
+  printf 'Do the review step.\n' >"$prompt"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  run_item_container "#71" "$BATS_TEST_TMPDIR/base" "$prompt"
+  grep -q -- '--append-system-prompt This is a one-shot headless dispatch' "$cap"
+}
+
 # === Fault isolation: a malformed stream cannot change the outcome (AC #8) ===
 
 @test "dispatch_one — malformed event stream leaves classified outcome and completion unchanged vs well-formed" {

@@ -2365,6 +2365,32 @@ with_window_retry() {
   return "$rc"
 }
 
+# Tools the dispatch must not offer the agent. The dispatch is one-shot
+# `claude -p`, which has no loop/scheduler runtime, so these cross-turn
+# scheduling tools never fire — yet they stay exposed, and ScheduleWakeup even
+# reports back that "the harness re-invokes you when the wakeup fires", which
+# under -p it does not. An agent that trusts that message ends its turn before
+# committing, and the next iteration's checkout scrub discards the work. We
+# strip them so the dispatch cannot reach for a wakeup that never arrives.
+# run_in_background Bash is deliberately NOT here: it works under -p — the
+# harness waits for the task and re-invokes the agent on completion.
+RUNNER_DISALLOWED_DISPATCH_TOOLS=(ScheduleWakeup CronCreate CronDelete CronList)
+
+# Agent-facing statement of the one-shot context the disallowed tools above
+# guard against. The runner is the authority that makes a dispatch one-shot, so
+# it declares the lifecycle here via --append-system-prompt — scoped to the
+# headless dispatch, where it is true, rather than baked into a skill or rule
+# that also loads in interactive sessions (a maintainer running the same skill
+# by hand gets a next turn).
+#
+# Injected verbatim into EVERY dispatch — /implement and each walk-step prompt
+# (review, gate, review-and-gate, fix, find-and-fix) — so it must state
+# execution-context facts ONLY. No task imperatives ("commit", "set state"):
+# those differ per step and some steps forbid them (review must NOT change
+# state; gate transitions only on a clean verdict). Each step's own prompt owns
+# what it does; this only tells the agent the turn will not be resumed.
+RUNNER_DISPATCH_PREAMBLE="This is a one-shot headless dispatch: a single claude -p turn with no /loop or scheduler runtime. No scheduled wakeup or cross-turn timer will fire here — if you stop and wait to be resumed, nothing resumes you and the dispatch ends where it is. Carry out what this dispatch asks within this run; do not defer it behind a wakeup or a later check-in."
+
 # Implement-dispatch wrapper: hands `claude -p "/implement <ref>"` to the
 # sandbox via the transport-retry layer, in streamed structured-event mode.
 # Tracker-snapshot delta is the source of truth for the success/failure
@@ -2376,6 +2402,8 @@ run_dispatch_container() {
   [ -n "${ARG_MODEL:-}" ] && model_args=(--model "$ARG_MODEL")
   with_window_retry "$log_base" run_sandbox_container \
     claude -p "/implement $ref" --output-format stream-json --verbose --dangerously-skip-permissions \
+    --append-system-prompt "$RUNNER_DISPATCH_PREAMBLE" \
+    --disallowed-tools "${RUNNER_DISALLOWED_DISPATCH_TOOLS[@]}" \
     "${model_args[@]+"${model_args[@]}"}"
 }
 
@@ -2391,6 +2419,8 @@ run_item_container() {
   [ -n "${ARG_MODEL:-}" ] && model_args=(--model "$ARG_MODEL")
   with_window_retry "$log_base" run_sandbox_container \
     claude -p "$prompt_text" --output-format stream-json --verbose --dangerously-skip-permissions \
+    --append-system-prompt "$RUNNER_DISPATCH_PREAMBLE" \
+    --disallowed-tools "${RUNNER_DISALLOWED_DISPATCH_TOOLS[@]}" \
     "${model_args[@]+"${model_args[@]}"}"
 }
 

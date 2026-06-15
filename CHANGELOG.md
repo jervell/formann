@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `review-issue` reviews — and the AFK gate comments that paste them — now present findings in a fixed, severity-ordered block format, not a loose list.
 
+### Fixed
+- AFK dispatches can no longer strand uncommitted work behind a `ScheduleWakeup` that never fires under `claude -p` — the runner removes that and the `Cron*` tools from every dispatch.
+
 ## [0.5.0] - 2026-06-12
 
 ### Added
