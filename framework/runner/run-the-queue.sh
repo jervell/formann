@@ -2019,6 +2019,7 @@ run_sandbox_container() {
     -v "$HOST_CHECKOUT:$RUNNER_CONTAINER_REPO_PATH" \
     -v "$HOST_REPO/.formann:$RUNNER_CONTAINER_REPO_PATH/.formann:ro" \
     -v "$HOST_REPO/docs/formann:$RUNNER_CONTAINER_REPO_PATH/docs/formann:ro" \
+    -v "$HOST_REPO/.formann/runner/sandbox-claude-settings.json:$RUNNER_CONTAINER_REPO_PATH/.claude/settings.json:ro" \
     ${claude_mounts[@]+"${claude_mounts[@]}"} \
     -v "$MVN_VOLUME:$RUNNER_CONTAINER_M2_PATH" \
     -v "$HOME/.m2/repository:/home/runner/.m2-host:ro" \
@@ -3125,6 +3126,29 @@ dispatch_one() {
   if [ -n "$dirty" ]; then
     echo "runner: dispatch left runner-checkout with uncommitted changes:" >&2
     echo "$dirty" | sed 's/^/  /' >&2
+    # Preserve the partial work before the next dispatch's `git reset --hard`
+    # + `git clean -fd` discards it. Snapshot the dirty tree (tracked AND
+    # untracked) into a commit object parented on HEAD and park it under
+    # refs/formann-wip/<feature>-<nn>-<ts>, WITHOUT moving HEAD or the branch
+    # — so a human or a resumed dispatch can recover/cherry-pick it instead of
+    # re-doing the work. The working tree is left untouched; the next
+    # checkout-reset still runs as before. Best-effort: any failure here must
+    # not change the abort outcome.
+    if git -C "$HOST_CHECKOUT" add -A >/dev/null 2>&1; then
+      local _wip_tree _wip_commit _wip_ref
+      _wip_tree="$(git -C "$HOST_CHECKOUT" write-tree 2>/dev/null || true)"
+      if [ -n "$_wip_tree" ]; then
+        _wip_commit="$(git -C "$HOST_CHECKOUT" commit-tree "$_wip_tree" -p HEAD \
+          -m "formann-wip: aborted dispatch $ref ($(now_clock))" 2>/dev/null || true)"
+        if [ -n "$_wip_commit" ]; then
+          _wip_ref="refs/formann-wip/${feature}-${nn}-$(date +%Y%m%d-%H%M%S)"
+          git -C "$HOST_CHECKOUT" update-ref "$_wip_ref" "$_wip_commit" 2>/dev/null \
+            && echo "runner: preserved partial work at $_wip_ref ($_wip_commit) — recover with: git -C $HOST_CHECKOUT cherry-pick -n $_wip_commit" >&2
+        fi
+      fi
+      # Unstage (mixed reset to HEAD); working tree stays as the agent left it.
+      git -C "$HOST_CHECKOUT" reset -q >/dev/null 2>&1 || true
+    fi
   fi
   capture_dispatch_core_files "$dirty" "$run_dir" "$feature" "$nn"
 
