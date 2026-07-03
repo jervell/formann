@@ -2,14 +2,20 @@
 # AFK runner.
 #
 # Usage:
-#   run-the-queue.sh [--model <id>]                            # drain mode — every active feature
-#   run-the-queue.sh [--model <id>] --feature <slug>           # loop mode — one feature
-#   run-the-queue.sh [--model <id>] --issue <feature>/<NN>     # single-dispatch mode
+#   run-the-queue.sh [--model <id>] [--no-caffeinate]                        # drain mode — every active feature
+#   run-the-queue.sh [--model <id>] [--no-caffeinate] --feature <slug>       # loop mode — one feature
+#   run-the-queue.sh [--model <id>] [--no-caffeinate] --issue <feature>/<NN> # single-dispatch mode
 #
 # `--model <id>` overrides the model for every dispatch in the run (implement
 # and each walk item). An unknown id is rejected by the CLI inside the
 # container and surfaces as a normal dispatch failure. Without the flag,
 # the CLI defaults apply and output is byte-identical to prior behavior.
+#
+# By default the runner holds a macOS wake assertion for the whole run
+# (`caffeinate -i -s` tied to the runner pid), so an unattended host doesn't
+# idle-sleep or throttle a multi-hour run. `--no-caffeinate` skips it (e.g.
+# the operator manages power assertions themselves); on hosts without
+# caffeinate the runner logs a note and continues.
 #
 # Bare invocation walks every feature returned by `tracker-snapshot --list`
 # and drains the ones it's allowed to touch (per-feature gate decides).
@@ -508,6 +514,14 @@ binding_native_ref() {
 
 now_ts() { date +"%Y%m%d-%H%M%S"; }
 now_clock() { date +"%H:%M:%S"; }
+
+# Wall-clock epoch seconds. A named seam so the bats suite can shim time:
+# every wait loop compares against this clock, never against a count of
+# completed `sleep 1` iterations — under macOS idle timer throttling (or a
+# suspend/resume) each nominal sleep can take far longer than one real
+# second, so an iteration counter drifts behind wall-clock and overruns its
+# deadline (issue #80).
+runner_epoch_now() { date +%s; }
 
 # HH:MM:SS local clock for an epoch timestamp. BSD date takes `-r <epoch>`;
 # GNU date treats `-r` as a file reference and needs `-d @<epoch>` — try BSD
@@ -1016,6 +1030,40 @@ stop_runner_log_capture() {
   RUNNER_LOG_FIFO=""
 }
 
+# Hold a host wake assertion for the lifetime of the run. On macOS an
+# unattended runner is exactly the process the OS throttles hardest: once
+# the display sleeps and no interactive session holds an assertion, idle
+# power management coalesces the runner's timers (and may sleep the machine
+# outright), stretching multi-hour waits and builds (issue #80). The
+# wall-clock deadline loops make the runner *correct* under throttling;
+# this keeps the host responsive in the first place — defense in depth,
+# not a substitute.
+#
+# `caffeinate -i -s -w $$` prevents idle sleep (-i) and system sleep on AC
+# (-s) for as long as the runner pid is alive (-w): cleanup is automatic on
+# any exit path, including `kill -9`, with no trap involvement. Display
+# assertions (-d/-u) are deliberately omitted — a headless always-on host
+# gains nothing from a lit panel. Skipped with a logged note when
+# `--no-caffeinate` was passed or the host has no caffeinate (non-macOS).
+start_wake_assertion() {
+  if [ "${ARG_NO_CAFFEINATE:-0}" -eq 1 ]; then
+    echo "[$(now_clock)] runner: wake assertion disabled (--no-caffeinate)"
+    return 0
+  fi
+  if ! command -v caffeinate >/dev/null 2>&1; then
+    echo "[$(now_clock)] runner: caffeinate unavailable — running without a wake assertion"
+    return 0
+  fi
+  # </dev/null >/dev/null 2>&1 is load-bearing: this runs after
+  # start_runner_log_capture redirected stdout into the runner.log fifo, and
+  # caffeinate outlives finalize_run's tee shutdown (it dies with the runner
+  # pid, later). If it inherited the fifo's write end, tee would never see
+  # EOF and stop_runner_log_capture's `wait` would hang the exit forever.
+  caffeinate -i -s -w $$ </dev/null >/dev/null 2>&1 &
+  CAFFEINATE_PID=$!
+  echo "[$(now_clock)] runner: wake assertion held for this run (caffeinate -i -s, pid $CAFFEINATE_PID)"
+}
+
 # Append a `feature|nn|ref|label|duration|step_logs|attempt_count|propagation`
 # record to RUN_DISPATCHES. `label` is the iteration's combined outcome — one of
 # `done | left-for-human | gate-failed | review-aborted | dispatch-aborted | in-review | FAIL | halt → runaway`.
@@ -1136,6 +1184,7 @@ finalize_run() {
 ARG_ISSUE_REF=""
 ARG_FEATURE=""
 ARG_MODEL=""
+ARG_NO_CAFFEINATE=0
 RUN_MODE=""           # "single" | "loop" | "drain", set by parse_args
 ISSUE_FEATURE=""
 ISSUE_NN=""
@@ -1176,8 +1225,12 @@ parse_args() {
         ARG_MODEL="$2"
         shift 2
         ;;
+      --no-caffeinate)
+        ARG_NO_CAFFEINATE=1
+        shift
+        ;;
       -h|--help)
-        sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
       *)
@@ -2215,16 +2268,18 @@ with_transport_retry() {
     next_attempt=$(( attempt + 1 ))
     echo "[$(now_clock)] runner: transport-crash detected ($crash_class) — retrying in ${backoff}s (attempt $next_attempt of $max)"
 
-    # 1-second poll loop so RUNNER_INTERRUPTED cuts the sleep short — the run's
-    # stop reason stays "interrupted", not "dispatch-aborted".
-    local elapsed=0
-    while [ "$elapsed" -lt "$backoff" ]; do
+    # Wall-clock deadline polled once per second — the 1s granularity is
+    # purely so RUNNER_INTERRUPTED cuts the sleep short (the run's stop
+    # reason stays "interrupted", not "dispatch-aborted"). Never count
+    # iterations to measure the wait: see runner_epoch_now (issue #80).
+    local deadline
+    deadline=$(( $(runner_epoch_now) + backoff ))
+    while [ "$(runner_epoch_now)" -lt "$deadline" ]; do
       if [ "${RUNNER_INTERRUPTED:-0}" -eq 1 ]; then
         TRANSPORT_RETRY_ATTEMPTS=$attempt
         return "$rc"
       fi
       sleep 1
-      elapsed=$(( elapsed + 1 ))
     done
     if [ "${RUNNER_INTERRUPTED:-0}" -eq 1 ]; then
       TRANSPORT_RETRY_ATTEMPTS=$attempt
@@ -2332,7 +2387,7 @@ with_window_retry() {
     local resets_at rl_type wait_seconds now
     resets_at="$(window_resets_at "$log_base.stdout.jsonl")"
     rl_type="$(window_rate_limit_type "$log_base.stdout.jsonl")"
-    now="$(date +%s)"
+    now="$(runner_epoch_now)"
     if [ -n "$resets_at" ]; then
       wait_seconds="$(window_wait_seconds "$resets_at" "$now")"
       format_window_wait_line "$(now_clock)" "$rl_type" \
@@ -2343,16 +2398,22 @@ with_window_retry() {
         "$wait_seconds" "$waits" "$max_waits"
     fi
 
-    # 1-second poll loop so RUNNER_INTERRUPTED cuts the wait short — the
-    # run's stop reason stays "interrupted", not "window-exhausted".
-    local elapsed=0
-    while [ "$elapsed" -lt "$wait_seconds" ]; do
+    # Wall-clock deadline polled once per second — the 1s granularity is
+    # purely so RUNNER_INTERRUPTED cuts the wait short (the run's stop
+    # reason stays "interrupted", not "window-exhausted"). Never count
+    # iterations to measure the wait: over a multi-hour window wait the
+    # counter drifts unboundedly behind wall-clock under idle timer
+    # throttling, stranding the dispatch past the window reset while it
+    # holds the run lock (issue #80). Across a suspend/resume the first
+    # clock check on wake sees the deadline passed and exits immediately.
+    local deadline
+    deadline=$(( now + wait_seconds ))
+    while [ "$(runner_epoch_now)" -lt "$deadline" ]; do
       if [ "${RUNNER_INTERRUPTED:-0}" -eq 1 ]; then
         TRANSPORT_RETRY_ATTEMPTS="$total_attempts"
         return "$rc"
       fi
       sleep 1
-      elapsed=$(( elapsed + 1 ))
     done
     if [ "${RUNNER_INTERRUPTED:-0}" -eq 1 ]; then
       TRANSPORT_RETRY_ATTEMPTS="$total_attempts"
@@ -3606,6 +3667,7 @@ main() {
   RUN_FEATURE="$TARGET_FEATURE"
   setup_run_dir
   start_runner_log_capture
+  start_wake_assertion
   if [ -n "${ARG_MODEL:-}" ]; then
     echo "[$(now_clock)] model: $ARG_MODEL"
   fi

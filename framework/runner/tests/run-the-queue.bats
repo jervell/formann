@@ -653,6 +653,14 @@ DOCKEREOF
 # tests shim `sleep` to a no-op and use small backoff values
 # (RUNNER_TRANSPORT_RETRY_BACKOFFS="1 2 3") so the suite runs in seconds.
 # The schedule is verified by counting the number of `sleep 1` calls.
+#
+# The wait loops measure elapsed time against `runner_epoch_now` (wall
+# clock), never by counting iterations (issue #80). Tests shim both ends: a
+# FAKE_NOW counter stands in for the clock, and the no-op `sleep` advances
+# it by its nominal argument — so a well-behaved host is simulated and the
+# `sleep 1` call counts stay exact. The issue-#80 regression tests below
+# instead advance FAKE_NOW *faster* than nominal to simulate OS timer
+# throttling, and assert the loop still honours the wall-clock deadline.
 
 _setup_retry_test() {
   HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
@@ -667,7 +675,9 @@ _setup_retry_test() {
   TRANSPORT_RETRY_ATTEMPTS=0
   SLEEP_ARGS_FILE="$BATS_TEST_TMPDIR/sleep-args"
   : >"$SLEEP_ARGS_FILE"
-  sleep() { echo "$@" >>"$SLEEP_ARGS_FILE"; }
+  FAKE_NOW=1000000
+  runner_epoch_now() { echo "$FAKE_NOW"; }
+  sleep() { echo "$@" >>"$SLEEP_ARGS_FILE"; FAKE_NOW=$(( FAKE_NOW + $1 )); }
 }
 
 @test "with_transport_retry — first-attempt success: no retry, no log archival, attempts=1" {
@@ -1161,6 +1171,150 @@ _emit_rejected_stream() {
   ! grep -q 'waiting until' "$WIN_OUT"
 }
 
+# === issue #80 regression — waits are wall-clock deadlines, not counters =====
+#
+# Under macOS idle timer throttling each nominal `sleep 1` can take far
+# longer than one real second; across a suspend/resume the process freezes
+# entirely. An iteration-counting loop drifts behind wall-clock and overruns
+# its deadline — the incident stranded a dispatch 9+ minutes past a window
+# reset while holding the run lock. These tests advance the fake clock
+# faster than the nominal sleep and assert the loops exit on the deadline.
+
+@test "with_window_retry — throttled host (issue #80): wall-clock deadline governs the wait, not the iteration count" {
+  _setup_window_retry_test
+  # Each nominal `sleep 1` takes 30 real seconds. The 60s slack wait must
+  # finish after 2 sleeps; counting iterations would take 60.
+  sleep() { echo "$@" >>"$SLEEP_ARGS_FILE"; FAKE_NOW=$(( FAKE_NOW + 30 )); }
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  local call_file="$BATS_TEST_TMPDIR/calls"
+  echo 0 >"$call_file"
+  fake_dispatch() {
+    local n; n=$(( $(cat "$call_file") + 1 )); echo "$n" >"$call_file"
+    if [ "$n" -eq 1 ]; then
+      _emit_rejected_stream "$1.stdout.jsonl" 0
+      return 1
+    fi
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n' >"$1.stdout.jsonl"
+    return 0
+  }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 2 ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 2 ]
+  grep -q 'runner: usage window reset — retrying dispatch' "$WIN_OUT"
+}
+
+@test "with_window_retry — suspend/resume across the wait (issue #80): first clock check on wake ends the wait" {
+  _setup_window_retry_test
+  # The first sleep freezes through a suspend that outlives the whole wait:
+  # on wake the clock is far past the deadline and the loop must exit on
+  # its next check — exactly 1 sleep, not 60.
+  sleep() { echo "$@" >>"$SLEEP_ARGS_FILE"; FAKE_NOW=$(( FAKE_NOW + 100000 )); }
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  local call_file="$BATS_TEST_TMPDIR/calls"
+  echo 0 >"$call_file"
+  fake_dispatch() {
+    local n; n=$(( $(cat "$call_file") + 1 )); echo "$n" >"$call_file"
+    if [ "$n" -eq 1 ]; then
+      _emit_rejected_stream "$1.stdout.jsonl" 0
+      return 1
+    fi
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n' >"$1.stdout.jsonl"
+    return 0
+  }
+
+  set +e
+  with_window_retry "$log_file" fake_dispatch >"$WIN_OUT"
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 2 ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 1 ]
+  grep -q 'runner: usage window reset — retrying dispatch' "$WIN_OUT"
+}
+
+@test "with_transport_retry — throttled host (issue #80): backoff honours the wall-clock deadline, not the iteration count" {
+  _setup_retry_test
+  RUNNER_TRANSPORT_RETRY_MAX_ATTEMPTS=2
+  RUNNER_TRANSPORT_RETRY_BACKOFFS="10"
+  # Each nominal `sleep 1` takes 4 real seconds: the 10s backoff completes
+  # after 3 sleeps (4+4+4 ≥ 10), not 10.
+  sleep() { echo "$@" >>"$SLEEP_ARGS_FILE"; FAKE_NOW=$(( FAKE_NOW + 4 )); }
+  local log_file="$BATS_TEST_TMPDIR/test.log"
+  local call_count=0
+  fake_dispatch() {
+    call_count=$(( call_count + 1 ))
+    if [ "$call_count" -eq 1 ]; then
+      printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"result":"API Error: 500"}\n' >"$1.stdout.jsonl"
+      return 1
+    fi
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n' >"$1.stdout.jsonl"
+    return 0
+  }
+
+  set +e
+  with_transport_retry "$log_file" fake_dispatch
+  local rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ]
+  [ "$TRANSPORT_RETRY_ATTEMPTS" -eq 2 ]
+  [ "$(wc -l <"$SLEEP_ARGS_FILE" | tr -d ' ')" -eq 3 ]
+}
+
+# === start_wake_assertion / --no-caffeinate ===================================
+
+@test "start_wake_assertion — spawns caffeinate -i -s tied to the runner pid" {
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat >"$BATS_TEST_TMPDIR/bin/caffeinate" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >"$BATS_TEST_TMPDIR/caff-args"
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/caffeinate"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  ARG_NO_CAFFEINATE=0
+
+  start_wake_assertion >"$BATS_TEST_TMPDIR/out"
+  wait "$CAFFEINATE_PID"
+
+  [ "$(cat "$BATS_TEST_TMPDIR/caff-args")" = "-i -s -w $$" ]
+  grep -q 'runner: wake assertion held for this run (caffeinate -i -s, ' "$BATS_TEST_TMPDIR/out"
+}
+
+@test "start_wake_assertion — --no-caffeinate skips the assertion with a logged note" {
+  ARG_NO_CAFFEINATE=1
+  run start_wake_assertion
+  assert_success
+  assert_output --partial 'runner: wake assertion disabled (--no-caffeinate)'
+}
+
+@test "start_wake_assertion — host without caffeinate: logged note, run continues" {
+  mkdir -p "$BATS_TEST_TMPDIR/emptybin"
+  ARG_NO_CAFFEINATE=0
+  local out rc=0
+  # Subshell so the stripped PATH (no caffeinate anywhere) stays local.
+  out="$(PATH="$BATS_TEST_TMPDIR/emptybin"; start_wake_assertion)" || rc=$?
+  [ "$rc" -eq 0 ]
+  [[ "$out" == *'caffeinate unavailable — running without a wake assertion'* ]]
+}
+
+@test "parse_args — --no-caffeinate sets the flag; absent it stays off" {
+  ARG_NO_CAFFEINATE=0
+  parse_args --no-caffeinate
+  [ "$ARG_NO_CAFFEINATE" -eq 1 ]
+  [ "$RUN_MODE" = "drain" ]
+
+  ARG_NO_CAFFEINATE=0
+  parse_args
+  [ "$ARG_NO_CAFFEINATE" -eq 0 ]
+}
+
 @test "dispatch_one — retry-then-success: second attempt succeeds, .attempt-1 archived, no abort flag" {
   setup_dispatch_one_test
   # Shim sleep to no-op and use small backoffs so the test runs in milliseconds.
@@ -1220,7 +1374,12 @@ _emit_rejected_stream() {
 
 @test "dispatch_one — implement window give-up: outcome window-exhausted, abort flag type window" {
   setup_dispatch_one_test
-  sleep() { :; }
+  # Fake clock: the window wait loops against runner_epoch_now, so a bare
+  # no-op sleep would busy-spin for the real 60s slack. Advancing the fake
+  # clock by the nominal amount keeps the wait instant.
+  FAKE_NOW=1000000
+  runner_epoch_now() { echo "$FAKE_NOW"; }
+  sleep() { FAKE_NOW=$(( FAKE_NOW + $1 )); }
   RUNNER_WINDOW_RETRY_MAX_WAITS=1
   RUNNER_WINDOW_RETRY_FALLBACK_WAIT=1
   RUNNER_DISABLE_WINDOW_RETRY=0

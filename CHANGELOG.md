@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - AFK runner offers an opt-in `find-and-fix` step that runs `/code-review --fix` over an issue's change-set before the gate, commits the fixes, and posts a note.
+- AFK runner holds a macOS wake assertion for the whole run (`caffeinate -i -s` tied to the runner pid) so an unattended host doesn't idle-sleep or timer-throttle a multi-hour run. `--no-caffeinate` skips it; non-macOS hosts log a note and continue.
 
 ### Changed
 - `review-issue` reviews — and the AFK gate comments that paste them — now present findings in a fixed, severity-ordered block format, not a loose list.
 
 ### Fixed
+- AFK runner's usage-window and transport-backoff waits poll a wall-clock deadline instead of counting `sleep 1` iterations, so OS timer throttling or a suspend/resume can no longer strand a dispatch past the window reset while it holds the run lock (issue #80).
 - AFK dispatches can no longer strand uncommitted work behind a `ScheduleWakeup` that never fires under `claude -p` — the runner removes that and the `Cron*` tools from every dispatch.
 
 ## [0.5.0] - 2026-06-12
