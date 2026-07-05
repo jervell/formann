@@ -1246,6 +1246,107 @@ release_lock() {
   fi
 }
 
+# === Dead-run reconciliation ===============================================
+#
+# A run that dies hard (SIGKILL, power loss, crash) never executes
+# finalize_run, so its run dir has no SUMMARY.md — and its in-flight issue
+# can be stranded: implement finished and flipped the issue to `in-review`,
+# but the post-implement walk (review gate) never ran. Nothing revisits
+# `in-review` issues — the queue only admits `ready-for-agent` — so without
+# detection the strand is invisible: the next run's SUMMARY looks like a
+# normal queue-empty drain (#82; observed as omumuas/omumu#1011, stranded
+# ~36h until a human diffed in-review issues against review-gate logs).
+#
+# Called from preflight() immediately after acquire_lock: holding the lock
+# proves no other runner is mid-flight, so every other run dir without a
+# SUMMARY.md is a dead run, not a live one. Deliberately runs before the
+# remaining invariants — a preflight abort (docker down, no network) must
+# not defer detection, because outages are exactly when runs die.
+#
+# For each dead run dir: write a reconstructed SUMMARY.md (which also makes
+# reconciliation idempotent — a dir is post-mortemed exactly once) and emit
+# one greppable line per dispatch artifact found. The high-signal shape —
+# `<NN>.exit` reads 0 and no `<NN>-*` walk-step artifact exists — means
+# implement succeeded and the walk never started:
+#
+#   stranded-in-review: #<nn> (<feature>) — implement finished but the
+#   review walk never ran (dead run <ts>); …
+#
+# Other shapes get a softer `dead-run:` line — with walk-step artifacts
+# present the issue may have finished the walk and closed normally before
+# the run died, so only its current tracker state is authoritative.
+# Artifact-only reconstruction, no tracker calls: cheap, offline-safe, and
+# never aborts the run (both functions return 0 unconditionally).
+# Recovery — a review-only dispatch that resumes where the dead run
+# stopped — is follow-up work tracked in #82.
+reconcile_dead_runs() {
+  local dir ts
+  for dir in "$HOST_RUNS"/*/; do
+    [ -d "$dir" ] || continue
+    dir="${dir%/}"
+    [ "$dir" = "$RUN_DIR" ] && continue
+    [ -f "$dir/SUMMARY.md" ] && continue
+    ts="$(basename "$dir")"
+    reconcile_one_dead_run "$dir" "$ts"
+  done
+  return 0
+}
+
+# Post-mortem a single dead run dir: classify each dispatch artifact pair
+# (`<NN>.exit` at the flat layout root or nested under `<feature>/`), emit
+# the diagnostic lines, and write the reconstructed SUMMARY.md. Factored out
+# of reconcile_dead_runs for testability.
+reconcile_one_dead_run() {
+  local dir="$1" ts="$2"
+  echo "runner: dead run $ts has no SUMMARY.md — reconstructing post-mortem" >&2
+  local rows=""
+  local exit_file base nn feature exit_code verdict steps step_artifact
+  for exit_file in "$dir"/*.exit "$dir"/*/*.exit; do
+    [ -f "$exit_file" ] || continue
+    base="${exit_file%.exit}"
+    nn="$(basename "$base")"
+    feature="$(dirname "$exit_file")"
+    if [ "$feature" = "$dir" ]; then
+      feature="-"
+    else
+      feature="$(basename "$feature")"
+    fi
+    exit_code="$(cat "$exit_file" 2>/dev/null || echo '?')"
+    steps="no"
+    for step_artifact in "$base"-*; do
+      if [ -e "$step_artifact" ]; then
+        steps="yes"
+        break
+      fi
+    done
+    if [ "$exit_code" = "0" ] && [ "$steps" = "no" ]; then
+      verdict="stranded-in-review"
+      echo "stranded-in-review: #$nn ($feature) — implement finished but the review walk never ran (dead run $ts); the issue sits at in-review and no dispatch will revisit it — verify manually or re-triage" >&2
+    elif [ "$exit_code" = "0" ]; then
+      verdict="interrupted-during-walk"
+      echo "dead-run: #$nn ($feature) — implement finished and the walk started; the run died before recording an outcome (dead run $ts) — the issue's tracker state is authoritative" >&2
+    else
+      verdict="implement-died"
+      echo "dead-run: #$nn ($feature) — implement dispatch ended with exit $exit_code and no outcome was recorded (dead run $ts)" >&2
+    fi
+    rows="${rows}| #$nn | $feature | $verdict | $exit_code |"$'\n'
+  done
+  {
+    printf '# AFK runner — post-mortem (reconstructed)\n\n'
+    printf -- '- Run: %s (reconstructed by run %s)\n' "$ts" "${RUN_TS:-unknown}"
+    printf -- '- Stop reason: died-without-summary\n\n'
+    if [ -n "$rows" ]; then
+      printf '| issue | feature | verdict | implement exit |\n'
+      printf '|-------|---------|---------|----------------|\n'
+      printf '%s' "$rows"
+    else
+      printf 'No dispatch artifacts found — the run died during preflight or before its first dispatch.\n'
+    fi
+  } >"$dir/SUMMARY.md" 2>/dev/null || \
+    echo "runner: could not write reconstructed SUMMARY.md for dead run $ts" >&2
+  return 0
+}
+
 # === Host repo state inspection ============================================
 
 # Resolve the host (consumer) repo root. The script lives at
@@ -1737,6 +1838,13 @@ retrieve_oauth_token() {
 # alongside summary writing.
 preflight() {
   acquire_lock
+  reconcile_dead_runs                    # advisory, not an invariant: post-mortem
+                                         # runs that died without a SUMMARY.md
+                                         # and surface stranded in-review issues
+                                         # (#82). Safe here — the lock proves no
+                                         # other runner is mid-flight; placed
+                                         # before the other invariants so a
+                                         # preflight abort can't defer detection.
   check_retry_knobs                      # invariant 0: env knob sanity
   check_discovery                        # invariant 1: tracker-snapshot --list
   ensure_runner_remote                   # invariant 1b: runner remote
