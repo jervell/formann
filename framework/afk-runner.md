@@ -70,6 +70,7 @@ The orchestrator. A bash script structured as:
    - **Loop mode** (`--feature <slug>`) — narrows to a single feature; refuses loudly on structural gate failures.
    - **Single-dispatch mode** (`--issue <feature>/<NN>`) — dispatches a single ref; refuses loudly on eligibility gate failures.
    `--model <id>` overrides the model for every dispatch in the run (implement and each walk item). Without the flag, behavior is byte-identical to prior runs.
+   Every mode also accepts `--no-caffeinate`, which skips the default macOS wake assertion (`caffeinate -i -s` tied to the runner pid) that otherwise keeps an unattended host from idle-sleeping or timer-throttling the run; hosts without `caffeinate` log a note and continue.
 2. **Pre-flight** — fail-fast invariants (see below). The set differs by mode: drain mode defers runner-checkout sync and mvn-cache to the per-feature loop; narrowed modes materialise them up front.
 3. **Outer drain loop** (drain mode only) — one iteration per feature: evaluate per-feature gate; if `drain`, run the per-issue loop scoped to that feature; if `skip:<reason>`, record a SUMMARY row and continue.
 4. **Per-issue dispatch loop** — one iteration per issue inside a drained feature: snapshot, pick, implement, classify, propagate, then walk the post-implement manifest (dispatch each step, classify, propagate per step).

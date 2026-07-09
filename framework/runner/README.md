@@ -11,6 +11,8 @@ dispatching `/implement` per issue inside a sandboxed Docker container.
 
 `--model <id>` overrides the model for every dispatch in the run (implement stage and each post-implement walk item). An unknown id is rejected by the CLI inside the container and surfaces as a normal dispatch failure — the runner keeps no model whitelist. When the flag is given, the model appears in the SUMMARY.md run line and `runner.log`; without it, behavior is byte-identical to prior runs.
 
+Every form also accepts `--no-caffeinate`. By default the runner holds a macOS wake assertion for the whole run (`caffeinate -i -s` tied to the runner pid, released automatically on any exit) so an unattended host doesn't idle-sleep or timer-throttle a multi-hour run — the flag skips it for operators who manage power assertions themselves. On hosts without `caffeinate` (non-macOS) the runner logs a note and continues; either way `runner.log` records whether an assertion was held.
+
 Drain mode stops on: every feature considered (`completed`); Ctrl-C (`interrupted`); or `tracker-snapshot --list` itself failing (`preflight-abort: discovery`).
 
 Narrowed modes stop on: queue empty; Ctrl-C (the in-flight container receives SIGTERM, then SIGKILL after `RUNNER_KILL_GRACE_SECONDS` if it lingers); or a mid-loop `tracker-snapshot` crash (`snapshot-failed`, exit 1). The full stop-reason vocabulary — including the pre-flight-phase stops — is enumerated below the per-issue table.
