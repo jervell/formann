@@ -23,10 +23,8 @@ RUNNER_FW_CHAIN="AFK-RUNNER-SANDBOX-FW"
 # Keychain coordinates for the long-lived OAuth token. Populate with:
 #   security add-generic-password -s claude-code-oauth -a anthropic -w
 # pasting the token from `claude setup-token` (no trailing newline).
-# Override at runner-invoke time to select an alternate stored token, e.g.
-#   RUNNER_OAUTH_KEYCHAIN_ACCOUNT=anthropic-alt .formann/runner/run-the-queue.sh …
-RUNNER_OAUTH_KEYCHAIN_SERVICE="${RUNNER_OAUTH_KEYCHAIN_SERVICE:-claude-code-oauth}"
-RUNNER_OAUTH_KEYCHAIN_ACCOUNT="${RUNNER_OAUTH_KEYCHAIN_ACCOUNT:-anthropic}"
+RUNNER_OAUTH_KEYCHAIN_SERVICE="claude-code-oauth"
+RUNNER_OAUTH_KEYCHAIN_ACCOUNT="anthropic"
 
 # Git identity injected into the sandbox container via GIT_AUTHOR_NAME /
 # GIT_AUTHOR_EMAIL / GIT_COMMITTER_NAME / GIT_COMMITTER_EMAIL env vars.
