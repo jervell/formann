@@ -493,6 +493,91 @@ DOCKEREOF
   ! grep -qx -- '-t' "$DOCKER_ARGV_FILE"
 }
 
+# === run_sandbox_container — dispatch watchdog ================================
+#
+# A dispatch that never exits (e.g. an orphaned background task keeping
+# headless claude alive after its final result event) would block the
+# runner's `wait` forever — observed as an 8h45m hang on 2026-07-14. The
+# watchdog kills the container at RUNNER_DISPATCH_TIMEOUT_SECONDS and lets
+# the existing snapshot-delta / transport-crash machinery classify the
+# outcome. These tests use a docker shim whose `run` hangs after emitting
+# its result event (`exec sleep`, so the SIGKILL escalation lands on the
+# hanging process itself) and whose `kill` subcommand is a no-op.
+
+# $1 = seconds the shim's `docker run` hangs after emitting its result event.
+_setup_sandbox_watchdog_test() {
+  local hang_seconds="$1"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat >"$BATS_TEST_TMPDIR/bin/docker" <<DOCKEREOF
+#!/usr/bin/env bash
+if [ "\$1" = "kill" ]; then exit 0; fi
+while [ \$# -gt 0 ]; do
+  [ "\$1" = "--cidfile" ] && { echo cid >"\$2" 2>/dev/null || true; }
+  shift
+done
+printf '{"type":"result","is_error":false}\n'
+exec sleep $hang_seconds
+DOCKEREOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  mkdir -p "$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker"
+  HOST_REPO="$BATS_TEST_TMPDIR/repo"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/repo"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR"
+  NET_NAME=none
+  RUNNER_CONTAINER_REPO_PATH=/repo
+  RUNNER_CONTAINER_M2_PATH=/m2
+  MVN_VOLUME=vol
+  RUNNER_IMAGE_NAME=img
+  TOKEN=oauth
+  RUNNER_GIT_USER_NAME=Arne
+  RUNNER_GIT_USER_EMAIL=a@b.c
+  RUNNER_INTERRUPTED=0
+  RUNNER_KILL_GRACE_SECONDS=1
+  IN_FLIGHT_CID_FILE=""
+}
+
+@test "run_sandbox_container — watchdog kills a hung container at the deadline; non-zero rc, flag set" {
+  _setup_sandbox_watchdog_test 15
+  RUNNER_DISPATCH_TIMEOUT_SECONDS=2
+  local base="$BATS_TEST_TMPDIR/dispatch"
+  local rc=0
+  run_sandbox_container "$base" claude -p "/implement #1" || rc=$?
+  [ "$rc" -ne 0 ]
+  [ "$DISPATCH_WATCHDOG_FIRED" -eq 1 ]
+  # The event stream written before the hang is preserved for the classifier.
+  grep -q '"type":"result"' "$base.stdout.jsonl"
+}
+
+@test "run_sandbox_container — watchdog fire is reported on stdout for runner.log" {
+  _setup_sandbox_watchdog_test 15
+  RUNNER_DISPATCH_TIMEOUT_SECONDS=2
+  local base="$BATS_TEST_TMPDIR/dispatch"
+  run run_sandbox_container "$base" claude -p "/implement #1"
+  assert_output --partial "dispatch watchdog"
+}
+
+@test "run_sandbox_container — watchdog does not fire on a prompt exit" {
+  _setup_sandbox_split_test
+  RUNNER_DISPATCH_TIMEOUT_SECONDS=60
+  local base="$BATS_TEST_TMPDIR/dispatch"
+  run_sandbox_container "$base" claude -p "/implement #1"
+  [ "$DISPATCH_WATCHDOG_FIRED" -eq 0 ]
+  [ ! -f "$BATS_TEST_TMPDIR/dispatch.watchdog-fired" ]
+}
+
+@test "run_sandbox_container — RUNNER_DISPATCH_TIMEOUT_SECONDS=0 disables the watchdog" {
+  _setup_sandbox_watchdog_test 3
+  RUNNER_DISPATCH_TIMEOUT_SECONDS=0
+  local base="$BATS_TEST_TMPDIR/dispatch"
+  local rc=0
+  run_sandbox_container "$base" claude -p "/implement #1" || rc=$?
+  # No watchdog ran: the 3s "hang" completes on its own and the dispatch
+  # exits clean — with a 2s watchdog it would have been killed first.
+  [ "$rc" -eq 0 ]
+  [ "$DISPATCH_WATCHDOG_FIRED" -eq 0 ]
+}
+
 # === Liveness renderer — spawn gate and reap (issue #72) =====================
 #
 # The renderer's terminal painting needs a real controlling terminal and is
@@ -1521,6 +1606,25 @@ EOF
 @test "check_retry_knobs — whole-number window knobs pass" {
   RUNNER_WINDOW_RETRY_FALLBACK_WAIT=1800
   RUNNER_WINDOW_RETRY_MAX_WAITS=3
+  check_retry_knobs
+}
+
+@test "check_retry_knobs — non-numeric dispatch timeout fails with the retry-knobs invariant message" {
+  # A non-numeric value makes run_sandbox_container's arming gate
+  # `[ ... -gt 0 ]` error and evaluate false — silently disabling the
+  # watchdog. Refuse up front like the other numeric knobs.
+  RUNNER_DISPATCH_TIMEOUT_SECONDS="two hours"
+  trap - EXIT
+
+  run check_retry_knobs
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"runner: retry-knobs:"* ]]
+  [[ "$output" == *"RUNNER_DISPATCH_TIMEOUT_SECONDS"* ]]
+  [[ "$output" == *"two hours"* ]]
+}
+
+@test "check_retry_knobs — whole-number dispatch timeout passes" {
+  RUNNER_DISPATCH_TIMEOUT_SECONDS=0
   check_retry_knobs
 }
 

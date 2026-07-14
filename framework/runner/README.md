@@ -181,6 +181,24 @@ Window-waits do not consume the transport-retry budget, and the transport attemp
 | `RUNNER_WINDOW_RETRY_MAX_WAITS` | `2` | Window-waits allowed per dispatch before giving up with `window-exhausted` |
 | `RUNNER_DISABLE_WINDOW_RETRY` | `0` | Set to `1` to skip the rejected-event check entirely — a window-exhausted 429 then degrades to the transport path |
 
+## Dispatch watchdog
+
+A container that never exits blocks the runner's `wait` forever and hangs the whole queue. This is not hypothetical: a dispatch can leave a never-terminating background Bash task running inside headless claude, which then never exits even after emitting its final result event (observed 2026-07-14 — the agent finished and shipped its issue in 49 minutes, and the container then sat alive for another 8 hours until the operator Ctrl-C'd).
+
+The watchdog bounds every single dispatch attempt — implement and each walk item alike — at `RUNNER_DISPATCH_TIMEOUT_SECONDS`. At the deadline it kills the container with the same SIGTERM → grace → SIGKILL escalation as the Ctrl-C path, and prints one line into `runner.log`:
+
+```
+[20:59:58] runner: dispatch watchdog fired — container exceeded 7200s and was killed
+```
+
+Outcome classification is deliberately unchanged. A killed dispatch whose stream already carries a clean terminal result event (the orphaned-background-task case) classifies from the tracker-snapshot delta exactly as if the container had exited on its own — a completed `/implement` still lands `in-review` and the walk proceeds. A stream without a result event reads as a transport crash (`no-result`), gets the bounded transport-retry budget, and each retry attempt is watchdog-bounded again — so the worst case is attempts × timeout, never an unbounded stall.
+
+**Knobs** (numeric, with the same pre-flight non-numeric refusal as the retry knobs):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `RUNNER_DISPATCH_TIMEOUT_SECONDS` | `7200` | Seconds a single dispatch attempt may run before the container is killed. `0` disables the watchdog |
+
 ## Default-branch resolution
 
 When a feature's branch doesn't exist on host yet, the runner lazy-initializes it from the repo's default branch — based on that branch's *current host tip*, fetched at sync time. The same resolution drives the lazy-init preserve-commits guard and the unborn-HEAD recovery. The default branch is resolved deliberately (`resolve_default_branch`), in precedence order:
