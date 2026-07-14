@@ -113,6 +113,21 @@ RUNNER_KILL_GRACE_SECONDS=10
 # exhausted 429 degrades to the transport path exactly as before #75.
 : "${RUNNER_DISABLE_WINDOW_RETRY:=0}"
 
+# Dispatch watchdog. A container that never exits blocks the runner's `wait`
+# forever and hangs the whole queue — observed 2026-07-14 as an 8h45m stall:
+# the agent left a never-terminating background Bash task running, and
+# headless claude does not exit while a tracked background task is alive,
+# so the container outlived its own final result event by 8 hours. The
+# watchdog kills the container once a single dispatch attempt exceeds this
+# many seconds. Outcome classification is deliberately unchanged: a stream
+# that already carries a clean terminal result event classifies from the
+# tracker-snapshot delta exactly as if the container had exited on its own,
+# and a stream without one reads as a transport crash and gets the bounded
+# transport-retry budget (each retry watchdog-bounded again). The default
+# is far above any observed legitimate dispatch (longest to date ~70m);
+# 0 disables the watchdog.
+: "${RUNNER_DISPATCH_TIMEOUT_SECONDS:=7200}"
+
 # When set to 1, no liveness renderer is spawned — the dispatch runs exactly
 # as on a detached terminal. Useful for testing and for operators who don't
 # want the live line.
@@ -1708,6 +1723,13 @@ check_retry_knobs() {
     ''|*[!0-9]*) fail_invariant "retry-knobs" \
       "RUNNER_WINDOW_RETRY_MAX_WAITS must be a whole number, got '$RUNNER_WINDOW_RETRY_MAX_WAITS'";;
   esac
+  # RUNNER_DISPATCH_TIMEOUT_SECONDS feeds run_sandbox_container's arming gate
+  # `[ ... -gt 0 ]`; a non-numeric value makes that test error and evaluate
+  # false, silently disabling the watchdog.
+  case "$RUNNER_DISPATCH_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*) fail_invariant "retry-knobs" \
+      "RUNNER_DISPATCH_TIMEOUT_SECONDS must be a whole number, got '$RUNNER_DISPATCH_TIMEOUT_SECONDS'";;
+  esac
 }
 
 # 3. Docker daemon responds.
@@ -1982,6 +2004,47 @@ collect_binding_env() {
   done <<<"$raw_output"
 }
 
+# Dispatch-watchdog companion process for run_sandbox_container. Kills the
+# container when a single dispatch attempt outlives its deadline (see
+# RUNNER_DISPATCH_TIMEOUT_SECONDS for why this exists). Runs as a background
+# subshell; the parent reaps it after its own `wait` on the docker process
+# returns. Wall-clock deadline polled once per second — never count
+# iterations to measure the wait (issue #80). Exits silently the moment the
+# docker process is gone; on deadline it touches $flag_file FIRST (so the
+# parent can attribute the kill even if the escalation below races the
+# container's own exit), then escalates exactly like the Ctrl-C path:
+# SIGTERM to the container, RUNNER_KILL_GRACE_SECONDS, then SIGKILL on the
+# container and the docker-run client for good measure.
+#
+# Args: $1 = docker-run client pid; $2 = cid file; $3 = fired-flag file;
+#       $4 = deadline in seconds.
+_dispatch_watchdog() {
+  local docker_pid="$1" cid_file="$2" flag_file="$3" timeout="$4"
+  local deadline
+  deadline=$(( $(runner_epoch_now) + timeout ))
+  while [ "$(runner_epoch_now)" -lt "$deadline" ]; do
+    kill -0 "$docker_pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  kill -0 "$docker_pid" 2>/dev/null || return 0
+  touch "$flag_file"
+  local cid=""
+  [ -s "$cid_file" ] && cid="$(cat "$cid_file" 2>/dev/null || true)"
+  if [ -n "$cid" ]; then
+    docker kill --signal=SIGTERM "$cid" >/dev/null 2>&1 || true
+  fi
+  local i=0
+  while [ "$i" -lt "$RUNNER_KILL_GRACE_SECONDS" ]; do
+    kill -0 "$docker_pid" 2>/dev/null || return 0
+    sleep 1
+    i=$((i + 1))
+  done
+  if [ -n "$cid" ]; then
+    docker kill --signal=SIGKILL "$cid" >/dev/null 2>&1 || true
+  fi
+  kill -KILL "$docker_pid" 2>/dev/null || true
+}
+
 # `docker run` plumbing shared between the implement dispatch and the
 # review-and-gate dispatch. Both stages run in fresh sandbox containers
 # with the same image, network, runner-checkout mount, mvn cache mount,
@@ -2085,6 +2148,19 @@ run_sandbox_container() {
     >"$log_base.stdout.jsonl" 2>"$log_base.stderr.log" &
   local docker_pid=$!
 
+  # Arm the dispatch watchdog. DISPATCH_WATCHDOG_FIRED is the caller-visible
+  # verdict (global, like TRANSPORT_RETRY_ATTEMPTS); the flag file is how the
+  # watchdog subshell reports across the process boundary.
+  DISPATCH_WATCHDOG_FIRED=0
+  local watchdog_pid="" watchdog_flag=""
+  if [ "$RUNNER_DISPATCH_TIMEOUT_SECONDS" -gt 0 ]; then
+    watchdog_flag="$HOST_RUNNER_STATE/dispatch.watchdog-fired"
+    rm -f "$watchdog_flag"
+    _dispatch_watchdog "$docker_pid" "$cid_file" "$watchdog_flag" \
+      "$RUNNER_DISPATCH_TIMEOUT_SECONDS" &
+    watchdog_pid=$!
+  fi
+
   # Paint the liveness line on the controlling terminal while the container
   # runs. Per attempt on purpose: each retry attempt's redirect above
   # truncates the event stream, so the renderer's lifetime matches the
@@ -2123,6 +2199,23 @@ run_sandbox_container() {
     wait "$docker_pid" 2>/dev/null
     rc=$?
     set -e
+  fi
+
+  # Reap the watchdog (it exits on its own once the docker process is gone,
+  # but a still-sleeping one must not outlive the dispatch) and read its
+  # verdict. The runner.log line is the operator's only trace that a hang —
+  # not the agent — ended this dispatch.
+  if [ -n "$watchdog_pid" ]; then
+    kill "$watchdog_pid" 2>/dev/null || true
+    set +e
+    wait "$watchdog_pid" 2>/dev/null
+    set -e
+    if [ -f "$watchdog_flag" ]; then
+      # shellcheck disable=SC2034 — read by the bats suite, not in-script.
+      DISPATCH_WATCHDOG_FIRED=1
+      rm -f "$watchdog_flag"
+      echo "[$(now_clock)] runner: dispatch watchdog fired — container exceeded ${RUNNER_DISPATCH_TIMEOUT_SECONDS}s and was killed"
+    fi
   fi
 
   # The dispatch is over — reap the renderer (clears its line) before the
