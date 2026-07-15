@@ -693,6 +693,21 @@ DOCKEREOF
   grep -q -- '--append-system-prompt This is a one-shot headless dispatch' "$cap"
 }
 
+# Headless claude -p does not exit while a tracked background task is alive.
+# Two consecutive dispatches (omumu #1201, #1202) hung for 8h45m and 11h on the
+# same footgun: the agent left an unbounded pgrep-polling wait loop running
+# after its target process had already exited, so the loop span forever and the
+# container never came down. The preamble must state this lifecycle fact so the
+# agent cleans up background tasks before finishing.
+@test "run_dispatch_container — preamble warns that live background tasks hold the dispatch open" {
+  local cap="$BATS_TEST_TMPDIR/claude-args"
+  run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR"
+  run_dispatch_container "#71" "$BATS_TEST_TMPDIR/base"
+  grep -q -- 'does not exit while a background task you started is still running' "$cap"
+  grep -q -- 'pgrep' "$cap"
+}
+
 # === Fault isolation: a malformed stream cannot change the outcome (AC #8) ===
 
 @test "dispatch_one — malformed event stream leaves classified outcome and completion unchanged vs well-formed" {

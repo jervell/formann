@@ -2543,7 +2543,14 @@ RUNNER_DISALLOWED_DISPATCH_TOOLS=(ScheduleWakeup CronCreate CronDelete CronList)
 # those differ per step and some steps forbid them (review must NOT change
 # state; gate transitions only on a clean verdict). Each step's own prompt owns
 # what it does; this only tells the agent the turn will not be resumed.
-RUNNER_DISPATCH_PREAMBLE="This is a one-shot headless dispatch: a single claude -p turn with no /loop or scheduler runtime. No scheduled wakeup or cross-turn timer will fire here — if you stop and wait to be resumed, nothing resumes you and the dispatch ends where it is. Carry out what this dispatch asks within this run; do not defer it behind a wakeup or a later check-in."
+#
+# The background-task paragraph is a lifecycle fact of the same kind: headless
+# claude -p waits for tracked background tasks before exiting, so a leftover
+# task holds the container open until the dispatch watchdog kills it. Two
+# consecutive dispatches (omumu #1201, #1202) hung 8h45m and 11h on an
+# unbounded pgrep-polling wait loop whose target had already exited — pgrep
+# matched nothing and the loop degenerated to a check that never turns true.
+RUNNER_DISPATCH_PREAMBLE="This is a one-shot headless dispatch: a single claude -p turn with no /loop or scheduler runtime. No scheduled wakeup or cross-turn timer will fire here — if you stop and wait to be resumed, nothing resumes you and the dispatch ends where it is. Carry out what this dispatch asks within this run; do not defer it behind a wakeup or a later check-in. This dispatch also does not exit while a background task you started is still running — a leftover background process holds the container open until a timeout kills it, long after your work is done. Before you finish, make sure every background task you started has exited, and kill any that are no longer needed. Never wait on a process by polling pgrep in an unbounded shell loop (for example 'until [ ! -d /proc/\$(pgrep -f X | head -1) ]; do sleep 5; done'): once X exits, pgrep prints nothing and the loop degenerates into a condition that can never become true, spinning forever. If you must wait for a process, give the loop a hard deadline and treat 'no such process' as already finished."
 
 # Implement-dispatch wrapper: hands `claude -p "/implement <ref>"` to the
 # sandbox via the transport-retry layer, in streamed structured-event mode.
