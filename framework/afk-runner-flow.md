@@ -92,7 +92,7 @@ Conventions:
 
 ## Pre-flight invariants
 
-Rows in evaluation order. `no-other-runner` runs first (lock acquisition gates everything else); the rest run in numeric order, with `1b` after `1` and `4b` immediately after `4`. Drain mode (bare invocation) defers two per-feature concerns into the outer loop: `runner-checkout` *branch-sync* (2b) and `mvn-cache` (5). Everything else — including the `runner-checkout` *clone-existence* check (2a) — is global and runs before the mode split.
+Rows in evaluation order. `no-other-runner` runs first (lock acquisition gates everything else); immediately after the lock, `reconcile_dead_runs` runs as an advisory step (not an invariant — it cannot abort the run): any prior run dir without a SUMMARY.md is a run that died without executing `finalize_run`, so it gets a reconstructed `SUMMARY.md` (stop reason `died-without-summary`) and one diagnostic line per dispatch artifact found — `stranded-in-review: #<nn> …` when `<NN>.exit` reads 0 with no walk-step artifacts (implement succeeded, review walk never ran — the issue is invisibly parked at `in-review`), `dead-run: #<nn> …` otherwise. Writing the SUMMARY.md makes the post-mortem run exactly once per dead run dir. The remaining invariants run in numeric order, with `1b` after `1` and `4b` immediately after `4`. Drain mode (bare invocation) defers two per-feature concerns into the outer loop: `runner-checkout` *branch-sync* (2b) and `mvn-cache` (5). Everything else — including the `runner-checkout` *clone-existence* check (2a) — is global and runs before the mode split.
 
 | # | Name                       | Check                                                                                              | Drain mode? |
 | - | -------------------------- | -------------------------------------------------------------------------------------------------- | ----------- |
@@ -458,6 +458,10 @@ The "propagate error" rows cover a parking-ref publish failure; `RUN_STOP_REASON
 
 - `interrupted-during-preflight` *(pre-flight-phase Ctrl-C)*
 - `preflight-abort: <invariant>`
+
+**Reconstructed (written by a later run's `reconcile_dead_runs`, never by the run itself):**
+
+- `died-without-summary` *(the run died hard — SIGKILL, power loss, crash — before `finalize_run`; the SUMMARY.md is a post-mortem reconstructed from dispatch artifacts, flagging any `stranded-in-review` issue whose implement finished but whose review walk never ran)*
 
 ### Exit codes
 
