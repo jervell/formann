@@ -381,6 +381,23 @@ token is valid for ~1 year; rotate by re-running `claude setup-token`
 and overwriting the entry (e.g. `security ... -U` on macOS, re-run
 `secret-tool store` or `keyctl padd` on Linux).
 
+### Alternate accounts
+
+Both coordinates are env-overridable at invoke time, so a second
+long-lived token (e.g. another Anthropic account for when the primary's
+usage window is exhausted) can be stored under a different account name
+and selected per run without editing anything:
+
+```sh
+# one-time: store the second account's token
+security add-generic-password -s claude-code-oauth -a <alt-account-name> -w
+
+# per run: select it
+RUNNER_OAUTH_KEYCHAIN_ACCOUNT=<alt-account-name> run-the-queue.sh --feature <slug> …
+```
+
+Plain invocations keep using the default `anthropic` entry.
+
 ## Per-feature mvn cache
 
 Each feature gets its own Docker volume (`runner-mvn-cache-<slug>`) so a
