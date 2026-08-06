@@ -42,7 +42,7 @@ An issue reference.
    - **Proof for `verified`:** name the test(s) and the build state, OR quote the command and the observed result.
    - **Proof for `[human]`:** include the `[human]` tag at the end of the quote-line (`"…" [human]:`), then a one-line ask telling the maintainer what to do and where to look.
 
-   The tick is the agent's claim, not the maintainer's verdict. The maintainer judges by reading the proof and acts via a state transition (`done` or rework). The implementation comment is append-only after posting; on rework, post a new comment with a fresh Evidence block that supersedes the prior one.
+   The tick is the agent's claim, not the maintainer's verdict. The maintainer judges by reading the proof and acts via a state transition (`done` or rework). The implementation comment is append-only after posting; on rework, post a new **Implementation** comment (same kind — the same-day collision rule suffixes it, e.g. `Implementation (2)`) with a fresh Evidence block that supersedes the prior one. Never post the rework re-ship under the `Rework notes` kind — that kind is triage's rejection instructions, not the implementer's report.
 
    Quote each criterion's leading text — typically 3–8 words, ending in `…`, unique within the brief (extend the quote until unique); substitute `'` for any inner `"`. Drop the `…` if the quote covers the entire criterion. Keep any trailing `[human]` marker outside the closing quote (`"…" [human]:`).
 
