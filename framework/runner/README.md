@@ -43,6 +43,19 @@ iteration produces four (implement starting/outcome, review starting/outcome):
 [09:13:31] afk-runner/06 review → clean → done (4s)
 ```
 
+A multi-step manifest contributes one pair per step. A step's outcome
+names what that step did, not the iteration's verdict: `in-review` means
+the issue is still open and the walk is advancing to the next step. Only
+the last step can read `left-for-human`, and there it matches the
+combined outcome in the end-of-run table:
+
+```
+[13:36:40] afk-runner/06 find-and-fix → starting
+[13:46:08] afk-runner/06 find-and-fix → in-review (9m 28s)
+[13:46:08] afk-runner/06 review-and-gate → starting
+[13:52:11] afk-runner/06 review-and-gate → left-for-human (6m 3s)
+```
+
 When a parking-ref publish fails after a stage, the original outcome
 line is preserved (the dispatch step itself succeeded; the failure is
 downstream) and a follow-up `halt → <recorded outcome>` line is emitted

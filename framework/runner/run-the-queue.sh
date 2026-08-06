@@ -549,7 +549,9 @@ epoch_clock() {
 #
 # Outcome label vocabulary by stage:
 #   implement:   in-review | done | dispatch-aborted | window-exhausted | FAIL | halt → FAIL
-#   <item-label>: clean → done | left-for-human | review-aborted | window-exhausted | gate-failed | halt → gate-failed | halt → runaway
+#   <item-label>: clean → done | in-review | left-for-human | review-aborted | window-exhausted | gate-failed | halt → gate-failed | halt → runaway
+#     (`in-review` = step done, walk advancing to the next item;
+#      `left-for-human` = the last item left the issue at in-review)
 #
 # Combined per-iteration outcome (used in the end-of-run table and
 # SUMMARY.md row): `done | left-for-human | gate-failed | review-aborted | dispatch-aborted | window-exhausted | in-review | FAIL | halt → runaway`.
@@ -2844,6 +2846,15 @@ walk_post_implement_steps() {
   local step_idx=0       # walk-position counter (1-based, incremented per item)
   local step_logs=""     # colon-sep list of step-log suffixes accumulated during walk
 
+  # Item count, known up front so a `continue` can tell "advancing to the next
+  # item" from "that was the last one" when it labels its progress line.
+  # Same empty-label filter as the walk loop below, so the counts agree.
+  local total_items=0 count_label
+  while IFS=$'\t' read -r count_label _; do
+    [ -z "$count_label" ] && continue
+    total_items=$(( total_items + 1 ))
+  done <<< "$resolved_manifest"
+
   while IFS=$'\t' read -r item_label item_path; do
     [ -z "$item_label" ] && continue
 
@@ -3009,12 +3020,17 @@ walk_post_implement_steps() {
         ;;
 
       continue)
-        # Issue still at in-review; proceed to the next manifest item.
-        # Emit this item's progress line now ("left-for-human" reflects the
-        # issue's current state). Only the combined-outcome record_dispatch is
-        # deferred to after the loop — that's where we know whether more items
-        # followed or this was the last.
-        format_progress_outcome "$(now_clock)" "$ref" "$item_label" "left-for-human" "$item_duration"
+        # Issue still at in-review; proceed to the next manifest item. The
+        # progress line reports this step's own result — the issue's status —
+        # because the walk carries on and nothing is waiting on the maintainer
+        # yet. Only the last item's continue exhausts the manifest, and its
+        # line reads `left-for-human` to match the combined outcome recorded
+        # after the loop.
+        local item_progress_label="in-review"
+        if [ "$step_idx" -eq "$total_items" ]; then
+          item_progress_label="left-for-human"
+        fi
+        format_progress_outcome "$(now_clock)" "$ref" "$item_label" "$item_progress_label" "$item_duration"
         if [ "$item_has_runner_commits" -eq 1 ]; then
           if ! propagate_feature "$feature"; then
             local halt_duration

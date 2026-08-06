@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `review-issue` reviews — and the AFK gate comments that paste them — now present findings in a fixed, severity-ordered block format, not a loose list.
 
 ### Fixed
+- AFK runner no longer reports `left-for-human` on a post-implement step that isn't the walk's last; an intermediate step now reads `in-review`.
 - AFK runner's usage-window and transport-backoff waits poll a wall-clock deadline instead of counting `sleep 1` iterations, so OS timer throttling or a suspend/resume can no longer strand a dispatch past the window reset while it holds the run lock (issue #80).
 - AFK dispatches can no longer strand uncommitted work behind a `ScheduleWakeup` that never fires under `claude -p` — the runner removes that and the `Cron*` tools from every dispatch.
 

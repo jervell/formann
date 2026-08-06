@@ -3766,6 +3766,46 @@ setup_eligibility_test() {
   [ ! -f "$HOST_ABORT_DIR/f/01" ]
 }
 
+# A per-step progress line reports that step's own result, not the walk's
+# verdict. An intermediate `continue` leaves the issue at in-review and the
+# walk carries on to the next item, so the operator must read `in-review`;
+# only the final item's `continue` actually exhausts the manifest, and that
+# one reads `left-for-human` to match the recorded combined outcome.
+@test "walk_post_implement_steps — intermediate continue reads in-review, final continue reads left-for-human" {
+  setup_dispatch_one_test
+  local manifest
+  manifest="$(printf 'review\t%s\ngate\t%s\n' "$HERE/review-and-gate.md" "$HERE/gate.md")"
+  local post_implement_json
+  post_implement_json='{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+
+  # Both items leave the issue at in-review → continue, continue → exhausted.
+  take_snapshot() {
+    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"in-review","category":"enhancement","type":"AFK","blocked_by":[],"eligible":false}]}'
+  }
+  run_item_container() { return 0; }
+  propagate_feature() { return 0; }
+  RUN_DISPATCHES=()
+
+  # Redirect rather than capture with $( ) — a command substitution would run
+  # the walk in a subshell and lose its RUN_DISPATCHES mutation.
+  local progress="$BATS_TEST_TMPDIR/walk-progress"
+  walk_post_implement_steps \
+    "f" "01" "f/01" \
+    "$TEST_RUN_DIR" "$TEST_RUN_DIR" "01" \
+    "$post_implement_json" \
+    "in-review" 10 1 \
+    "$manifest" >"$progress"
+  local rc=$?
+
+  [ "$rc" -eq 0 ]
+  grep -qF ' f/01 review → in-review (' "$progress"
+  grep -qF ' f/01 gate → left-for-human (' "$progress"
+  # The recorded combined outcome is unchanged by the per-step relabel.
+  [ "${#RUN_DISPATCHES[@]}" -eq 1 ]
+  [[ "${RUN_DISPATCHES[0]}" == "f|01|f/01|left-for-human|"*"|01-review:02-gate|"* ]]
+  [ ! -f "$HOST_ABORT_DIR/f/01" ]
+}
+
 # === dispatch_one / walk — terminate-run (runaway guard) ====================
 #
 # When a post-implement step pushes the issue back to ready-for-agent, the
