@@ -975,7 +975,7 @@ RUN_LOG_LAYOUT="flat"
 RUNNER_TEE_PID=""
 RUNNER_LOG_FIFO=""
 RUNNER_LAST_PROPAGATION=""   # 'propagated → host' | 'parked → runner/<branch>' | '' (set by propagate_feature)
-RUN_SWEPT_REFS=()     # parking refs deleted by sweep_stale_parking_refs; populated before dispatch
+RUN_SWEPT_REFS=()     # parking refs deleted by sweep_stale_parking_refs; populated during pre-flight
 DISCOVERY_JSON=""     # populated by check_discovery pre-flight invariant
 RESOLVED_MANIFEST=""  # populated by check_manifest pre-flight invariant; tab-delimited label<TAB>path pairs
 
@@ -1166,10 +1166,12 @@ finalize_run() {
           "$RUN_FEATURE" "$RUN_TS" "$RUN_START_CLOCK" "$end_clock" \
           "$end_state" "$stop_reason" "${ARG_MODEL:-}" >"$RUN_DIR/SUMMARY.md"
       fi
-      # Append swept parking refs section when at least one ref was swept.
-      if [ "${#RUN_SWEPT_REFS[@]}" -gt 0 ]; then
-        format_swept_refs_section >>"$RUN_DIR/SUMMARY.md"
-      fi
+    fi
+    # Append swept parking refs section when at least one ref was swept. Both
+    # arms need it: the sweep runs inside pre-flight, so a pre-flight abort can
+    # follow refs already having been deleted.
+    if [ "${#RUN_SWEPT_REFS[@]}" -gt 0 ]; then
+      format_swept_refs_section >>"$RUN_DIR/SUMMARY.md"
     fi
   fi
 
@@ -1799,6 +1801,13 @@ preflight() {
     fail_invariant "runner-checkout" \
       "ensure_runner_checkout_exists failed (rm -rf $HOST_CHECKOUT and re-run to recover)"
   fi
+  # Sweep before the branch-sync below: the sweep deletes the runner-checkout's
+  # refs/heads/<slug>, which may be the branch HEAD points at, and invariant
+  # 2b's unborn-HEAD recovery is what restores a resolvable HEAD. Running the
+  # sweep after 2b would leave the checkout orphaned for the rest of the run,
+  # and the mode entry point's `git archive HEAD` snapshot would fail. Drain
+  # mode syncs per feature inside its loop — also after this point.
+  sweep_stale_parking_refs
   # Single-feature / single-issue modes know their target up front, so the
   # CLI-input gate runs here (returns 2 with a `feature-restricted` /
   # `single-dispatch (refused: …)` stop reason). Runner-checkout branch-sync
@@ -2604,9 +2613,11 @@ MSG
   fi
 }
 
-# Sweep stale parking refs from the host repo. Called once per run, before
-# any tracker query or dispatch. A slug is stale only when TWO reachability
-# proofs hold simultaneously:
+# Sweep stale parking refs from the host repo. Called once per run, from
+# pre-flight: after the runner-checkout clone-existence check (proof (2)
+# below reads the checkout) and before the branch-sync, which heals the
+# unborn HEAD this sweep can leave behind. A slug is stale only when TWO
+# reachability proofs hold simultaneously:
 #
 #   (1) The host parking ref's tip commit is reachable from at least one
 #       other host ref (excluding the parking ref itself and
@@ -3695,7 +3706,6 @@ main() {
   trap handle_preflight_signal INT TERM
   preflight
   trap handle_signal INT TERM
-  sweep_stale_parking_refs
   case "$RUN_MODE" in
     single) run_single ;;
     loop)   run_loop ;;

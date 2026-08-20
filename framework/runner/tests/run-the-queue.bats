@@ -3297,6 +3297,54 @@ setup_eligibility_test() {
   [ ! -f "$TEST_CHECKOUT_SENTINEL" ]
 }
 
+@test "preflight — sweeps stale parking refs before the branch-sync, leaving a resolvable HEAD" {
+  # The sweep may orphan the runner-checkout's HEAD: it deletes the source
+  # branch HEAD symbolic-refs (see sweep_stale_parking_refs (k)), and the
+  # unborn-HEAD recovery inside `ensure_runner_checkout_on_branch` (invariant
+  # 2b) is what heals it. So the sweep must run inside pre-flight *before* the
+  # branch-sync — otherwise the run reaches take_snapshot with an unresolvable
+  # HEAD and dies on `git archive HEAD`.
+  _setup_sweep_test
+  # Steady state after a successfully-propagated dispatch for `foo`: the
+  # runner-checkout has `foo` checked out (left over from the prior
+  # dispatch), and host holds a stale parking ref whose tip is already
+  # reachable from refs/heads/main. Checking `foo` out on host itself (rather
+  # than pre-cloning the runner-checkout by hand) is what makes the real
+  # invariant 2a clone bring `foo` across as the checkout's initial HEAD —
+  # the clone of a local, non-bare source repo follows the source's checked-
+  # out branch.
+  git -C "$HOST_REPO" checkout -b foo --quiet
+  git -C "$HOST_REPO" update-ref "refs/remotes/runner/foo" \
+    "$(git -C "$HOST_REPO" rev-parse refs/heads/main)"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/sweep-preflight-checkout"
+
+  # Heavy invariants stubbed; the runner-checkout invariants (2a's clone and
+  # 2b's branch-sync) and the sweep run for real.
+  acquire_lock() { :; }
+  check_discovery() { DISCOVERY_JSON='["foo"]'; }
+  ensure_runner_remote() { :; }
+  check_docker_daemon() { :; }
+  ensure_image() { :; }
+  check_manifest() { :; }
+  ensure_mvn_cache() { :; }
+  ensure_network() { :; }
+  retrieve_oauth_token() { :; }
+
+  RUN_MODE="loop"
+  TARGET_FEATURE="foo"
+
+  preflight 2>"$BATS_TEST_TMPDIR/sweep-preflight.stderr"
+
+  # Parking ref swept, and recorded for the SUMMARY.
+  [ -z "$(git -C "$HOST_REPO" for-each-ref --format='%(refname)' refs/remotes/runner/foo)" ]
+  [ "${#RUN_SWEPT_REFS[@]}" -eq 1 ]
+  [ "${RUN_SWEPT_REFS[0]}" = "refs/remotes/runner/foo" ]
+  # The branch-sync observed post-sweep state: HEAD resolves and sits on the
+  # target branch, so `git archive HEAD` in take_snapshot can succeed.
+  git -C "$HOST_CHECKOUT" rev-parse --verify HEAD >/dev/null
+  [ "$(git -C "$HOST_CHECKOUT" symbolic-ref --short HEAD)" = "foo" ]
+}
+
 @test "dispatch_one — AFK clean review records done and propagates twice" {
   setup_dispatch_one_test
   install_afk_snapshots done
@@ -4600,6 +4648,44 @@ setup_loop_output_test() {
   grep -q '^# AFK runner — f$' "$RUN_DIR/SUMMARY.md"
   grep -q -- '- Stop reason: preflight-abort: docker-daemon$' "$RUN_DIR/SUMMARY.md"
   grep -q 'invariant `docker-daemon` failed' "$RUN_DIR/SUMMARY.md"
+}
+
+@test "finalize_run — pre-flight abort SUMMARY.md lists swept parking refs" {
+  # The sweep runs inside pre-flight, so an abort on a later invariant can
+  # follow refs already having been deleted. The abort SUMMARY must still
+  # account for them.
+  setup_loop_output_test
+  RUN_DIR="$BATS_TEST_TMPDIR/run-preflight-swept"
+  mkdir -p "$RUN_DIR"
+  RUN_DISPATCHES=()
+  RUN_PREFLIGHT_INVARIANT="docker-daemon"
+  RUN_SWEPT_REFS=("refs/remotes/runner/foo" "refs/remotes/runner/bar")
+
+  ( finalize_run ) || true
+
+  [ -f "$RUN_DIR/SUMMARY.md" ]
+  grep -q -- '- Stop reason: preflight-abort: docker-daemon$' "$RUN_DIR/SUMMARY.md"
+  grep -q '^## Swept parking refs$' "$RUN_DIR/SUMMARY.md"
+  grep -qF -- '- `refs/remotes/runner/foo`' "$RUN_DIR/SUMMARY.md"
+  grep -qF -- '- `refs/remotes/runner/bar`' "$RUN_DIR/SUMMARY.md"
+}
+
+@test "finalize_run — normal (non-abort) SUMMARY.md also lists swept parking refs" {
+  # Guard: the sweep runs inside pre-flight regardless of how the run ends,
+  # so a normal completion can also follow refs already having been swept.
+  # Pins the append living outside the abort/normal branch, not inside it.
+  setup_loop_output_test
+  RUN_DIR="$BATS_TEST_TMPDIR/run-normal-swept"
+  mkdir -p "$RUN_DIR"
+  RUN_DISPATCHES=("f|01|f/01|in-review|42")
+  RUN_STOP_REASON="queue-empty"
+  RUN_SWEPT_REFS=("refs/remotes/runner/foo")
+
+  ( finalize_run ) || true
+
+  [ -f "$RUN_DIR/SUMMARY.md" ]
+  grep -q '^## Swept parking refs$' "$RUN_DIR/SUMMARY.md"
+  grep -qF -- '- `refs/remotes/runner/foo`' "$RUN_DIR/SUMMARY.md"
 }
 
 @test "start_runner_log_capture + stop — runner.log captures the trailing burst without truncation" {
