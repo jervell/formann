@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-20
+
 ### Added
 - AFK runner offers an opt-in `find-and-fix` step that runs `/code-review --fix` over an issue's change-set before the gate, commits the fixes, and posts a note.
 - AFK runner holds a macOS wake assertion for the whole run (`caffeinate -i -s` tied to the runner pid) so an unattended host doesn't idle-sleep or timer-throttle a multi-hour run. `--no-caffeinate` skips it; non-macOS hosts log a note and continue.
