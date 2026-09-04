@@ -1,8 +1,12 @@
 # Shared constants for the AFK runner sandbox primitives.
 # Sourced by build-image.sh, setup-network.sh, and (eventually) the runner script.
 
-# Docker image carrying JDK + Maven + git + claude CLI.
-RUNNER_IMAGE_NAME="afk-runner-sandbox"
+# Docker image carrying JDK + Maven + git + claude CLI. Env-overridable so two
+# consumer repos on one host (each with its own runner/Dockerfile) don't
+# overwrite each other's image under the shared default tag:
+#   RUNNER_IMAGE_NAME=my-project-runner .formann/runner/run-the-queue.sh …
+# The network, bridge and subnet stay shared; only the image is per-consumer.
+RUNNER_IMAGE_NAME="${RUNNER_IMAGE_NAME:-afk-runner-sandbox}"
 
 # Custom Docker bridge network with RFC1918 outbound denied.
 RUNNER_NETWORK_NAME="afk-runner-sandbox"
