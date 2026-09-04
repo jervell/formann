@@ -411,6 +411,21 @@ RUNNER_OAUTH_KEYCHAIN_ACCOUNT=<alt-account-name> run-the-queue.sh --feature <slu
 
 Plain invocations keep using the default `anthropic` entry.
 
+## Per-consumer image name
+
+`RUNNER_IMAGE_NAME` defaults to `afk-runner-sandbox`. Two consumer repos on one
+host each build their own `runner/Dockerfile` under that same tag, so the
+second build silently replaces the first. Override the name per consumer:
+
+```sh
+# build and run against a consumer-specific image
+RUNNER_IMAGE_NAME=my-project-runner .formann/runner/build-image.sh
+RUNNER_IMAGE_NAME=my-project-runner .formann/runner/run-the-queue.sh --feature <slug> …
+```
+
+Plain invocations keep using `afk-runner-sandbox`. The bridge network, bridge
+interface and subnet are unaffected; consumers share those by design.
+
 ## Per-feature mvn cache
 
 Each feature gets its own Docker volume (`runner-mvn-cache-<slug>`) so a
