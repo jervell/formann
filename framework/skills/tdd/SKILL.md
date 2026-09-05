@@ -70,6 +70,16 @@ GREEN: Write minimal code to pass → test passes
 
 This is your tracer bullet - proves the path works end-to-end.
 
+### The Cycle, Strictly
+
+Every RED→GREEN pair has three steps:
+
+1. **Skeleton** — write minimal stubs (classes, methods) that **compile** but return wrong/dummy values.
+2. **Red** — write the test. Run it. It must **fail with a wrong result**, not a compilation error. Show the failure output.
+3. **Green** — implement properly. Run the test. It must **pass**. Show the pass output.
+
+Both the red failure and the green pass must appear in the conversation. No skipping steps, no batching red and green together.
+
 ### 3. Incremental Loop
 
 For each remaining behavior:
