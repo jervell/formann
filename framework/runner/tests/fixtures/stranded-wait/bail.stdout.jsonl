@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","cwd":"/repo","session_id":"s2","tools":["Bash","Read"],"uuid":"u0"}
+{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"num_turns":3,"result":"Tests fail and cannot be fixed in scope. Posted a Post-mortem and set the state to needs-info.","stop_reason":"end_turn","session_id":"s2","uuid":"u2"}

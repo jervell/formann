@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `RUNNER_IMAGE_NAME` is env-overridable, so two consumer repos on one host can each build and run their own runner image instead of overwriting each other under the shared default tag.
 
+### Fixed
+- AFK dispatches can no longer strand work behind a background build: the sandbox runs with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (foreground Bash timeouts raised to 20 min default / 60 min max), the dispatch preamble and `/implement` say so, and a dispatch that ends its turn "waiting to resume" with no commit is reported as `FAIL (stranded-wait)` in `runner.log` and at the top of its summary.
+
 ## [0.6.0] - 2026-08-20
 
 ### Added

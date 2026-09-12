@@ -2087,6 +2087,7 @@ run_sandbox_container() {
     -v "$MVN_VOLUME:$RUNNER_CONTAINER_M2_PATH" \
     -v "$HOME/.m2/repository:/home/runner/.m2-host:ro" \
     --env-file <(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOKEN") \
+    --env-file <(printf '%s\n' "${RUNNER_DISPATCH_ENV[@]}") \
     --env-file <(printf 'GIT_AUTHOR_NAME=%s\nGIT_AUTHOR_EMAIL=%s\nGIT_COMMITTER_NAME=%s\nGIT_COMMITTER_EMAIL=%s\n' \
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL" \
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL") \
@@ -2444,16 +2445,41 @@ with_window_retry() {
 # under -p it does not. An agent that trusts that message ends its turn before
 # committing, and the next iteration's checkout scrub discards the work. We
 # strip them so the dispatch cannot reach for a wakeup that never arrives.
-# run_in_background Bash is deliberately NOT here: it works under -p — the
-# harness waits for the task and re-invokes the agent on completion.
+# Background Bash (`run_in_background`) is not a tool name, so it cannot be
+# listed here; it is switched off through RUNNER_DISPATCH_ENV below.
 RUNNER_DISALLOWED_DISPATCH_TOOLS=(ScheduleWakeup CronCreate CronDelete CronList)
 
-# Agent-facing statement of the one-shot context the disallowed tools above
-# guard against. The runner is the authority that makes a dispatch one-shot, so
-# it declares the lifecycle here via --append-system-prompt — scoped to the
-# headless dispatch, where it is true, rather than baked into a skill or rule
-# that also loads in interactive sessions (a maintainer running the same skill
-# by hand gets a next turn).
+# Environment the dispatch's claude process runs under, one KEY=value per
+# element, handed to `docker run` as an --env-file by run_sandbox_container.
+#
+# CLAUDE_CODE_DISABLE_BACKGROUND_TASKS — no background Bash. The tool result
+# for a backgrounded command promises "You will be notified when it
+# completes", and under -p that notification only arrives while the agent is
+# still mid-turn. An agent that ends its turn to wait for it is never resumed:
+# the session closes on that turn, the background build is killed, nothing
+# is committed, and the classifier records FAIL (observed 2026-09-11: a
+# 45-minute /implement ended with "I'll hold here … and resume automatically
+# once the background build finishes", and the checkout scrub discarded it).
+# With the switch set, `run_in_background` is ignored and every command runs
+# in the foreground, so a turn cannot outlive its own build.
+#
+# BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS — headroom for the foreground.
+# Claude Code's stock ceiling is 10 minutes, which is exactly the length of a
+# full Maven suite and the reason an agent reaches for backgrounding in the
+# first place. Raised to 20 minutes default / 60 minutes maximum so a build
+# or test run waits out in the foreground instead.
+RUNNER_DISPATCH_ENV=(
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+  BASH_DEFAULT_TIMEOUT_MS=1200000
+  BASH_MAX_TIMEOUT_MS=3600000
+)
+
+# Agent-facing statement of the one-shot context the disallowed tools and the
+# dispatch env above guard against. The runner is the authority that makes a
+# dispatch one-shot, so it declares the lifecycle here via
+# --append-system-prompt — scoped to the headless dispatch, where it is true,
+# rather than baked into a skill or rule that also loads in interactive
+# sessions (a maintainer running the same skill by hand gets a next turn).
 #
 # Injected verbatim into EVERY dispatch — /implement and each walk-step prompt
 # (review, gate, review-and-gate, fix, find-and-fix) — so it must state
@@ -2461,7 +2487,23 @@ RUNNER_DISALLOWED_DISPATCH_TOOLS=(ScheduleWakeup CronCreate CronDelete CronList)
 # those differ per step and some steps forbid them (review must NOT change
 # state; gate transitions only on a clean verdict). Each step's own prompt owns
 # what it does; this only tells the agent the turn will not be resumed.
-RUNNER_DISPATCH_PREAMBLE="This is a one-shot headless dispatch: a single claude -p turn with no /loop or scheduler runtime. No scheduled wakeup or cross-turn timer will fire here — if you stop and wait to be resumed, nothing resumes you and the dispatch ends where it is. Carry out what this dispatch asks within this run; do not defer it behind a wakeup or a later check-in."
+RUNNER_DISPATCH_PREAMBLE="This is a one-shot headless dispatch: a single claude -p turn with no /loop or scheduler runtime. No scheduled wakeup, cross-turn timer or background-task notification will fire here — if you stop and wait to be resumed, nothing resumes you and the dispatch ends where it is, and whatever you had not finished is lost. Background Bash is disabled in this dispatch: builds and tests run in the foreground and you wait for them to finish (long commands may take a timeout of up to an hour). Carry out what this dispatch asks within this run; do not defer it behind a wakeup, a background task or a later check-in."
+
+# Stranded-wait detector: did the dispatch's closing message announce that it
+# is waiting to be resumed? That is the signature of the failure the preamble
+# and RUNNER_DISPATCH_ENV guard against — the agent ended its turn expecting a
+# wakeup, a background-task notification or a later check-in that a one-shot
+# `claude -p` never delivers. Pure text classification of the terminal
+# `result` event; the caller decides what to do with it (dispatch_one names
+# the failure class in the progress line and the summary artifact when the
+# dispatch also left no commit).
+is_stranded_wait() {
+  local stream_file="$1"
+  local result_text
+  result_text="$(extract_result_summary "$stream_file")"
+  printf '%s' "$result_text" | grep -qiE \
+    "hold(ing)? here|resum(e|es|ed|ing) automatically|(will|can|to) (resume|continue|pick (this|it) up) (once|when|after)|wait(ing)? (for|until|on) (the |that |it )?[^.]*(build|test|suite|task|command|job|notif)|once the [^.]*(finish|complet)"
+}
 
 # Implement-dispatch wrapper: hands `claude -p "/implement <ref>"` to the
 # sandbox via the transport-retry layer, in streamed structured-event mode.
@@ -3237,6 +3279,20 @@ dispatch_one() {
     impl_label="window-exhausted"
   elif [ "$classifier_verdict" = "dispatch-aborted" ]; then
     impl_label="dispatch-aborted"
+  elif [ "$impl_has_runner_commits" -eq 0 ] && is_stranded_wait "$log_base.stdout.jsonl"; then
+    # The agent ended its turn waiting to be resumed and committed nothing —
+    # the one-shot dispatch simply ended there. Name the class on the progress
+    # line and at the top of the summary artifact so the next reader doesn't
+    # have to reconstruct it from a one-sentence closing message. The SUMMARY
+    # row and the abort flag keep their FAIL / technical vocabulary.
+    impl_label="FAIL (stranded-wait)"
+    echo "runner: stranded-wait: dispatch ended its turn waiting to be resumed, with no commit — nothing resumes a one-shot dispatch" >&2
+    local stranded_body
+    stranded_body="$(cat "$log_base.summary.md")"
+    {
+      printf '**stranded-wait** — the dispatch ended its turn waiting to be resumed (a background task, wakeup or later check-in) and committed nothing. Nothing resumes a one-shot `claude -p` dispatch; the work was lost to the next checkout scrub. Closing message:\n\n'
+      printf '%s\n' "$stranded_body"
+    } >"$log_base.summary.md"
   fi
 
   format_progress_outcome "$(now_clock)" "$ref" "implement" "$impl_label" "$impl_duration"

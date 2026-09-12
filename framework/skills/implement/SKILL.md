@@ -25,7 +25,7 @@ An issue reference.
 
 3. **Implement.** Use `/tdd`. For type `HITL` issues, pause at each gate listed in the brief and check in with the maintainer before proceeding.
 
-4. **Verify (self-audit).** Run the project's feedback loops (build, tests). Then enumerate every acceptance criterion from the agent brief and classify each into one of two lanes:
+4. **Verify (self-audit).** Run the project's feedback loops (build, tests) **in the foreground and wait for them** — a long suite gets a long Bash timeout, never `run_in_background`. Backgrounding a build and ending the turn to "resume when it finishes" is a failed slice in an AFK run: the dispatch is a single `claude -p` turn, nothing resumes it, the build is killed and the uncommitted work is scrubbed. Then enumerate every acceptance criterion from the agent brief and classify each into one of two lanes:
 
    - **`verified`** — a test exercises it, OR a one-shot command (`ls`, `cat`, `grep`, `bash <script> | jq`, etc.) settles it. A passing test and a quoted command result are equally good evidence; pick whichever is natural. A **skipped or environment-guarded** test does not count as exercising the criterion — a green summary whose relevant scenarios were skipped is not evidence.
    - **`[human]`** — for a criterion the agent cannot settle here, in either of two ways: (a) the verdict requires human judgment no command can produce (UI feel, layout, copy quality, semantic correctness of generated prose, "does this read naturally to audience X"); or (b) a real command or test settles it but **cannot run in this environment** — it needs a resource only the maintainer can supply (Docker-in-Docker, a credential, a manual or operator-attended step the dispatch container can't provide). For (b), cite the skeleton/artifact the maintainer drives as the Evidence, with the one-line ask. Existence, content-contains, structural shape, and script-output checks that *do* run here are **not** `[human]` — settle them with a command.
@@ -70,6 +70,7 @@ An issue reference.
 - One issue per invocation. Picking the next is a coordinator concern, not the worker's.
 - Honor the issue's type.
 
+  - **AFK runs end in exactly one of two states** — shipped (commit + `in-review`) or bailed (Post-mortem + `needs-info`). Ending the turn any other way — waiting on a background task, a wakeup, or a later check-in — is a failed slice: the run is non-interactive, nothing resumes the turn, and whatever was not committed is lost.
   - **AFK runs do not solicit human input** — no `AskUserQuestion`, no plain-text questions that wait for a reply, no "let me know and I'll continue". When you reach a point where you'd otherwise ask:
     - **Routine choice** (naming, default, style, undocumented detail): pick the most sensible option, record the choice in the implementation summary under a "Decisions made" subsection, continue.
     - **Acceptance criterion requires a resource only the maintainer can supply** (credential to paste, manual production step, real-time judgement): mark that AC's Evidence as `[human]` with a one-line ask ("populate Keychain entry X, then re-run Y"), ship the rest.
