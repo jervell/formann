@@ -40,7 +40,7 @@ Consumer:
 - `bash` 3.2+ (the macOS default works), `git`.
 - Docker — only if you use the AFK runner.
 
-Contributor: everything above plus [`bats`](https://bats-core.readthedocs.io/) 1.x (tested with 1.13) for the installer test suite at `installer/tests/install.bats`.
+Contributor: everything above plus [`bats`](https://bats-core.readthedocs.io/) 1.x (tested with 1.13) for the test suites, and `git` 2.28+ for the runner suite at `framework/runner/tests/run-the-queue.bats` (its fixtures use `git init --initial-branch`).
 
 The runner Dockerfile template (`installer/templates/Dockerfile`) bakes in JDK 25, Maven, Node 20, and the Claude CLI. A consumer edits `runner/Dockerfile` to swap toolchains; your project's own build toolchain is your concern, not Formann's.
 

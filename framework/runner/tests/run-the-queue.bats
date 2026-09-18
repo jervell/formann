@@ -1,8 +1,22 @@
 #!/usr/bin/env bats
 
+# The fixtures create repos with `git init --initial-branch=…` (git 2.28+).
+# On an older git every repo-backed test fails at setup with a misleading
+# "branch does not exist" symptom, so probe the flag once and fail loudly.
+setup_file() {
+  if ! git init --quiet --initial-branch=main "$BATS_FILE_TMPDIR/probe" 2>/dev/null; then
+    echo "run-the-queue.bats needs git 2.28 or newer (git init --initial-branch); found: $(git --version)" >&2
+    return 1
+  fi
+}
+
 setup() {
   load 'test_helper/bats-support/load'
   load 'test_helper/bats-assert/load'
+
+  # The runner reads this from the environment; an operator's export would
+  # override the default-branch resolution these tests exercise.
+  unset RUNNER_DEFAULT_BRANCH
 
   HERE="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
   RUNNER_SCRIPT="$HERE/../run-the-queue.sh"
