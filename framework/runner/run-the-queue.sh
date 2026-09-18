@@ -2452,22 +2452,17 @@ RUNNER_DISALLOWED_DISPATCH_TOOLS=(ScheduleWakeup CronCreate CronDelete CronList)
 # Environment the dispatch's claude process runs under, one KEY=value per
 # element, handed to `docker run` as an --env-file by run_sandbox_container.
 #
-# CLAUDE_CODE_DISABLE_BACKGROUND_TASKS — no background Bash. The tool result
-# for a backgrounded command promises "You will be notified when it
-# completes", and under -p that notification only arrives while the agent is
-# still mid-turn. An agent that ends its turn to wait for it is never resumed:
-# the session closes on that turn, the background build is killed, nothing
-# is committed, and the classifier records FAIL (observed 2026-09-11: a
-# 45-minute /implement ended with "I'll hold here … and resume automatically
-# once the background build finishes", and the checkout scrub discarded it).
-# With the switch set, `run_in_background` is ignored and every command runs
-# in the foreground, so a turn cannot outlive its own build.
+# CLAUDE_CODE_DISABLE_BACKGROUND_TASKS — no background Bash. A backgrounded
+# command's completion notification only arrives while the agent is still
+# mid-turn; under -p an agent that ends its turn to wait for it is never
+# resumed, the command is killed with the session, and uncommitted work is
+# lost. With the switch set every command runs in the foreground, so a turn
+# cannot outlive its own build.
 #
 # BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS — headroom for the foreground.
-# Claude Code's stock ceiling is 10 minutes, which is exactly the length of a
-# full Maven suite and the reason an agent reaches for backgrounding in the
-# first place. Raised to 20 minutes default / 60 minutes maximum so a build
-# or test run waits out in the foreground instead.
+# Claude Code's stock 10-minute ceiling is what makes backgrounding a long
+# build or test suite tempting; 20 minutes default / 60 minutes maximum lets
+# it wait in the foreground instead.
 RUNNER_DISPATCH_ENV=(
   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
   BASH_DEFAULT_TIMEOUT_MS=1200000

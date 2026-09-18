@@ -624,11 +624,9 @@ DOCKEREOF
 
 # === Background Bash is off in the sandbox ==================================
 #
-# Under -p a backgrounded command's "You will be notified when it completes"
-# only holds while the agent is mid-turn; an agent that ends its turn to wait
-# for it is never resumed (2026-09-11: a 45-minute /implement ended with
-# "I'll hold here … and resume automatically once the background build
-# finishes", committed nothing, and was scrubbed). The runner switches the
+# Under -p a backgrounded command's completion notification only arrives
+# while the agent is mid-turn; an agent that ends its turn to wait for it is
+# never resumed and its uncommitted work is lost. The runner switches the
 # feature off via CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, gives foreground
 # builds the timeout headroom that made backgrounding tempting, and says so
 # in the preamble.
