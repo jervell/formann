@@ -2489,22 +2489,6 @@ RUNNER_DISPATCH_ENV=(
 # what it does; this only tells the agent the turn will not be resumed.
 RUNNER_DISPATCH_PREAMBLE="This is a one-shot headless dispatch: a single claude -p turn with no /loop or scheduler runtime. No scheduled wakeup, cross-turn timer or background-task notification will fire here — if you stop and wait to be resumed, nothing resumes you and the dispatch ends where it is, and whatever you had not finished is lost. Background Bash is disabled in this dispatch: builds and tests run in the foreground and you wait for them to finish (long commands may take a timeout of up to an hour). Carry out what this dispatch asks within this run; do not defer it behind a wakeup, a background task or a later check-in."
 
-# Stranded-wait detector: did the dispatch's closing message announce that it
-# is waiting to be resumed? That is the signature of the failure the preamble
-# and RUNNER_DISPATCH_ENV guard against — the agent ended its turn expecting a
-# wakeup, a background-task notification or a later check-in that a one-shot
-# `claude -p` never delivers. Pure text classification of the terminal
-# `result` event; the caller decides what to do with it (dispatch_one names
-# the failure class in the progress line and the summary artifact when the
-# dispatch also left no commit).
-is_stranded_wait() {
-  local stream_file="$1"
-  local result_text
-  result_text="$(extract_result_summary "$stream_file")"
-  printf '%s' "$result_text" | grep -qiE \
-    "hold(ing)? here|resum(e|es|ed|ing) automatically|(will|can|to) (resume|continue|pick (this|it) up) (once|when|after)|wait(ing)? (for|until|on) (the |that |it )?[^.]*(build|test|suite|task|command|job|notif)|once the [^.]*(finish|complet)"
-}
-
 # Implement-dispatch wrapper: hands `claude -p "/implement <ref>"` to the
 # sandbox via the transport-retry layer, in streamed structured-event mode.
 # Tracker-snapshot delta is the source of truth for the success/failure
@@ -3279,20 +3263,6 @@ dispatch_one() {
     impl_label="window-exhausted"
   elif [ "$classifier_verdict" = "dispatch-aborted" ]; then
     impl_label="dispatch-aborted"
-  elif [ "$impl_has_runner_commits" -eq 0 ] && is_stranded_wait "$log_base.stdout.jsonl"; then
-    # The agent ended its turn waiting to be resumed and committed nothing —
-    # the one-shot dispatch simply ended there. Name the class on the progress
-    # line and at the top of the summary artifact so the next reader doesn't
-    # have to reconstruct it from a one-sentence closing message. The SUMMARY
-    # row and the abort flag keep their FAIL / technical vocabulary.
-    impl_label="FAIL (stranded-wait)"
-    echo "runner: stranded-wait: dispatch ended its turn waiting to be resumed, with no commit — nothing resumes a one-shot dispatch" >&2
-    local stranded_body
-    stranded_body="$(cat "$log_base.summary.md")"
-    {
-      printf '**stranded-wait** — the dispatch ended its turn waiting to be resumed (a background task, wakeup or later check-in) and committed nothing. Nothing resumes a one-shot `claude -p` dispatch; the work was lost to the next checkout scrub. Closing message:\n\n'
-      printf '%s\n' "$stranded_body"
-    } >"$log_base.summary.md"
   fi
 
   format_progress_outcome "$(now_clock)" "$ref" "implement" "$impl_label" "$impl_duration"

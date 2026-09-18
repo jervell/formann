@@ -622,7 +622,7 @@ DOCKEREOF
   grep -q -- '--append-system-prompt This is a one-shot headless dispatch' "$cap"
 }
 
-# === Background Bash is off in the sandbox (stranded-wait guard) =============
+# === Background Bash is off in the sandbox ==================================
 #
 # Under -p a backgrounded command's "You will be notified when it completes"
 # only holds while the agent is mid-turn; an agent that ends its turn to wait
@@ -676,24 +676,6 @@ EOF
 @test "RUNNER_DISPATCH_PREAMBLE — tells the agent background Bash is off and builds run in the foreground" {
   [[ "$RUNNER_DISPATCH_PREAMBLE" == *"Background Bash is disabled"* ]]
   [[ "$RUNNER_DISPATCH_PREAMBLE" == *"foreground"* ]]
-}
-
-_sw() { printf '%s/fixtures/stranded-wait/%s.stdout.jsonl' "$BATS_TEST_DIRNAME" "$1"; }
-
-@test "is_stranded_wait — the 2026-09-11 closing message classifies as stranded" {
-  is_stranded_wait "$(_sw stranded)"
-}
-
-@test "is_stranded_wait — a legitimate bail (post-mortem + needs-info) does not" {
-  ! is_stranded_wait "$(_sw bail)"
-}
-
-@test "is_stranded_wait — a shipped closing message does not" {
-  ! is_stranded_wait "$(_fx control)"
-}
-
-@test "is_stranded_wait — a stream with no result event does not" {
-  ! is_stranded_wait "$(_fx empty)"
 }
 
 # === Fault isolation: a malformed stream cannot change the outcome (AC #8) ===
@@ -2216,49 +2198,6 @@ install_afk_snapshots() {
   assert_output --partial "implement → in-review"
   # Follow-up halt line emitted after the propagation decision.
   assert_output --partial "implement → halt → FAIL"
-}
-
-@test "dispatch_one — stranded-wait: no commit + 'resume once the build finishes' names the class in the progress line and summary" {
-  setup_dispatch_one_test
-  # Post-implement snapshot: status never moved — the classic stranded shape.
-  take_snapshot() {
-    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
-  }
-  # Container: clean exit, no commit, the 2026-09-11 closing message.
-  run_dispatch_container() {
-    cp "$BATS_TEST_DIRNAME/fixtures/stranded-wait/stranded.stdout.jsonl" "$2.stdout.jsonl"
-    return 0
-  }
-
-  run dispatch_one "f" "01" "$TEST_RUN_DIR"
-
-  [ "$status" -ne 0 ]
-  assert_output --partial "implement → FAIL (stranded-wait)"
-  assert_output --partial "runner: stranded-wait:"
-  # Summary artifact leads with the class, then the closing message.
-  local summary="$TEST_RUN_DIR/01.summary.md"
-  head -1 "$summary" | grep -q '^\*\*stranded-wait\*\*'
-  grep -q "resume automatically once the background build finishes" "$summary"
-  # SUMMARY row and abort flag keep the plain FAIL / technical vocabulary.
-  grep -q '^type: technical$' "$HOST_ABORT_DIR/f/01"
-}
-
-@test "dispatch_one — a bail with no commit is plain FAIL, not stranded-wait" {
-  setup_dispatch_one_test
-  take_snapshot() {
-    printf '{"feature":"f","issues":[{"ref":"f/01","nn":"01","status":"ready-for-agent","category":"enhancement","type":"AFK","blocked_by":[],"eligible":true}]}'
-  }
-  run_dispatch_container() {
-    cp "$BATS_TEST_DIRNAME/fixtures/stranded-wait/bail.stdout.jsonl" "$2.stdout.jsonl"
-    return 0
-  }
-
-  run dispatch_one "f" "01" "$TEST_RUN_DIR"
-
-  [ "$status" -ne 0 ]
-  assert_output --partial "implement → FAIL"
-  refute_output --partial "stranded-wait"
-  ! grep -q 'stranded-wait' "$TEST_RUN_DIR/01.summary.md"
 }
 
 @test "dispatch_one — walk-stage propagation error emits a halt → gate-failed follow-up line" {

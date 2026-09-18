@@ -1,3 +1,0 @@
-{"type":"system","subtype":"init","cwd":"/repo","session_id":"s1","tools":["Bash","Read"],"uuid":"u0"}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll hold here without further commands and resume automatically once the background build finishes."}]},"session_id":"s1","uuid":"u1"}
-{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"num_turns":208,"result":"I'll hold here without further commands and resume automatically once the background build finishes.","stop_reason":"end_turn","session_id":"s1","uuid":"u2"}
