@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `RUNNER_IMAGE_NAME` is env-overridable, so two consumer repos on one host can each build and run their own runner image instead of overwriting each other under the shared default tag.
 
+### Fixed
+- AFK dispatches can no longer end their turn waiting on a background build: background Bash is disabled in the sandbox and foreground Bash may run for up to an hour.
+
 ## [0.6.0] - 2026-08-20
 
 ### Added

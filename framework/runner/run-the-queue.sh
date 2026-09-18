@@ -2087,6 +2087,7 @@ run_sandbox_container() {
     -v "$MVN_VOLUME:$RUNNER_CONTAINER_M2_PATH" \
     -v "$HOME/.m2/repository:/home/runner/.m2-host:ro" \
     --env-file <(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOKEN") \
+    --env-file <(printf '%s\n' "${RUNNER_DISPATCH_ENV[@]}") \
     --env-file <(printf 'GIT_AUTHOR_NAME=%s\nGIT_AUTHOR_EMAIL=%s\nGIT_COMMITTER_NAME=%s\nGIT_COMMITTER_EMAIL=%s\n' \
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL" \
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL") \
@@ -2444,16 +2445,36 @@ with_window_retry() {
 # under -p it does not. An agent that trusts that message ends its turn before
 # committing, and the next iteration's checkout scrub discards the work. We
 # strip them so the dispatch cannot reach for a wakeup that never arrives.
-# run_in_background Bash is deliberately NOT here: it works under -p — the
-# harness waits for the task and re-invokes the agent on completion.
+# Background Bash (`run_in_background`) is not a tool name, so it cannot be
+# listed here; it is switched off through RUNNER_DISPATCH_ENV below.
 RUNNER_DISALLOWED_DISPATCH_TOOLS=(ScheduleWakeup CronCreate CronDelete CronList)
 
-# Agent-facing statement of the one-shot context the disallowed tools above
-# guard against. The runner is the authority that makes a dispatch one-shot, so
-# it declares the lifecycle here via --append-system-prompt — scoped to the
-# headless dispatch, where it is true, rather than baked into a skill or rule
-# that also loads in interactive sessions (a maintainer running the same skill
-# by hand gets a next turn).
+# Environment the dispatch's claude process runs under, one KEY=value per
+# element, handed to `docker run` as an --env-file by run_sandbox_container.
+#
+# CLAUDE_CODE_DISABLE_BACKGROUND_TASKS — no background Bash. A backgrounded
+# command's completion notification only arrives while the agent is still
+# mid-turn; under -p an agent that ends its turn to wait for it is never
+# resumed, the command is killed with the session, and uncommitted work is
+# lost. With the switch set every command runs in the foreground, so a turn
+# cannot outlive its own build.
+#
+# BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS — headroom for the foreground.
+# Claude Code's stock 10-minute ceiling is what makes backgrounding a long
+# build or test suite tempting; 20 minutes default / 60 minutes maximum lets
+# it wait in the foreground instead.
+RUNNER_DISPATCH_ENV=(
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+  BASH_DEFAULT_TIMEOUT_MS=1200000
+  BASH_MAX_TIMEOUT_MS=3600000
+)
+
+# Agent-facing statement of the one-shot context the disallowed tools and the
+# dispatch env above guard against. The runner is the authority that makes a
+# dispatch one-shot, so it declares the lifecycle here via
+# --append-system-prompt — scoped to the headless dispatch, where it is true,
+# rather than baked into a skill or rule that also loads in interactive
+# sessions (a maintainer running the same skill by hand gets a next turn).
 #
 # Injected verbatim into EVERY dispatch — /implement and each walk-step prompt
 # (review, gate, review-and-gate, fix, find-and-fix) — so it must state
@@ -2461,7 +2482,7 @@ RUNNER_DISALLOWED_DISPATCH_TOOLS=(ScheduleWakeup CronCreate CronDelete CronList)
 # those differ per step and some steps forbid them (review must NOT change
 # state; gate transitions only on a clean verdict). Each step's own prompt owns
 # what it does; this only tells the agent the turn will not be resumed.
-RUNNER_DISPATCH_PREAMBLE="This is a one-shot headless dispatch: a single claude -p turn with no /loop or scheduler runtime. No scheduled wakeup or cross-turn timer will fire here — if you stop and wait to be resumed, nothing resumes you and the dispatch ends where it is. Carry out what this dispatch asks within this run; do not defer it behind a wakeup or a later check-in."
+RUNNER_DISPATCH_PREAMBLE="This is a one-shot headless dispatch: a single claude -p turn with no /loop or scheduler runtime. No scheduled wakeup, cross-turn timer or background-task notification will fire here — if you stop and wait to be resumed, nothing resumes you and the dispatch ends where it is, and whatever you had not finished is lost. Background Bash is disabled in this dispatch: builds and tests run in the foreground and you wait for them to finish (long commands may take a timeout of up to an hour). Carry out what this dispatch asks within this run; do not defer it behind a wakeup, a background task or a later check-in."
 
 # Implement-dispatch wrapper: hands `claude -p "/implement <ref>"` to the
 # sandbox via the transport-retry layer, in streamed structured-event mode.

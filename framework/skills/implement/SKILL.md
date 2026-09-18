@@ -25,7 +25,7 @@ An issue reference.
 
 3. **Implement.** Use `/tdd`. For type `HITL` issues, pause at each gate listed in the brief and check in with the maintainer before proceeding.
 
-4. **Verify (self-audit).** Run the project's feedback loops (build, tests). Then enumerate every acceptance criterion from the agent brief and classify each into one of two lanes:
+4. **Verify (self-audit).** Run the project's feedback loops (build, tests) in the foreground and wait for them — a long suite gets a long Bash timeout, not `run_in_background`. Then enumerate every acceptance criterion from the agent brief and classify each into one of two lanes:
 
    - **`verified`** — a test exercises it, OR a one-shot command (`ls`, `cat`, `grep`, `bash <script> | jq`, etc.) settles it. A passing test and a quoted command result are equally good evidence; pick whichever is natural. A **skipped or environment-guarded** test does not count as exercising the criterion — a green summary whose relevant scenarios were skipped is not evidence.
    - **`[human]`** — for a criterion the agent cannot settle here, in either of two ways: (a) the verdict requires human judgment no command can produce (UI feel, layout, copy quality, semantic correctness of generated prose, "does this read naturally to audience X"); or (b) a real command or test settles it but **cannot run in this environment** — it needs a resource only the maintainer can supply (Docker-in-Docker, a credential, a manual or operator-attended step the dispatch container can't provide). For (b), cite the skeleton/artifact the maintainer drives as the Evidence, with the one-line ask. Existence, content-contains, structural shape, and script-output checks that *do* run here are **not** `[human]` — settle them with a command.

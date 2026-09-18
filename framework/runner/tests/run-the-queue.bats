@@ -579,8 +579,8 @@ DOCKEREOF
 # ScheduleWakeup even reports back that "the harness re-invokes you when the
 # wakeup fires", which never happens under -p, stranding uncommitted work.
 # Disallow them so a dispatch can't reach for a wakeup that never fires.
-# (run_in_background Bash is NOT disallowed — it works under -p: the harness
-# waits for the task and re-invokes the agent on completion.)
+# (Background Bash has the same failure shape but is not a tool name — it is
+# switched off through the dispatch env; see the RUNNER_DISPATCH_ENV tests.)
 @test "run_dispatch_container — passes --disallowed-tools for the scheduling tools broken under -p" {
   local cap="$BATS_TEST_TMPDIR/claude-args"
   run_sandbox_container() { shift; printf '%s\n' "$*" >"$cap"; return 0; }
@@ -620,6 +620,60 @@ DOCKEREOF
   HOST_CHECKOUT="$BATS_TEST_TMPDIR"
   run_item_container "#71" "$BATS_TEST_TMPDIR/base" "$prompt"
   grep -q -- '--append-system-prompt This is a one-shot headless dispatch' "$cap"
+}
+
+# === Background Bash is off in the sandbox ==================================
+#
+# Under -p a backgrounded command's completion notification only arrives
+# while the agent is mid-turn; an agent that ends its turn to wait for it is
+# never resumed and its uncommitted work is lost. The runner switches the
+# feature off via CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, gives foreground
+# builds the timeout headroom that made backgrounding tempting, and says so
+# in the preamble.
+
+@test "run_sandbox_container — dispatch env disables background tasks and raises the Bash timeouts" {
+  local cap="$BATS_TEST_TMPDIR/captured-env"
+  : >"$cap"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat >"$BATS_TEST_TMPDIR/bin/docker" <<EOF
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  [ "\$1" = "--env-file" ] && { shift; cat "\$1" >>"$cap" 2>>"$cap"; }
+  [ "\$1" = "--cidfile" ] && { echo cid >"\$2" 2>/dev/null || true; }
+  shift
+done
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  mkdir -p "$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker"
+  HOST_REPO="$BATS_TEST_TMPDIR/repo"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/repo"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR"
+  NET_NAME=none
+  RUNNER_CONTAINER_REPO_PATH=/repo
+  RUNNER_CONTAINER_M2_PATH=/m2
+  MVN_VOLUME=vol
+  RUNNER_IMAGE_NAME=img
+  TOKEN=oauth
+  RUNNER_GIT_USER_NAME=Arne
+  RUNNER_GIT_USER_EMAIL=a@b.c
+  RUNNER_INTERRUPTED=0
+  RUNNER_KILL_GRACE_SECONDS=1
+  IN_FLIGHT_CID_FILE=""
+
+  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch" claude -p "/implement #1"
+
+  grep -q '^CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1$' "$cap"
+  grep -q '^BASH_DEFAULT_TIMEOUT_MS=[0-9]*$' "$cap"
+  grep -q '^BASH_MAX_TIMEOUT_MS=[0-9]*$' "$cap"
+  # The OAuth token still arrives alongside the dispatch env.
+  grep -q '^CLAUDE_CODE_OAUTH_TOKEN=oauth$' "$cap"
+}
+
+@test "RUNNER_DISPATCH_PREAMBLE — tells the agent background Bash is off and builds run in the foreground" {
+  [[ "$RUNNER_DISPATCH_PREAMBLE" == *"Background Bash is disabled"* ]]
+  [[ "$RUNNER_DISPATCH_PREAMBLE" == *"foreground"* ]]
 }
 
 # === Fault isolation: a malformed stream cannot change the outcome (AC #8) ===
