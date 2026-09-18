@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `RUNNER_IMAGE_NAME` is env-overridable, so two consumer repos on one host can each build and run their own runner image instead of overwriting each other under the shared default tag.
+
 ## [0.6.0] - 2026-08-20
 
 ### Added
