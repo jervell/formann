@@ -6785,6 +6785,30 @@ EOF
   [ "$RUN_MODE" = "loop" ]
 }
 
+@test "parse_args — RUNNER_MODEL supplies the model when --model is absent" {
+  ARG_FEATURE=""
+  ARG_ISSUE_REF=""
+  ARG_MODEL=""
+  ISSUE_FEATURE=""
+  ISSUE_NN=""
+  RUN_MODE=""
+
+  RUNNER_MODEL=claude-opus-5-5 parse_args --feature my-feature
+  [ "$ARG_MODEL" = "claude-opus-5-5" ]
+}
+
+@test "parse_args — --model overrides RUNNER_MODEL" {
+  ARG_FEATURE=""
+  ARG_ISSUE_REF=""
+  ARG_MODEL=""
+  ISSUE_FEATURE=""
+  ISSUE_NN=""
+  RUN_MODE=""
+
+  RUNNER_MODEL=claude-opus-5-5 parse_args --feature my-feature --model claude-fable-5
+  [ "$ARG_MODEL" = "claude-fable-5" ]
+}
+
 @test "parse_args — --model without value exits 2 with usage diagnostic" {
   ARG_FEATURE=""
   ARG_ISSUE_REF=""
