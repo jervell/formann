@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RUNNER_IMAGE_NAME` is env-overridable, so two consumer repos on one host can each build and run their own runner image instead of overwriting each other under the shared default tag.
 
 ### Fixed
+- The GitHub-issues `tracker-snapshot` no longer exits without output when a feature's sub-issue has no `formann:*` labels (e.g. one added before triage). Missing status, category and type labels read as empty values, as the snapshot contract says, so the runner can read the queue again.
 - AFK dispatches can no longer end their turn waiting on a background build: background Bash is disabled in the sandbox and foreground Bash may run for up to an hour.
 
 ## [0.6.0] - 2026-08-20

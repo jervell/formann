@@ -331,6 +331,60 @@ JSON
   [ "$eligible_val" = "false" ]
 }
 
+@test "sub-issue without labels has empty status, category and type, is not eligible, and the rest of the queue still reads" {
+  # A sub-issue added to the feature before triage has no formann:* labels at
+  # all. The snapshot contract gives each missing label an empty value.
+  export FIXTURE_RESPONSES_DIR="$BATS_TEST_TMPDIR/unlabelled"
+  mkdir -p "$FIXTURE_RESPONSES_DIR"
+  cat >"$FIXTURE_RESPONSES_DIR/graphql-response.json" <<'JSON'
+{
+  "data": {
+    "repository": {
+      "issues": {
+        "nodes": [
+          {
+            "number": 1,
+            "subIssues": {
+              "nodes": [
+                {
+                  "number": 2,
+                  "state": "OPEN",
+                  "stateReason": null,
+                  "labels": {"nodes": []},
+                  "blockedBy": {"nodes": []}
+                },
+                {
+                  "number": 3,
+                  "state": "OPEN",
+                  "stateReason": null,
+                  "labels": {"nodes": [{"name": "formann:status:ready-for-agent"}, {"name": "formann:category:enhancement"}, {"name": "formann:type:afk"}]},
+                  "blockedBy": {"nodes": []}
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+JSON
+  cat >"$BATS_TEST_TMPDIR/expected.json" <<'JSON'
+{
+  "feature": "unlabelled-feature",
+  "issues": [
+    {"ref": "#2", "nn": "2", "status": "", "category": "", "type": "", "blocked_by": [], "eligible": false},
+    {"ref": "#3", "nn": "3", "status": "ready-for-agent", "category": "enhancement", "type": "AFK", "blocked_by": [], "eligible": true}
+  ]
+}
+JSON
+  run "$TRACKER_SNAPSHOT" "unlabelled-feature"
+  assert_success
+  diff \
+    <(printf '%s\n' "$output" | jq -S .) \
+    <(jq -S . "$BATS_TEST_TMPDIR/expected.json")
+}
+
 # ════════════════════════════════════════════════════════════════════════════════
 # Origin-URL parsing (the GH_TRACKER_REPO fallback path)
 #
