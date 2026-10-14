@@ -9,7 +9,8 @@
 # `--model <id>` overrides the model for every dispatch in the run (implement
 # and each walk item). An unknown id is rejected by the CLI inside the
 # container and surfaces as a normal dispatch failure. Without the flag,
-# the CLI defaults apply and output is byte-identical to prior behavior.
+# `$RUNNER_MODEL` (when set) supplies the model; with neither, the CLI
+# defaults apply and output is byte-identical to prior behavior.
 #
 # By default the runner holds a macOS wake assertion for the whole run
 # (`caffeinate -i -s` tied to the runner pid), so an unattended host doesn't
@@ -1203,6 +1204,7 @@ parse_args() {
   # …") is already self-explanatory. Pre-flight aborts produce a per-
   # run dir because there's failure forensics worth capturing; argparse
   # rejects don't.
+  ARG_MODEL="${RUNNER_MODEL:-}"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --issue)
