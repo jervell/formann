@@ -258,6 +258,13 @@ _blocked_counts=() # number of blocked_by refs for each issue
 
 _done_nums=""  # space-delimited list of done issue numbers (for eligibility)
 
+# Value of the first label in $_label_names starting with prefix $1, or empty
+# when the issue has no such label (e.g. a sub-issue not yet triaged). grep's
+# no-match exit must not abort the script under `set -e -o pipefail`.
+_label_value() {
+  printf '%s\n' "$_label_names" | { grep "^$1" || true; } | head -1 | sed "s/^$1//"
+}
+
 if [ -n "$_issue_json" ]; then
   while IFS= read -r _sub; do
     [ -n "$_sub" ] || continue
@@ -273,12 +280,12 @@ if [ -n "$_issue_json" ]; then
     elif [ "$_state" = "CLOSED" ] && [ "$_state_reason" = "NOT_PLANNED" ]; then
       _status="wontfix"
     else
-      _status="$(printf '%s' "$_label_names" | grep '^formann:status:' | head -1 | sed 's/^formann:status://')"
+      _status="$(_label_value "formann:status:")"
     fi
 
     # Derive category and type from labels.
-    _category="$(printf '%s' "$_label_names" | grep '^formann:category:' | head -1 | sed 's/^formann:category://')"
-    _type_raw="$(printf '%s' "$_label_names" | grep '^formann:type:' | head -1 | sed 's/^formann:type://')"
+    _category="$(_label_value "formann:category:")"
+    _type_raw="$(_label_value "formann:type:")"
     # Normalise type to uppercase: afk → AFK, hitl → HITL.
     case "$_type_raw" in
       afk)  _type="AFK"  ;;
