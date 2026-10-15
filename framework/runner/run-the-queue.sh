@@ -2568,10 +2568,37 @@ Fix with: git remote remove runner
 #
 # On return 1 (error), RUNNER_LAST_PROPAGATION is cleared to ''.
 #
+# Step 0 (fail-fatal): the runner-checkout's HEAD must be on <branch>. The
+# callers' commit-delta gate compares HEAD before and after a dispatch, but
+# step 1 publishes refs/heads/<branch>. A dispatch that switches to a branch
+# of its own (or detaches HEAD) and commits there moves HEAD without moving
+# <branch>, so step 1 would publish an unchanged branch and report `parked`
+# while the dispatch's commits stayed behind in the runner-checkout. Nothing
+# is published in that case; the commits are left where the dispatch put
+# them, with a recovery recipe.
+#
 # Args: $1 = branch name
 propagate_feature() {
   local branch="$1"
   local parking_ref="refs/remotes/runner/${branch}"
+
+  # An unreadable runner-checkout is left to step 1, whose git diagnostic
+  # names the actual failure.
+  local checkout_head
+  checkout_head="$(git -C "$HOST_CHECKOUT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  if [ "$checkout_head" != "$branch" ] \
+      && git -C "$HOST_CHECKOUT" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+    cat >&2 <<MSG
+runner: propagation error — the dispatch left the runner-checkout on ${checkout_head:-a detached HEAD}, not on '${branch}'.
+Its commits are not on '${branch}', so nothing was published. Recover them with:
+
+    git -C $HOST_REPO fetch $HOST_CHECKOUT +HEAD:refs/heads/runner-rescue/${branch}
+
+then merge runner-rescue/${branch} into ${branch}.
+MSG
+    RUNNER_LAST_PROPAGATION=""
+    return 1
+  fi
 
   # Step 1: publish to parking ref — fail-fatal. The `+` prefix force-updates
   # the parking ref; it is runner-owned and its semantics are "this is the
