@@ -120,7 +120,7 @@ The trailing `stop reason:` line varies by mode.
 
 - `completed` — every feature in discovery output considered (the multi-feature analogue of single-feature mode's `queue-empty` at the run level).
 - `interrupted` — Ctrl-C during the outer loop.
-- `propagation-error` — parking-ref publish failed inside a feature loop; the entire drain halts (exit 1).
+- `propagation-error` — parking-ref publish failed inside a feature loop, or a dispatch committed off the feature branch (it switched to a branch of its own or detached HEAD); the entire drain halts (exit 1).
 - `preflight-abort: discovery` — `tracker-snapshot --list` exited non-zero or returned unparseable JSON.
 
 **Narrowed modes (`--feature`, `--issue`):**
