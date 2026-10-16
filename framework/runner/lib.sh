@@ -1,12 +1,82 @@
-# Shared constants for the AFK runner sandbox primitives.
-# Sourced by build-image.sh, setup-network.sh, and (eventually) the runner script.
+# Shared constants and helper functions for the AFK runner sandbox primitives.
+# Sourced by the runner scripts.
 
-# Docker image carrying JDK + Maven + git + claude CLI. Env-overridable so two
-# consumer repos on one host (each with its own runner/Dockerfile) don't
-# overwrite each other's image under the shared default tag:
+# Print the SHA-256 hex digest of stdin. Uses whichever of sha256sum (Linux)
+# and shasum (macOS) is present; both yield the same digest.
+runner_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  else
+    shasum -a 256 | cut -d' ' -f1
+  fi
+}
+
+# Print the name of the Docker image carrying JDK + Maven + git + claude CLI
+# for the consumer rooted at $1. Each consumer gets its own image, so two
+# consumer repos on one host (each with its own runner/Dockerfile) never run
+# in each other's image. The default is
+#   formann-runner-<dir>-<pathhash>
+# where <pathhash> is the first 8 hex of the SHA-256 of the consumer root's
+# physical path (symlinks resolved, so one checkout always yields one name)
+# and <dir> is its basename cleaned to Docker's tag rules: lowercased,
+# anything outside [a-z0-9._-] turned into `-`, separator runs collapsed to a
+# single `-`, edge separators stripped, cut to 40 characters. A <dir> that
+# cleans to nothing leaves `formann-runner-<pathhash>`.
+# RUNNER_IMAGE_NAME, when set, overrides the default:
 #   RUNNER_IMAGE_NAME=my-project-runner .formann/runner/run-the-queue.sh …
 # The network, bridge and subnet stay shared; only the image is per-consumer.
-RUNNER_IMAGE_NAME="${RUNNER_IMAGE_NAME:-afk-runner-sandbox}"
+runner_image_name() {
+  if [ -n "${RUNNER_IMAGE_NAME:-}" ]; then
+    echo "$RUNNER_IMAGE_NAME"
+    return 0
+  fi
+  local root dir pathhash
+  root="$(cd "$1" && pwd -P)" || return 1
+  pathhash="$(printf '%s' "$root" | runner_sha256 | cut -c1-8)"
+  dir="$(printf '%s' "${root##*/}" \
+    | LC_ALL=C tr 'A-Z' 'a-z' \
+    | LC_ALL=C tr -c 'a-z0-9._-' '-' \
+    | LC_ALL=C sed -e 's/[._-][._-]*/-/g' -e 's/^-//' -e 's/-$//')"
+  dir="${dir:0:40}"
+  dir="${dir%-}"
+  if [ -n "$dir" ]; then
+    echo "formann-runner-$dir-$pathhash"
+  else
+    echo "formann-runner-$pathhash"
+  fi
+}
+
+# Image label carrying the context hash the image was built from.
+RUNNER_CONTEXT_HASH_LABEL="formann.runner.context-hash"
+
+# Print the SHA-256 over the consumer's runner/ build context (consumer root
+# $1). Every entry under runner/ contributes its path relative to runner/,
+# its kind (executable file, plain file, or symlink) and the SHA-256 of its
+# content (a symlink's target), in LC_ALL=C sorted path order. Each record is
+# fixed-width up to its NUL-terminated path, so editing, adding, removing or
+# renaming a file, or flipping its executable bit, changes the hash, while
+# the order the files were written in does not.
+runner_context_hash() {
+  local context="$1/$RUNNER_CONSUMER_PROMPTS_DIR" path kind digest
+  if [ ! -d "$context" ]; then
+    echo "runner_context_hash: no build context at $context" >&2
+    return 1
+  fi
+  (
+    set -o pipefail
+    cd "$context" || exit 1
+    find . ! -type d -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' path; do
+      if [ -L "$path" ]; then
+        kind=l
+        digest="$(readlink "$path" | runner_sha256)"
+      else
+        if [ -x "$path" ]; then kind=x; else kind=f; fi
+        digest="$(runner_sha256 < "$path")" || exit 1
+      fi
+      printf '%s %s %s\0' "$kind" "$digest" "${path#./}"
+    done | runner_sha256
+  )
+}
 
 # Custom Docker bridge network with RFC1918 outbound denied.
 RUNNER_NETWORK_NAME="afk-runner-sandbox"

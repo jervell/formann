@@ -16,7 +16,7 @@ Conventions:
 | CLI arguments                                | Three modes — **bare invocation** (drain every active feature), `--feature <slug>` (narrow to one feature), `--issue <ref>` (single-dispatch). Optional `--model <id>` overrides the model for every dispatch in the run. |
 | Host repo                                    | Host's HEAD and working tree are not consulted — runner is independent of local state. `tracker-snapshot --list` returns the slugs to consider; per-feature gates handle the rest at iteration time. |
 | Keychain                                     | OAuth token at service `claude-code-oauth`, account `anthropic` (macOS Keychain / libsecret / keyctl).      |
-| Docker daemon                                | Image `afk-runner-sandbox`, network `afk-runner-sandbox` (with RFC1918-deny rules), volume `runner-mvn-cache-<feature>` (created lazily per drained feature). |
+| Docker daemon                                | Per-consumer image `formann-runner-<dir>-<pathhash>` (or `RUNNER_IMAGE_NAME`), network `afk-runner-sandbox` (with RFC1918-deny rules), volume `runner-mvn-cache-<feature>` (created lazily per drained feature). |
 | `.runner-state/checkout/`                    | Separate clone of the host repo. Created on first run; **branch-switched** per drained feature inside the outer loop (drain mode) or sync'd once up front (narrowed modes). |
 | `$HOST_REPO/docs/formann/issue-tracker/tracker-snapshot` | Binding-supplied executable, reached via the role surface. `--list` returns active feature slugs (drain mode discovery); `<slug>` returns per-issue JSON with computed `eligible` flag. |
 | `framework/runner/steps/review-and-gate.md`    | Prompt for the default post-implement step (review-and-gate); the `steps/` dir also ships the `review.md` / `gate.md` / `fix.md` / `find-and-fix.md` building-block step prompts for custom manifests. |
@@ -102,7 +102,7 @@ Rows in evaluation order. `no-other-runner` runs first (lock acquisition gates e
 | 2a | `runner-checkout`         | `.runner-state/checkout/` exists, else cloned from the host repo. Clone-existence only — no branch-switching. | global |
 | 2b | `runner-checkout`         | Runner-checkout sync'd to the target branch's tip on host.                                          | per-feature (lazy) |
 | 3 | `docker-daemon`            | `docker info` succeeds.                                                                            | global      |
-| 4 | `runner-image`             | `afk-runner-sandbox` exists (else built from `Dockerfile`).                                        | global      |
+| 4 | `runner-image`             | Consumer's image exists and matches `runner/` (else built from `Dockerfile`); logs `Runner image: <name> (context-hash <12 hex>)`. | global      |
 | 4b | `manifest`                | `runner/manifest.md` (Consumer-owned) exists and `resolve_manifest` validates every entry.           | global      |
 | 5 | `mvn-cache`                | Volume `runner-mvn-cache-<feature>` exists or is created and chowned `1000:1000`.                  | per-feature (lazy) |
 | 6 | `sandbox-network`          | `afk-runner-sandbox` bridge + iptables RFC1918-deny rules in place.                                | global      |

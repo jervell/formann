@@ -480,7 +480,7 @@ DOCKEREOF
   RUNNER_CONTAINER_REPO_PATH=/repo
   RUNNER_CONTAINER_M2_PATH=/m2
   MVN_VOLUME=vol
-  RUNNER_IMAGE_NAME=img
+  IMAGE_NAME=img
   TOKEN=oauth
   RUNNER_GIT_USER_NAME=Arne
   RUNNER_GIT_USER_EMAIL=a@b.c
@@ -654,7 +654,7 @@ EOF
   RUNNER_CONTAINER_REPO_PATH=/repo
   RUNNER_CONTAINER_M2_PATH=/m2
   MVN_VOLUME=vol
-  RUNNER_IMAGE_NAME=img
+  IMAGE_NAME=img
   TOKEN=oauth
   RUNNER_GIT_USER_NAME=Arne
   RUNNER_GIT_USER_EMAIL=a@b.c
@@ -2625,7 +2625,7 @@ EOF
   RUNNER_CONTAINER_REPO_PATH=/repo
   RUNNER_CONTAINER_M2_PATH=/m2
   MVN_VOLUME=vol
-  RUNNER_IMAGE_NAME=img
+  IMAGE_NAME=img
   TOKEN=oauth
   RUNNER_GIT_USER_NAME=Arne
   RUNNER_GIT_USER_EMAIL=a@b.c
@@ -2670,7 +2670,7 @@ EOF
   RUNNER_CONTAINER_REPO_PATH=/repo
   RUNNER_CONTAINER_M2_PATH=/m2
   MVN_VOLUME=vol
-  RUNNER_IMAGE_NAME=img
+  IMAGE_NAME=img
   TOKEN=oauth_value
   RUNNER_GIT_USER_NAME=Arne
   RUNNER_GIT_USER_EMAIL=a@b.c
@@ -6943,6 +6943,133 @@ EOF
   diff <(jq -S '.' "$RUN_DIR/discovery.json") <(jq -S '.' <<<'["alpha","beta"]')
 }
 
+# === ensure_image — the image built is the image dispatched (invariant 4) ===
+
+# A consumer whose runner image ensure_image builds through the real
+# build-image.sh, and the globals run_sandbox_container reads. A docker shim on
+# PATH stands in for the daemon and keeps one file per image tag under
+# $DOCKER_IMAGES holding its context-hash label: `build` records its argv and
+# writes the label under its --tag, `image inspect <name>` prints that image's
+# label (failing when no image has the name), and `run` records its argv.
+_setup_ensure_image_test() {
+  unset RUNNER_IMAGE_NAME
+  CONSUMER="$BATS_TEST_TMPDIR/consumer"
+  mkdir -p "$CONSUMER/.formann" "$CONSUMER/runner" "$CONSUMER/src" \
+    "$CONSUMER/docs/formann/issue-tracker"
+  printf 'FROM scratch\n' >"$CONSUMER/runner/Dockerfile"
+  mkdir -p "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/images"
+  export DOCKER_IMAGES="$BATS_TEST_TMPDIR/images"
+  export DOCKER_BUILD_ARGV="$BATS_TEST_TMPDIR/docker-build-argv"
+  export DOCKER_RUN_ARGV="$BATS_TEST_TMPDIR/docker-run-argv"
+  cat >"$BATS_TEST_TMPDIR/bin/docker" <<'DOCKEREOF'
+#!/usr/bin/env bash
+case "$1" in
+  image)
+    image="${*: -1}"
+    [ -f "$DOCKER_IMAGES/$image" ] || exit 1
+    cat "$DOCKER_IMAGES/$image"
+    ;;
+  build)
+    printf '%s\n' "$@" >"$DOCKER_BUILD_ARGV"
+    label="" tag=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --label) label="${2#formann.runner.context-hash=}"; shift ;;
+        --tag)   tag="$2"; shift ;;
+      esac
+      shift
+    done
+    printf '%s\n' "$label" >"$DOCKER_IMAGES/$tag"
+    ;;
+  run)
+    printf '%s\n' "$@" >"$DOCKER_RUN_ARGV"
+    while [ $# -gt 0 ]; do
+      [ "$1" = "--cidfile" ] && { echo cid >"$2" 2>/dev/null || true; }
+      shift
+    done
+    ;;
+esac
+exit 0
+DOCKEREOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  HOST_REPO="$CONSUMER"
+  HOST_CHECKOUT="$CONSUMER"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR"
+  NET_NAME=none
+  RUNNER_CONTAINER_REPO_PATH=/repo
+  RUNNER_CONTAINER_M2_PATH=/m2
+  MVN_VOLUME=vol
+  TOKEN=oauth
+  RUNNER_GIT_USER_NAME=Arne
+  RUNNER_GIT_USER_EMAIL=a@b.c
+  RUNNER_INTERRUPTED=0
+  RUNNER_KILL_GRACE_SECONDS=1
+  IN_FLIGHT_CID_FILE=""
+}
+
+# The --tag value of the last docker build.
+_built_image() {
+  awk 'prev == "--tag" { print; exit } { prev = $0 }' "$DOCKER_BUILD_ARGV"
+}
+
+# The image argument of the last docker run (the arg before the command).
+_dispatched_image() {
+  awk '$0 == "claude" { print prev; exit } { prev = $0 }' "$DOCKER_RUN_ARGV"
+}
+
+@test "ensure_image — without RUNNER_IMAGE_NAME the dispatch runs in the consumer's image build-image.sh built" {
+  _setup_ensure_image_test
+  cd "$CONSUMER/src"
+
+  ensure_image >/dev/null
+  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch" claude -p "/implement f/01"
+
+  [ "$(_built_image)" = "$(runner_image_name "$CONSUMER")" ]
+  [ "$(_dispatched_image)" = "$(_built_image)" ] || {
+    echo "built '$(_built_image)', dispatched '$(_dispatched_image)'" >&2
+    return 1
+  }
+}
+
+@test "ensure_image — RUNNER_IMAGE_NAME names both the built and the dispatched image" {
+  _setup_ensure_image_test
+  export RUNNER_IMAGE_NAME=custom-image
+  cd "$CONSUMER/src"
+
+  ensure_image >/dev/null
+  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch" claude -p "/implement f/01"
+
+  [ "$(_built_image)" = "custom-image" ]
+  [ "$(_dispatched_image)" = "custom-image" ]
+}
+
+@test "ensure_image — builds HOST_REPO's image whatever the working directory" {
+  _setup_ensure_image_test
+  cd "$BATS_TEST_TMPDIR"
+
+  run ensure_image
+  assert_success
+  [ "$(_built_image)" = "$(runner_image_name "$CONSUMER")" ]
+}
+
+@test "ensure_image — logs the image name and the first 12 hex of its context-hash label" {
+  _setup_ensure_image_test
+  cd "$CONSUMER/src"
+
+  # ensure_image's stdout is the channel tee'd into runner.log.
+  ensure_image >"$BATS_TEST_TMPDIR/stdout"
+
+  local name hash
+  name="$(runner_image_name "$CONSUMER")"
+  hash="$(runner_context_hash "$CONSUMER")"
+  [ "$(grep -c 'Runner image:' "$BATS_TEST_TMPDIR/stdout")" -eq 1 ]
+  [[ "$(grep 'Runner image:' "$BATS_TEST_TMPDIR/stdout")" == *"Runner image: $name (context-hash ${hash:0:12})" ]] || {
+    echo "stdout was: $(cat "$BATS_TEST_TMPDIR/stdout")" >&2
+    return 1
+  }
+}
+
 # Regression: framework-shaped skills (`.claude/skills/implement` and friends)
 # are symlinks resolving through `.formann/` to the Formann checkout. Without
 # the `.formann` bind-mount, the container sees a dangling symlink and claude
@@ -6953,7 +7080,7 @@ EOF
   HOST_RUNNER_STATE="$BATS_TEST_TMPDIR/runner-state"
   MVN_VOLUME="test-mvn"
   NET_NAME="test-net"
-  RUNNER_IMAGE_NAME="test-image"
+  IMAGE_NAME="test-image"
   TOKEN="test-token"
   RUNNER_INTERRUPTED=0
   IN_FLIGHT_CID_FILE=""
@@ -6982,7 +7109,7 @@ EOF
   HOST_RUNNER_STATE="$BATS_TEST_TMPDIR/runner-state"
   MVN_VOLUME="test-mvn"
   NET_NAME="test-net"
-  RUNNER_IMAGE_NAME="test-image"
+  IMAGE_NAME="test-image"
   TOKEN="test-token"
   RUNNER_INTERRUPTED=0
   IN_FLIGHT_CID_FILE=""
@@ -7016,7 +7143,7 @@ _setup_mount_capture() {
   HOST_RUNNER_STATE="$BATS_TEST_TMPDIR/runner-state"
   MVN_VOLUME="test-mvn"
   NET_NAME="test-net"
-  RUNNER_IMAGE_NAME="test-image"
+  IMAGE_NAME="test-image"
   TOKEN="test-token"
   RUNNER_INTERRUPTED=0
   IN_FLIGHT_CID_FILE=""

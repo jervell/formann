@@ -1744,12 +1744,31 @@ check_manifest() {
   fi
 }
 
-# 4. Runner image exists or is built. `build-image.sh` is idempotent.
+# 4. Runner image is current: `build-image.sh` builds the consumer's image
+#    when it is missing or its context-hash label differs from the consumer's
+#    runner/ build context, and prints the image name. That printed name is
+#    IMAGE_NAME, the image every dispatch runs in, so the image built and the
+#    image dispatched are one value. build-image.sh runs from $HOST_REPO so it
+#    resolves the same consumer root as the runner.
+#
+#    Then runner.log records the image the run uses, with the context hash
+#    read from the image's own label. A missing label reads as `unknown`
+#    rather than failing the invariant: the line is a record, not a check.
 ensure_image() {
-  if ! "$HERE/build-image.sh" >/dev/null; then
+  if ! IMAGE_NAME="$(cd "$HOST_REPO" && "$HERE/build-image.sh")"; then
     fail_invariant "runner-image" \
-      "build-image.sh failed to ensure image $RUNNER_IMAGE_NAME"
+      "build-image.sh failed to ensure image $(runner_image_name "$HOST_REPO")"
   fi
+  if [ -z "${IMAGE_NAME:-}" ]; then
+    fail_invariant "runner-image" \
+      "build-image.sh produced empty image name"
+  fi
+  local context_hash
+  context_hash="$(docker image inspect \
+    --format "{{ index .Config.Labels \"$RUNNER_CONTEXT_HASH_LABEL\" }}" \
+    "$IMAGE_NAME" 2>/dev/null)" || true
+  context_hash="${context_hash:0:12}"
+  echo "[$(now_clock)] Runner image: $IMAGE_NAME (context-hash ${context_hash:-unknown})"
 }
 
 # 5. Per-feature mvn cache volume exists. `ensure-mvn-cache.sh` is idempotent.
@@ -2094,7 +2113,7 @@ run_sandbox_container() {
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL" \
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL") \
     --env-file <(printf '%s\n' "$binding_env") \
-    "$RUNNER_IMAGE_NAME" \
+    "$IMAGE_NAME" \
     "$@" \
     >"$log_base.stdout.jsonl" 2>"$log_base.stderr.log" &
   local docker_pid=$!

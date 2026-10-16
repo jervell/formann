@@ -309,26 +309,27 @@ verdict is independent); a failed step returns 1 and writes an abort flag.
 | File | Role |
 |------|------|
 | `Dockerfile` | **Consumer-owned** (lives at `<consumer>/runner/Dockerfile`, not in the framework — see ADR-0002). The installer scaffolds an initial Debian-slim image with JDK 25, Maven, git, the `claude` CLI, a non-root user (UID/GID 1000), workdir `/repo`, and an inlined entrypoint that suppresses kernel core dumps (`ulimit -c 0`). The consumer edits it for their project. |
-| `build-image.sh` | Builds the consumer's image idempotently from `<consumer>/runner/Dockerfile`. Walks `$PWD` upward to find the consumer root (`.formann` ancestor), so it works from anywhere inside the consumer repo. Reuses the cached image. `--rebuild` forces a build that still reuses the layer cache (cheap; picks up Dockerfile edits but keeps installed tools at their cached versions). `--fresh` forces a build with no layer cache and a base-image re-pull, so every tool — apt packages, the JDK, Node, and the Claude CLI — re-resolves to its current published version. Prints the image name on stdout. |
+| `build-image.sh` | Builds the consumer's image idempotently from `<consumer>/runner/Dockerfile`. Walks `$PWD` upward to find the consumer root (`.formann` ancestor), so it works from anywhere inside the consumer repo. Builds when no image exists under the consumer's image name or when the image's `formann.runner.context-hash` label no longer matches the hash of `<consumer>/runner/` (any file edited, added, removed, renamed or made (non-)executable); that build reuses the layer cache, so an unchanged recipe costs nothing. Otherwise reuses the image. `--rebuild` forces a build that still reuses the layer cache (cheap; keeps installed tools at their cached versions). `--fresh` forces a build with no layer cache and a base-image re-pull, so every tool — apt packages, the JDK, Node, and the Claude CLI — re-resolves to its current published version. Prints the image name on stdout. |
 | `setup-network.sh` | Creates the sandbox bridge network and applies the RFC1918-deny outbound policy. Idempotent. Prints the network name on stdout. |
 | `retrieve-secret.sh` | Verbatim vendor of `arne/claude-code-api-key-setup`'s generic Keychain/libsecret/keyctl reader. Provenance in `NOTES.md`. |
 | `retrieve-token.sh` | Wraps `retrieve-secret.sh` with the OAuth-token service/account constants from `lib.sh`. Prints the token on stdout, fails fast with a populate-the-Keychain hint on stderr. Token never echoed beyond stdout. |
 | `ensure-mvn-cache.sh` | Per-feature mvn cache helper. Creates `runner-mvn-cache-<slug>` on first use (and chowns it to uid 1000 so the non-root container can write); idempotent on re-invocation. Prints the volume name on stdout. |
-| `lib.sh` | Shared constants (image, network, bridge, subnet, iptables chain, OAuth keychain coords, mvn-cache prefix, container `~/.m2` path). Source of truth for the names below. |
+| `lib.sh` | Shared constants (network, bridge, subnet, iptables chain, OAuth keychain coords, mvn-cache prefix, container `~/.m2` path) and the helpers that derive the per-consumer image name (`runner_image_name`) and the `runner/` context hash (`runner_context_hash`). Source of truth for the names below. |
 | `NOTES.md` | Provenance of vendored files (currently `retrieve-secret.sh`). Re-vendor instructions live there. |
 | `tests/` | `bats` suite covering `tracker-snapshot` (including `--list`), the runner's pure-logic functions (`classify_outcome`, `next_eligible_ref`, `next_eligible_feature`, `classify_item_action`, `walk_post_implement_steps`, `propagate_feature`, `format_multi_feature_summary_md`), the outer drain loop (`run_drain`, `drain_one_feature`), and `run_loop` mechanics (drain / interrupt / abort-flag skipping / feature-gate refusals) with mocked dispatch. Real-Docker exercising is the job of slice 08's smoke test. |
 | `tests/fixtures/synthetic-drain/` | Two-issue micro-feature template the maintainer installs into `.features/synthetic-drain/` for the loop's live demo. Reused by slice 08. See its README for the runbook. |
 
 ## Stable Docker asset names
 
-Both the image and the bridge network use the same human-readable name —
-they live in different Docker namespaces, so no collision. The Linux bridge
+The network, bridge, subnet and iptables chain are shared by every consumer on
+the host and have fixed names. The image is per-consumer (see
+[Per-consumer image name](#per-consumer-image-name)). The Linux bridge
 interface name is shorter to fit `IFNAMSIZ` (15 chars). All values live in
 `lib.sh`.
 
 | Asset | Name |
 |-------|------|
-| Image | `afk-runner-sandbox` |
+| Image | `formann-runner-<dir>-<pathhash>` (per consumer) |
 | Docker network | `afk-runner-sandbox` |
 | Linux bridge interface | `afk-rnr-br0` |
 | Bridge subnet | `192.168.219.0/24` |
@@ -413,18 +414,53 @@ Plain invocations keep using the default `anthropic` entry.
 
 ## Per-consumer image name
 
-`RUNNER_IMAGE_NAME` defaults to `afk-runner-sandbox`. Two consumer repos on one
-host each build their own `runner/Dockerfile` under that same tag, so the
-second build silently replaces the first. Override the name per consumer:
+Each consumer gets its own image, so two consumer repos on one host, each with
+its own `runner/Dockerfile`, never run in each other's image. The default name
+is `formann-runner-<dir>-<pathhash>`:
+
+- `<dir>` is the basename of the consumer root (the `.formann` ancestor),
+  lowercased and cleaned to Docker's tag rules: anything outside
+  `[a-z0-9._-]` becomes `-`, runs of separators collapse to one `-`, edge
+  separators are stripped, and the result is cut to 40 characters. A basename
+  that cleans to nothing leaves `formann-runner-<pathhash>`.
+- `<pathhash>` is the first 8 hex characters of the SHA-256 of the consumer
+  root's physical path (symlinks resolved), so one checkout always yields one
+  name and two checkouts with the same basename yield different ones.
+
+`build-image.sh` and the runner resolve the name the same way, so the image
+built is the image dispatched in. `RUNNER_IMAGE_NAME`, when set, overrides the
+default:
 
 ```sh
-# build and run against a consumer-specific image
+# build and run against a named image instead of the per-consumer default
 RUNNER_IMAGE_NAME=my-project-runner .formann/runner/build-image.sh
 RUNNER_IMAGE_NAME=my-project-runner .formann/runner/run-the-queue.sh --feature <slug> …
 ```
 
-Plain invocations keep using `afk-runner-sandbox`. The bridge network, bridge
-interface and subnet are unaffected; consumers share those by design.
+### When the image is rebuilt
+
+Every build labels the image `formann.runner.context-hash` with a SHA-256 over
+everything under `<consumer>/runner/` (each file's relative path, content and
+executable bit; a symlink is hashed by its target path, not followed).
+`build-image.sh` builds when:
+
+- no image exists under the name (a consumer's first run);
+- the image's label differs from the current hash, i.e. a file under `runner/`
+  was edited, added, removed, renamed or had its executable bit flipped; or
+- `--rebuild` or `--fresh` is given.
+
+Only `--fresh` bypasses the layer cache (and re-pulls the base image), so an
+unchanged recipe costs nothing otherwise. With no change and no flag,
+pre-flight builds nothing. Tool freshness without a `runner/` change (apt
+packages, the JDK, the Claude CLI) stays `--fresh`'s job.
+
+The runner records the image it dispatched in as one line of `runner.log`,
+right after the image pre-flight check: `Runner image: <name> (context-hash
+<12 hex>)`. The hash is read from the image itself.
+
+A pre-existing `afk-runner-sandbox` image is left alone; each consumer builds
+its own on its first run. The bridge network, bridge interface and subnet are
+unaffected; consumers share those by design.
 
 ## Per-feature mvn cache
 
@@ -441,9 +477,10 @@ The runner script in slice 04 invokes these helpers automatically. To
 verify them by hand:
 
 ```sh
-# Build (or rebuild) the image. Run from anywhere inside the consumer repo;
-# the script locates the consumer root via the .formann indirection symlink.
-.formann/runner/build-image.sh
+# Build the image if it is missing or runner/ has changed since it was built.
+# Run from anywhere inside the consumer repo; the script locates the consumer
+# root via the .formann indirection symlink and prints the image name.
+IMG="$(.formann/runner/build-image.sh)"
 # .formann/runner/build-image.sh --rebuild   # rebuild, reusing the layer cache
 # .formann/runner/build-image.sh --fresh     # rebuild from scratch; re-resolves
 #                                             # every tool (incl. the Claude CLI)
@@ -453,14 +490,14 @@ verify them by hand:
 .formann/runner/setup-network.sh
 
 # Sanity-check the image:
-docker run --rm afk-runner-sandbox id          # uid=1000(runner) ...
-docker run --rm afk-runner-sandbox mvn --version
-docker run --rm afk-runner-sandbox claude --version
+docker run --rm "$IMG" id          # uid=1000(runner) ...
+docker run --rm "$IMG" mvn --version
+docker run --rm "$IMG" claude --version
 
 # Sanity-check the network policy:
-docker run --rm --network afk-runner-sandbox afk-runner-sandbox \
+docker run --rm --network afk-runner-sandbox "$IMG" \
   curl -sSf -m 10 -o /dev/null https://repo.maven.apache.org && echo PUBLIC_OK
-docker run --rm --network afk-runner-sandbox afk-runner-sandbox \
+docker run --rm --network afk-runner-sandbox "$IMG" \
   curl -sS -m 5 -o /dev/null http://10.0.0.1 && echo LEAK || echo BLOCKED
 ```
 

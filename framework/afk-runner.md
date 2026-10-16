@@ -328,7 +328,7 @@ Fail-fast checks run before the loop starts. A failure prints `runner: <invarian
 | 2a | `runner-checkout`  | Runner-checkout clone exists or can be cloned. Runs unconditionally (all modes), before the drain/narrowed split. |
 | 2b | `runner-checkout`  | Runner-checkout is sync'd to the target branch tip. **Drain mode**: deferred to the per-feature loop. |
 | 3  | `docker-daemon`    | `docker info` succeeds.                                                                         |
-| 4  | `runner-image`     | The sandbox image exists or builds.                                                             |
+| 4  | `runner-image`     | The consumer's sandbox image exists and matches `runner/`, else it is built.                    |
 | 4b | `manifest`         | `runner/manifest.md` (Consumer-owned) exists and `resolve_manifest` validates every entry's label + prompt path. |
 | 5  | `mvn-cache`        | Per-feature Docker volume exists (created on first use). **Drain mode**: deferred to the per-feature loop — features the runner skips don't get a cache volume. |
 | 6  | `sandbox-network`  | Custom Docker bridge + RFC1918-deny rules in place.                                            |
