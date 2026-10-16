@@ -10,6 +10,10 @@ Interview me relentlessly about every aspect of this plan until we reach a share
 Ask the questions one at a time, waiting for feedback on each question before continuing.
 
 If a question can be answered by exploring the codebase, explore the codebase instead.
+If you can answer it yourself by reasoning — one correct solution, no real trade-off —
+state the answer declaratively as part of the design instead of asking. Only real forks
+become questions: defensible options on both sides, where the choice depends on the
+user's preference or knowledge you don't have.
 
 </what-to-do>
 
