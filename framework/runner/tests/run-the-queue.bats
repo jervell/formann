@@ -7001,6 +7001,39 @@ EOF
   grep -qFx -- "$HOST_REPO/docs/formann:/repo/docs/formann:ro" "$args_file"
 }
 
+# Pin `--init`: the dispatch container's PID 1 must be an init that reaps
+# orphaned processes. Without it `claude` is PID 1 and never reaps them, so a
+# command the agent detaches (`nohup … &`) stays a zombie after it exits, and
+# a `while kill -0 <pid>` wait on it never ends. `--init` must come before the
+# image name: anything after the image is the container's command, not a
+# docker option.
+@test "run_sandbox_container — runs the container with --init so orphaned processes are reaped" {
+  HOST_REPO="$BATS_TEST_TMPDIR/host"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/checkout"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR/runner-state"
+  MVN_VOLUME="test-mvn"
+  NET_NAME="test-net"
+  RUNNER_IMAGE_NAME="test-image"
+  TOKEN="test-token"
+  RUNNER_INTERRUPTED=0
+  IN_FLIGHT_CID_FILE=""
+  mkdir -p "$HOST_REPO" "$HOST_CHECKOUT" "$HOST_RUNNER_STATE"
+
+  local args_file="$BATS_TEST_TMPDIR/docker-args"
+  docker() {
+    printf '%s\n' "$@" > "$args_file"
+    return 0
+  }
+
+  run_sandbox_container "$BATS_TEST_TMPDIR/log" claude -p "/implement f/01"
+
+  local init_line image_line
+  init_line="$(grep -nFx -- "--init" "$args_file" | cut -d: -f1)"
+  image_line="$(grep -nFx -- "test-image" "$args_file" | cut -d: -f1)"
+  [ -n "$init_line" ]
+  [ "$init_line" -lt "$image_line" ]
+}
+
 # Helper: minimal `run_sandbox_container` test scaffolding. Sets the globals
 # the function reads, populates `$HOST_REPO/.claude/<subs>` for each requested
 # subdir, stubs `docker` to capture its argv into $args_file, and runs the
