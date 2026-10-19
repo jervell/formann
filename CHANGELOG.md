@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - AFK dispatches can no longer end their turn waiting on a background build: background Bash is disabled in the sandbox and foreground Bash may run for up to an hour.
+- AFK dispatches no longer hang waiting on a process they detached themselves (`nohup … &`): the sandbox container runs with `--init`, so a finished orphan is reaped instead of lingering as a zombie that a `kill -0` wait never sees exit.
 
 ## [0.6.0] - 2026-08-20
 

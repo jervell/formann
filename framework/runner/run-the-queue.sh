@@ -2079,7 +2079,16 @@ run_sandbox_container() {
   local binding_env
   binding_env="$(collect_binding_env "$HOST_REPO/docs/formann/issue-tracker/sandbox-env")" || return 1
 
+  # `--init` puts Docker's built-in init (tini) at PID 1, with the image's
+  # entrypoint as its child. PID 1 inherits every process whose parent has
+  # exited, and only PID 1 can collect such an orphan's exit status once it
+  # finishes. Without `--init`, `claude` ends up as PID 1 (images commonly
+  # `exec` their way to the command) and never collects them, so a process the
+  # agent detached with `nohup … &` stays behind as a zombie after it exits.
+  # A zombie still has its PID, so a `while kill -0 <pid>` wait on it never
+  # ends and the dispatch hangs until that command's Bash timeout.
   docker run --rm \
+    --init \
     --cidfile "$cid_file" \
     --network "$NET_NAME" \
     -v "$HOST_CHECKOUT:$RUNNER_CONTAINER_REPO_PATH" \
