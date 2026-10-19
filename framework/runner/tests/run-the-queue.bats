@@ -5375,6 +5375,75 @@ setup_propagate_test() {
   [ "$RUNNER_LAST_PROPAGATION" = "" ]
 }
 
+@test "propagate_feature — error: dispatch left HEAD on another branch, publishes nothing, names the branch and the recovery" {
+  # Regression (CoopKey #242): the dispatched agent ran `git checkout -b
+  # <its-own-branch>` and committed there. HEAD moved, so the commit-delta
+  # gate called propagate_feature, which published refs/heads/f — unchanged —
+  # and reported `parked`. The commits were then left behind by the next
+  # iteration's sync while the issue had been gated `done`.
+  setup_propagate_test
+  git -C "$HOST_CHECKOUT" checkout --quiet -b 242-own-branch
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "work for f/01 on the agent's own branch"
+
+  RUNNER_LAST_PROPAGATION="stale"
+  local err_file="$BATS_TEST_TMPDIR/propagate-err.txt"
+  local propagate_rc=0
+  propagate_feature "f" >"$err_file" 2>&1 || propagate_rc=$?
+
+  [ "$propagate_rc" -ne 0 ]
+  [ "$RUNNER_LAST_PROPAGATION" = "" ]
+  ! git -C "$HOST_REPO" rev-parse --verify --quiet refs/remotes/runner/f >/dev/null
+  ! grep -q "parked" "$err_file"
+  grep -q "propagation error" "$err_file"
+  grep -q "242-own-branch" "$err_file"
+  grep -q -- "+HEAD:refs/heads/runner-rescue/f" "$err_file"
+}
+
+@test "propagate_feature — error: dispatch left HEAD detached, publishes nothing" {
+  setup_propagate_test
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "tracker: f/01 → in-review"
+  git -C "$HOST_CHECKOUT" checkout --quiet --detach
+  git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+    commit --allow-empty --quiet -m "work on a detached HEAD"
+
+  local err_file="$BATS_TEST_TMPDIR/propagate-err.txt"
+  local propagate_rc=0
+  propagate_feature "f" >"$err_file" 2>&1 || propagate_rc=$?
+
+  [ "$propagate_rc" -ne 0 ]
+  ! git -C "$HOST_REPO" rev-parse --verify --quiet refs/remotes/runner/f >/dev/null
+  grep -q "detached HEAD" "$err_file"
+}
+
+@test "dispatch_one — a dispatch that commits on its own branch halts with propagation-error before the walk, never reporting parked" {
+  setup_dispatch_one_test
+  install_afk_snapshots done
+  setup_propagate_test
+  run_dispatch_container() {
+    git -C "$HOST_CHECKOUT" checkout --quiet -b 242-own-branch
+    git -C "$HOST_CHECKOUT" -c user.email=t@t -c user.name=t \
+      commit --allow-empty --quiet -m "work for f/01 on the agent's own branch"
+    return 0
+  }
+  local walked="$BATS_TEST_TMPDIR/walked"
+  run_item_container() { touch "$walked"; return 0; }
+
+  RUN_STOP_REASON=""
+  local out_file="$BATS_TEST_TMPDIR/dispatch-out.txt"
+  local rc=0
+  dispatch_one "f" "01" "$TEST_RUN_DIR" >"$out_file" 2>&1 || rc=$?
+
+  [ "$rc" -ne 0 ]
+  [ "$RUN_STOP_REASON" = "propagation-error" ]
+  [ ! -e "$walked" ]
+  ! grep -q "parked" "$out_file"
+  grep -q "implement → halt → FAIL" "$out_file"
+  # The agent's commit is still in the runner-checkout for recovery.
+  [ "$(git -C "$HOST_CHECKOUT" symbolic-ref --short HEAD)" = "242-own-branch" ]
+}
+
 @test "propagate_feature — error: git's own diagnostic survives to stderr" {
   # Regression: step 1 used to silence git's stderr via 2>/dev/null, so the
   # operator saw only the runner's generic "propagation error" line and the

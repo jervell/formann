@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the repo's `runner/` changes. `RUNNER_IMAGE_NAME` overrides the image name.
 
 ### Fixed
+- A dispatch that commits on a branch of its own (or a detached HEAD) no longer passes as `parked`: the runner publishes nothing, halts with `propagation-error`, and prints how to recover the commits. Before, it published the unchanged feature branch, the gate could mark the issue `done`, and the next sync left the commits behind in the runner-checkout.
 - AFK dispatches can no longer end their turn waiting on a background build: background Bash is disabled in the sandbox and foreground Bash may run for up to an hour.
 
 ## [0.6.0] - 2026-08-20
