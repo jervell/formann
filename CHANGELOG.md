@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - AFK runner gives each consumer repo its own sandbox image and rebuilds it when
   the repo's `runner/` changes. `RUNNER_IMAGE_NAME` overrides the image name.
+- Module maps: a one-page structural description of an area of code (modules,
+  responsibilities, primary flow, structural claims with their checks), kept as the
+  `README.md` beside the code. Contract in `framework/domain.md`; term in `GLOSSARY.md`.
+
+### Changed
+- `/to-prd` presents the module table and primary flow to the maintainer as their own
+  message and gets them approved before any PRD text is written; the PRD's Implementation
+  Decisions open with that design.
+- `/implement` reads the module maps of the areas it touches, writes a deterministic check
+  for each structural claim it realises, and creates or updates the module map of each area
+  whose modules changed.
+- `review-issue` and `review-feature` gain a map-check: a module map that no longer
+  describes the code, or a structural claim the code violates, is a finding.
+- Agent briefs and issue slices name modules by their names in the PRD's module table.
 
 ### Fixed
 - AFK dispatches can no longer end their turn waiting on a background build: background Bash is disabled in the sandbox and foreground Bash may run for up to an hour.

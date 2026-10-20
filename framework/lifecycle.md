@@ -34,6 +34,7 @@ Two scopes. Project-level artifacts accumulate across features; feature-level ar
 ├── .inbox.md                  ← captured ideas, deferred (optional, project-level)
 ├── .inbox/                    ← long-form bodies for inbox entries (optional)
 ├── .out-of-scope/             ← rejected feature concepts (project-level)
+├── <area>/README.md           ← module map of that area, beside its code (project-level)
 └── .features/
     ├── <feature>/             ← active features
     │   ├── PRD.md             ← spec (optional — absent for standalones)
@@ -41,7 +42,7 @@ Two scopes. Project-level artifacts accumulate across features; feature-level ar
     └── .archived/<feature>/   ← archived features (whole dir moved)
 ```
 
-Project-level artifacts shape and constrain feature work: `GLOSSARY.md`, `docs/adr/` (architectural decisions), `.out-of-scope/` (rejected concepts). Every pipeline stage reads from them; some stages write to them. Conventions for `GLOSSARY.md` and ADRs live in `docs/formann/domain.md`.
+Project-level artifacts shape and constrain feature work: `GLOSSARY.md`, `docs/adr/` (architectural decisions), module maps (the structure of each area of code), `.out-of-scope/` (rejected concepts). Every pipeline stage reads from them; some stages write to them. Conventions for `GLOSSARY.md`, ADRs and module maps live in `docs/formann/domain.md`.
 
 ## Inbox (optional)
 
@@ -57,7 +58,7 @@ Opt-in. Projects that don't want it just don't have an `.inbox.md`. See `docs/fo
 Reads `GLOSSARY.md`, `docs/adr/`. Writes updates to `GLOSSARY.md` as terms resolve; an ADR when a decision is hard to reverse, surprising without context, and a real trade-off.
 
 **2. PRD** — `/to-prd`
-Reads grilling context, `GLOSSARY.md`, `docs/adr/`. Writes `.features/<feature>/PRD.md` — problem, solution, user stories, decisions, out-of-scope. Synthesizes the grilling output into a written spec, with light module decomposition confirmed with the maintainer. The grilling carried the substantive design work; this stage records it.
+Reads grilling context, `GLOSSARY.md`, `docs/adr/`, the module maps of the areas touched. Writes `.features/<feature>/PRD.md` — problem, solution, user stories, decisions, out-of-scope. Synthesizes the grilling output into a written spec. The module design — a module table and the primary flow — is presented to the maintainer on its own and approved before the spec is written; the PRD records it. The grilling carried the substantive design work; this stage records it.
 
 **3. Slice** — `/to-issues`
 Reads PRD, `GLOSSARY.md`, `docs/adr/`. Writes one issue per vertical slice at `.features/<feature>/issues/NN-<slug>.md`, each in state `needs-triage`, with a category (`bug` or `enhancement`) and type (`AFK` or `HITL`, provisional).
@@ -66,7 +67,7 @@ Reads PRD, `GLOSSARY.md`, `docs/adr/`. Writes one issue per vertical slice at `.
 Reads issue, `GLOSSARY.md`, `docs/adr/`, `.out-of-scope/`. Writes updated state / category / type, an outcome-specific comment on the issue, an agent brief on `ready-for-*`, and a `.out-of-scope/` entry on `wontfix` of an enhancement. Resolves open questions in-session — type `HITL` and state `ready-for-human` describe the work, never "triage isn't finished".
 
 **5. Implement** — `/implement`
-Agent or human reads the issue, `GLOSSARY.md`, `docs/adr/`. Writes code and tests; a new ADR if implementation surfaces a hard-to-reverse decision. When shipped, sets state to `in-review` and posts a summary comment containing an **Evidence** block that maps each acceptance criterion to how it was demonstrated (test names or quoted command output for `verified` criteria; a one-line ask for `[human]` criteria), with a `[x]`/`[ ]` tick marking the agent's claim per criterion — see `/implement` for the format. HITL issues check in at the gates named in the brief.
+Agent or human reads the issue, `GLOSSARY.md`, `docs/adr/`, the module maps of the areas touched. Writes code and tests; a check for each structural claim the PRD's module table makes about a module the issue lands; the module map of each area whose modules changed; a new ADR if implementation surfaces a hard-to-reverse decision. When shipped, sets state to `in-review` and posts a summary comment containing an **Evidence** block that maps each acceptance criterion to how it was demonstrated (test names or quoted command output for `verified` criteria; a one-line ask for `[human]` criteria), with a `[x]`/`[ ]` tick marking the agent's claim per criterion — see `/implement` for the format. HITL issues check in at the gates named in the brief.
 
 **6. Verify** — `/triage`
 Maintainer reads the shipped work + the summary's Evidence block. Trusts `[x]` (verified) coverage by default; walks each `[ ]` (`[human]`) row, posts a `### Verification` comment recording the walk, and sets state to `done` (accept) or `ready-for-agent` with rework notes (reject). A missing or unmappable Evidence block is grounds to reject. `done` is the per-issue signoff; final feature-level signoff happens at Archive. The maintainer may invoke the `review-issue` agent beforehand — decision-neutral, console-only, surfaces bug-hunt / intent-check / Evidence-check findings without touching state. Its output is an input to the maintainer's verify decision; `/triage` itself does not call it.
@@ -79,10 +80,10 @@ The feature-level final human gate. Reads the feature dir; collects every `[ ]` 
 | Stage     | Command            | Reads                                                     | Writes                                                                                              |
 | --------- | ------------------ | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Grill     | `/grill-with-docs` | `GLOSSARY.md`, `docs/adr/`                                | `GLOSSARY.md` updates; new ADR (when warranted)                                                     |
-| PRD       | `/to-prd`          | grilling output, `GLOSSARY.md`, `docs/adr/`               | `.features/<feature>/PRD.md`                                                                         |
+| PRD       | `/to-prd`          | grilling output, `GLOSSARY.md`, `docs/adr/`, module maps  | `.features/<feature>/PRD.md` (with the approved module table and primary flow)                       |
 | Slice     | `/to-issues`       | PRD, `GLOSSARY.md`, `docs/adr/`                           | `.features/<feature>/issues/NN-*.md` (state `needs-triage`)                                          |
 | Triage    | `/triage`          | issue, `GLOSSARY.md`, `docs/adr/`, `.out-of-scope/`       | state / category / type; outcome comment; agent brief on `ready-for-*`; `.out-of-scope/` entry on `wontfix` of an enhancement |
-| Implement | `/implement`       | issue, `GLOSSARY.md`, `docs/adr/`                         | code, tests; new ADR (if surfaced); state `in-review`; summary comment with Evidence block          |
+| Implement | `/implement`       | issue, `GLOSSARY.md`, `docs/adr/`, module maps            | code, tests, checks for structural claims, module map updates; new ADR (if surfaced); state `in-review`; summary comment with Evidence block |
 | Verify    | `/triage`          | shipped work + summary's Evidence block                   | Verification comment with walked-row verdicts; state `done` or `ready-for-agent` (with rework notes) |
 | Archive   | `/triage`          | feature dir + each `done` issue's Evidence block          | per-issue Verification comments for unwalked rows; move `.features/<feature>/` → `.features/.archived/<feature>/` |
 
@@ -168,7 +169,7 @@ See [`afk-runner.md`](afk-runner.md) for the architecture, binding contract, out
 - **`docs/formann/issue-tracker/BINDING.md`** — issue-tracker binding (core). Implementation-specific facts for PRDs, issues, and the feature workspace.
 - **`docs/formann/inbox.md`** — inbox conventions (optional). Pre-lifecycle capture surface.
 - **`docs/formann/triage-states.md`** — triage state vocabulary glossary.
-- **`docs/formann/domain.md`** — domain documentation conventions (`GLOSSARY.md`, `docs/adr/`).
+- **`docs/formann/domain.md`** — domain documentation conventions (`GLOSSARY.md`, `docs/adr/`, module maps).
 - **`framework/skills/`** — operational instructions for agents:
   - `to-prd/SKILL.md` — produce a PRD from grilling.
   - `to-issues/SKILL.md` — slice a PRD or parent issue into vertical-slice issues.

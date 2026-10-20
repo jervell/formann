@@ -21,20 +21,24 @@ An issue reference.
 
 1. **Verify eligibility.** All of the issue's blockers must be in state `done`. If any are not, report to the user and stop. (Console only — don't post a tracker comment.)
 
-2. **Gather context.** Read the issue (body, agent brief, comments) per the **Read the issue** verb in `docs/formann/issue-tracker/BINDING.md`. Read the parent PRD per the **Read the feature** verb in the same file. Read recent commits to detect partial progress. Explore the relevant areas of the codebase using the domain glossary and respecting ADRs.
+2. **Gather context.** Read the issue (body, agent brief, comments) per the **Read the issue** verb in `docs/formann/issue-tracker/BINDING.md`. Read the parent PRD per the **Read the feature** verb in the same file. Read recent commits to detect partial progress. Explore the relevant areas of the codebase using the domain glossary, respecting ADRs, and reading the module maps of the areas you touch (`docs/formann/domain.md`).
 
 3. **Implement.** Use `/tdd`. For type `HITL` issues, pause at each gate listed in the brief and check in with the maintainer before proceeding.
 
-4. **Verify (self-audit).** Run the project's feedback loops (build, tests) in the foreground and wait for them — a long suite gets a long Bash timeout, not `run_in_background`. Then enumerate every acceptance criterion from the agent brief and classify each into one of two lanes:
+   Each structural claim the PRD's module table makes about a module this issue builds or changes gets a deterministic check — an architecture test, a lint rule, or a script — using whatever the project already has for such checks (its `CLAUDE.md` names it). The check is written red/green like any test: show it failing against code that breaks the claim, then passing. When no deterministic check is possible with what the project has, don't build new tooling for it; record the claim as `unchecked` in the module map in step 4.
+
+4. **Map.** Update the module map of every area where this issue added, removed or changed a module (`docs/formann/domain.md` has the contract). If the area has no map and this issue lands a module from the PRD's module table, create one. Keep the map to what this issue can vouch for: if it already disagrees with code you did not change, say so in the implementation comment rather than widening the change.
+
+5. **Verify (self-audit).** Run the project's feedback loops (build, tests) in the foreground and wait for them — a long suite gets a long Bash timeout, not `run_in_background`. Then enumerate every acceptance criterion from the agent brief and classify each into one of two lanes:
 
    - **`verified`** — a test exercises it, OR a one-shot command (`ls`, `cat`, `grep`, `bash <script> | jq`, etc.) settles it. A passing test and a quoted command result are equally good evidence; pick whichever is natural. A **skipped or environment-guarded** test does not count as exercising the criterion — a green summary whose relevant scenarios were skipped is not evidence.
    - **`[human]`** — for a criterion the agent cannot settle here, in either of two ways: (a) the verdict requires human judgment no command can produce (UI feel, layout, copy quality, semantic correctness of generated prose, "does this read naturally to audience X"); or (b) a real command or test settles it but **cannot run in this environment** — it needs a resource only the maintainer can supply (Docker-in-Docker, a credential, a manual or operator-attended step the dispatch container can't provide). For (b), cite the skeleton/artifact the maintainer drives as the Evidence, with the one-line ask. Existence, content-contains, structural shape, and script-output checks that *do* run here are **not** `[human]` — settle them with a command.
 
-   If a criterion fits neither lane, return to step 3 and add the missing test or verification. If verify surfaces a defect — failing test, broken build, AC that doesn't hold — fix it, then re-run the full feedback loop from the top. Spot-checking only the fixed item is not enough; the Evidence block must reflect the most recent clean end-to-end run. The output of this audit is the Evidence block published in step 6.
+   If a criterion fits neither lane, return to step 3 and add the missing test or verification. If verify surfaces a defect — failing test, broken build, AC that doesn't hold — fix it, then re-run the full feedback loop from the top. Spot-checking only the fixed item is not enough; the Evidence block must reflect the most recent clean end-to-end run. The output of this audit is the Evidence block published in step 7.
 
-5. **Commit.** Per the project's commit conventions.
+6. **Commit.** Per the project's commit conventions.
 
-6. **Ship for review.** Set the state to `in-review`. Comment with Implementation. The comment **leads with** an `**Evidence**` block (one bullet per acceptance criterion, in brief order), followed by any narrative — "What changed:", "Decisions made:" — needed to explain the approach.
+7. **Ship for review.** Set the state to `in-review`. Comment with Implementation. The comment **leads with** an `**Evidence**` block (one bullet per acceptance criterion, in brief order), followed by any narrative — "What changed:", "Decisions made:" — needed to explain the approach. Name each module map created or updated in step 4.
 
    Each Evidence bullet has the shape `[tick] **"<criterion quote>":** <proof>`.
 

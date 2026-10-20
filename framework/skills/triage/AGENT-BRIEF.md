@@ -10,6 +10,7 @@ The issue may sit in `ready-for-agent` for days or weeks. The codebase will chan
 
 - **Do** describe interfaces, types, and behavioral contracts
 - **Do** name specific types, function signatures, or config shapes that the agent should look for or modify
+- **Do** name modules by their names in the PRD's module table when the feature has one, so the brief, the PRD and the module map agree
 - **Don't** reference file paths — they go stale
 - **Don't** reference line numbers
 - **Don't** assume the current implementation structure will remain the same

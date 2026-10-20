@@ -22,16 +22,17 @@ A feature name. If none is supplied in the prompt, default to the active feature
 
 ## What to read
 
-The PRD, all issue files in the feature, `GLOSSARY.md`, ADRs under `docs/adr/` relevant to the changed code, the diff, and changed files in full.
+The PRD, all issue files in the feature, `GLOSSARY.md`, ADRs under `docs/adr/` relevant to the changed code, the module map (`README.md`) of each changed area if it has one, the diff, and changed files in full.
 
 Read the diff first, then read changed files in full to understand surrounding patterns and invariants. Focus findings on the changed code, but informed by context.
 
 ## What to check
 
-Three kinds of finding apply (a fourth, evidence-check, is delegated to `review-issue`):
+Four kinds of finding apply (a fifth, evidence-check, is delegated to `review-issue`):
 
 - **Bug-hunt.** Bugs, logic errors, null safety, missing parameters, type-switch exhaustiveness, resource leaks, security issues (injection, XSS, auth bypass), thread safety, performance problems (N+1, memory leaks, inefficient algorithms), circular dependencies (a new constructor dependency can introduce cycles — especially suspect when the class already has cycle workarounds).
 - **Intent-check.** Does the implementation match what the PRD and issues asked for? Flag drift between intent and code, and gaps between PRD and what was shipped.
+- **Map-check.** Does the shipped code realise the PRD's module table, and do the module maps of the changed areas describe it? Flag a module from the table that was never landed or landed under another shape without a recorded decision; a map that lags the code; a structural claim the code violates; and a claim listed as checked whose check does not exist or does not hold it.
 - **Codebase-fit check.** Flag comments and names that narrate history instead of describing current behavior. Comments must describe what the code does or why it exists; names must describe what code does, not its trajectory. Triggers: comment phrases like *"previously"*, *"used to be"*, *"now Y"*, *"improved from the old version"*, *"kept for backwards compat"* (when no compat is actually needed); identifiers like `NewFoo`, `OldBar`, `LegacyHandler`, `ImprovedX`. Version control is the time machine, not comments.
 
 ## How to investigate

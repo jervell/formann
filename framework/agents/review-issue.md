@@ -25,17 +25,18 @@ An issue reference. If none was supplied — or none can be inferred unambiguous
 
 ## What to read
 
-The issue file (including the agent brief's acceptance criteria and the in-review summary's **Evidence** block), the PRD (light read for context), `GLOSSARY.md`, ADRs under `docs/adr/` relevant to the changed code, the diff, and changed files in full.
+The issue file (including the agent brief's acceptance criteria and the in-review summary's **Evidence** block), the PRD (light read for context), `GLOSSARY.md`, ADRs under `docs/adr/` relevant to the changed code, the module map (`README.md`) of each changed area if it has one, the diff, and changed files in full.
 
 Read the diff first, then read changed files in full to understand surrounding patterns and invariants. Focus findings on the changed code, but informed by context.
 
 ## What to check
 
-Four kinds of finding apply:
+Five kinds of finding apply:
 
 - **Bug-hunt.** Bugs, logic errors, null safety, missing parameters, type-switch exhaustiveness, resource leaks, security issues (injection, XSS, auth bypass), thread safety, performance problems (N+1, memory leaks, inefficient algorithms), circular dependencies (a new constructor dependency can introduce cycles — especially suspect when the class already has cycle workarounds).
 - **Intent-check.** Does the implementation match what the issue asked for? Flag drift between intent and code.
 - **Evidence-check.** For each `[x]` criterion in the Evidence block, verify the agent's claim against the proof: if it points at a named test, confirm the test exists and its assertions actually cover the criterion (not just adjacent code); if it quotes a command and observed result, confirm the command would yield that output against the current tree. Flag claimed-vs-actual mismatches. Don't attempt `[human]` (`[ ]`) criteria — list them under **Pending human verification** in the summary. If no Evidence block exists, note it and skip evidence-check.
+- **Map-check.** Does the module map of each changed area still describe the code? Flag a module added, removed or renamed without the map following; a structural claim the diff violates; and a claim the map lists as checked whose check does not exist or does not hold it. An area with no map is not a finding unless this issue landed a module from the PRD's module table there.
 - **Codebase-fit check.** Flag comments and names that narrate history instead of describing current behavior. Comments must describe what the code does or why it exists; names must describe what code does, not its trajectory. Triggers: comment phrases like *"previously"*, *"used to be"*, *"now Y"*, *"improved from the old version"*, *"kept for backwards compat"* (when no compat is actually needed); identifiers like `NewFoo`, `OldBar`, `LegacyHandler`, `ImprovedX`. Version control is the time machine, not comments.
 
 ## How to investigate

@@ -10,6 +10,10 @@ The framework that lets a maintainer orchestrate autonomous coding agents on tra
 The single vocabulary file at the consumer's root (`GLOSSARY.md`) that defines the project's canonical terms and redirects legacy aliases to their replacements.
 _Avoid_: context, CONTEXT.md, context map, ubiquitous language doc
 
+**Module map**:
+A **Consumer**'s one-page structural description of one area of its code — modules, responsibilities, primary flow, structural claims and the checks that hold them — kept as the `README.md` beside that code. Designed in `/to-prd`, landed by `/implement`, drift-checked by the review **Agents**. Contract in `framework/domain.md`.
+_Avoid_: "architecture doc", "design doc", "UML"
+
 **Formann**:
 The framework as a whole — repo, code, docs.
 _Avoid_: "the project", "the system"

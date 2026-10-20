@@ -37,6 +37,7 @@ Present the proposed breakdown as a numbered list. For each slice, show:
 - **Type** (provisional, triage decides): HITL / AFK
 - **Blocked by**: which other slices (if any) must complete first
 - **User stories covered**: which user stories this addresses (if the source material has them)
+- **Modules**: which modules from the PRD's module table this slice builds or touches (if the PRD has one), so the design can be seen landing slice by slice
 
 Ask the user:
 
