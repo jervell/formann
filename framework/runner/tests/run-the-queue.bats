@@ -2685,6 +2685,129 @@ EOF
   ! grep -q '^GH_TOKEN=' "$cap"
 }
 
+# === collect_consumer_env — the consumer's runner/sandbox-env ==============
+#
+# A consumer hands its own credentials to the sandbox through an executable
+# `<consumer>/runner/sandbox-env`, with the binding hook's output contract. It
+# may only add variables: a key the runner or the binding already sets is
+# refused, so a consumer script can never swap the OAuth token or GH_TOKEN.
+
+consumer_script() {
+  mkdir -p "$BATS_TEST_TMPDIR/consumer/runner"
+  cat >"$BATS_TEST_TMPDIR/consumer/runner/sandbox-env"
+  chmod +x "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env"
+}
+
+@test "collect_consumer_env — no script returns empty (no-op)" {
+  result="$(collect_consumer_env "$BATS_TEST_TMPDIR/nonexistent/sandbox-env" "")"
+  [ -z "$result" ]
+}
+
+@test "collect_consumer_env — valid KEY=value lines are passed through" {
+  consumer_script <<'EOF'
+#!/usr/bin/env bash
+printf 'PREVIEWS_URL=https://previews.example\n'
+printf 'PREVIEW_SECRET=s3cret\n'
+EOF
+  result="$(collect_consumer_env "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env" "GH_TOKEN=t")"
+  [ "$result" = $'PREVIEWS_URL=https://previews.example\nPREVIEW_SECRET=s3cret' ]
+}
+
+@test "collect_consumer_env — a key the binding already sets is refused, value not leaked" {
+  consumer_script <<'EOF'
+#!/usr/bin/env bash
+printf 'GH_TOKEN=consumer_override_value\n'
+EOF
+  run collect_consumer_env "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env" $'GH_TOKEN=binding\nGH_REPO=o/r'
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"runner/sandbox-env sets GH_TOKEN"* ]]
+  [[ "$output" != *"consumer_override_value"* ]]
+}
+
+@test "collect_consumer_env — a key the runner sets itself is refused" {
+  local key
+  for key in CLAUDE_CODE_OAUTH_TOKEN GIT_AUTHOR_EMAIL CLAUDE_CODE_DISABLE_BACKGROUND_TASKS; do
+    consumer_script <<EOF
+#!/usr/bin/env bash
+printf '$key=x\n'
+EOF
+    run collect_consumer_env "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env" ""
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"runner/sandbox-env sets $key"* ]]
+  done
+}
+
+@test "collect_consumer_env — script exiting non-zero fails the dispatch" {
+  consumer_script <<'EOF'
+#!/usr/bin/env bash
+echo "sandbox-env: Keychain entry not found" >&2
+exit 1
+EOF
+  run collect_consumer_env "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env" ""
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"sandbox-env exited non-zero"* ]]
+}
+
+@test "collect_consumer_env — malformed line fails without leaking the value" {
+  consumer_script <<'EOF'
+#!/usr/bin/env bash
+printf 'bare_secret_value\n'
+EOF
+  run collect_consumer_env "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env" ""
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"bare_secret_value"* ]]
+}
+
+@test "run_sandbox_container — consumer runner/sandbox-env reaches docker beside the binding env" {
+  local cap="$BATS_TEST_TMPDIR/captured-env"
+  : >"$cap"
+
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat >"$BATS_TEST_TMPDIR/bin/docker" <<EOF
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  [ "\$1" = "--env-file" ] && { shift; cat "\$1" >>"$cap" 2>>"$cap"; }
+  [ "\$1" = "--cidfile" ] && { echo cid >"\$2" 2>/dev/null || true; }
+  shift
+done
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+
+  mkdir -p "$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker" "$BATS_TEST_TMPDIR/repo/runner"
+  cat >"$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker/sandbox-env" <<'EOF'
+#!/usr/bin/env bash
+printf 'GH_TOKEN=fixture_binding_token\n'
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/repo/docs/formann/issue-tracker/sandbox-env"
+  cat >"$BATS_TEST_TMPDIR/repo/runner/sandbox-env" <<'EOF'
+#!/usr/bin/env bash
+printf 'PREVIEW_SECRET=fixture_consumer_secret\n'
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/repo/runner/sandbox-env"
+
+  HOST_REPO="$BATS_TEST_TMPDIR/repo"
+  HOST_CHECKOUT="$BATS_TEST_TMPDIR/repo"
+  HOST_RUNNER_STATE="$BATS_TEST_TMPDIR"
+  NET_NAME=none
+  RUNNER_CONTAINER_REPO_PATH=/repo
+  RUNNER_CONTAINER_M2_PATH=/m2
+  MVN_VOLUME=vol
+  IMAGE_NAME=img
+  TOKEN=oauth
+  RUNNER_GIT_USER_NAME=Arne
+  RUNNER_GIT_USER_EMAIL=a@b.c
+  RUNNER_INTERRUPTED=0
+  RUNNER_KILL_GRACE_SECONDS=1
+  IN_FLIGHT_CID_FILE=""
+
+  run_sandbox_container "$BATS_TEST_TMPDIR/dispatch" claude -p "/implement #1"
+
+  grep -q '^GH_TOKEN=fixture_binding_token$' "$cap"
+  grep -q '^PREVIEW_SECRET=fixture_consumer_secret$' "$cap"
+}
+
 # === dispatch_one — snapshot failure mid-dispatch =========================
 #
 # Regression: the three take_snapshot calls inside dispatch_one were bare

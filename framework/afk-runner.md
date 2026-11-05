@@ -92,6 +92,7 @@ The container mounts:
 - **Runner-checkout** at `/repo` — a separate clone, not the host repo. The container has no access to the host's `.git/`.
 - **Per-feature mvn cache** at `/home/runner/.m2` — Docker volume named `runner-mvn-cache-<slug>`.
 - **OAuth token** as `CLAUDE_CODE_OAUTH_TOKEN` env var — retrieved once from Keychain during pre-flight, held in the runner shell's memory as a private variable for the rest of the run, and passed to each container via `docker run --env-file <(printf …)` (bash process substitution, a kernel pipe). Never written to disk on the host, logged, or echoed. This keeps the token out of `docker run`'s argv and `/proc/<pid>/cmdline`; the only residual exposure is the bash variable in the runner's own `/proc/<runner-pid>/environ`, bounded by the same Unix UID.
+- **Binding and consumer env** — `KEY=value` lines from the issue-tracker binding's `docs/formann/issue-tracker/sandbox-env` (e.g. `GH_TOKEN`, `GH_REPO`) and, when present and executable, the consumer's own `<consumer>/runner/sandbox-env` (credentials only that project's agents need). Both are read from the host repo, validated by the same rules, and passed through inline `--env-file <(…)`. The consumer hook may only add variables: a key the runner or the binding already sets fails the dispatch, naming the key but never the value.
 
 ### Sandbox network — `framework/runner/setup-network.sh`
 

@@ -2014,6 +2014,47 @@ collect_binding_env() {
   done <<<"$raw_output"
 }
 
+# Consumer-owned sandbox env: `<consumer>/runner/sandbox-env`, beside the
+# consumer's Dockerfile and manifest. Lets a consumer hand its own
+# credentials to the sandbox without editing the installed binding. Same
+# contract and validation as the binding hook (collect_binding_env), read
+# from the host repo — never the runner-checkout an agent can write to.
+#
+# The consumer may only add variables. A key the runner sets itself (OAuth
+# token, git identity, RUNNER_DISPATCH_ENV) or the binding already emitted is
+# refused, so a consumer script can't silently replace a credential the
+# runner depends on. Only the key is named in the error, never the value.
+#
+# Args: $1 = script path, $2 = the binding env already collected.
+collect_consumer_env() {
+  local script_path="$1"
+  local binding_env="$2"
+
+  local consumer_env
+  consumer_env="$(collect_binding_env "$script_path")" || return 1
+
+  local taken=" CLAUDE_CODE_OAUTH_TOKEN GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL "
+  local entry
+  for entry in "${RUNNER_DISPATCH_ENV[@]}"; do
+    taken+="${entry%%=*} "
+  done
+  local line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    taken+="${line%%=*} "
+  done <<<"$binding_env"
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$taken" == *" ${line%%=*} "* ]]; then
+      echo "runner: runner/sandbox-env sets ${line%%=*}, which the runner or the issue-tracker binding already sets; aborting dispatch" >&2
+      return 1
+    fi
+  done <<<"$consumer_env"
+
+  printf '%s\n' "$consumer_env"
+}
+
 # `docker run` plumbing shared between the implement dispatch and the
 # review-and-gate dispatch. Both stages run in fresh sandbox containers
 # with the same image, network, runner-checkout mount, mvn cache mount,
@@ -2097,6 +2138,8 @@ run_sandbox_container() {
   # binding_env yields a blank env-file, which docker ignores.
   local binding_env
   binding_env="$(collect_binding_env "$HOST_REPO/docs/formann/issue-tracker/sandbox-env")" || return 1
+  local consumer_env
+  consumer_env="$(collect_consumer_env "$HOST_REPO/runner/sandbox-env" "$binding_env")" || return 1
 
   docker run --rm \
     --cidfile "$cid_file" \
@@ -2113,6 +2156,7 @@ run_sandbox_container() {
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL" \
       "$RUNNER_GIT_USER_NAME" "$RUNNER_GIT_USER_EMAIL") \
     --env-file <(printf '%s\n' "$binding_env") \
+    --env-file <(printf '%s\n' "$consumer_env") \
     "$IMAGE_NAME" \
     "$@" \
     >"$log_base.stdout.jsonl" 2>"$log_base.stderr.log" &
