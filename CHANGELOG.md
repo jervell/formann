@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - AFK runner gives each consumer repo its own sandbox image and rebuilds it when
   the repo's `runner/` changes. `RUNNER_IMAGE_NAME` overrides the image name.
+- AFK runner passes the output of an optional, consumer-owned `runner/sandbox-env` into every
+  dispatch container, beside the binding's env. It can add variables but never replace one the
+  runner or the binding sets, nor set any `ANTHROPIC_*` or `CLAUDE_CODE_*` variable.
 
 ### Fixed
 - AFK dispatches can no longer end their turn waiting on a background build: background Bash is disabled in the sandbox and foreground Bash may run for up to an hour.
