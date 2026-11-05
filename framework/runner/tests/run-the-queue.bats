@@ -2726,7 +2726,7 @@ EOF
 
 @test "collect_consumer_env — a key the runner sets itself is refused" {
   local key
-  for key in CLAUDE_CODE_OAUTH_TOKEN GIT_AUTHOR_EMAIL CLAUDE_CODE_DISABLE_BACKGROUND_TASKS; do
+  for key in CLAUDE_CODE_OAUTH_TOKEN GIT_AUTHOR_EMAIL BASH_MAX_TIMEOUT_MS; do
     consumer_script <<EOF
 #!/usr/bin/env bash
 printf '$key=x\n'
@@ -2734,6 +2734,20 @@ EOF
     run collect_consumer_env "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env" ""
     [ "$status" -ne 0 ]
     [[ "$output" == *"runner/sandbox-env sets $key"* ]]
+  done
+}
+
+@test "collect_consumer_env — a key that configures the dispatch's claude is refused" {
+  local key
+  for key in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK; do
+    consumer_script <<EOF
+#!/usr/bin/env bash
+printf '$key=consumer_value\n'
+EOF
+    run collect_consumer_env "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env" ""
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"runner/sandbox-env sets $key"* ]]
+    [[ "$output" != *"consumer_value"* ]]
   done
 }
 
@@ -2745,7 +2759,7 @@ exit 1
 EOF
   run collect_consumer_env "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env" ""
   [ "$status" -ne 0 ]
-  [[ "$output" == *"sandbox-env exited non-zero"* ]]
+  [[ "$output" == *"runner/sandbox-env exited non-zero"* ]]
 }
 
 @test "collect_consumer_env — malformed line fails without leaking the value" {
@@ -2755,6 +2769,7 @@ printf 'bare_secret_value\n'
 EOF
   run collect_consumer_env "$BATS_TEST_TMPDIR/consumer/runner/sandbox-env" ""
   [ "$status" -ne 0 ]
+  [[ "$output" == *"runner/sandbox-env emitted malformed line"* ]]
   [[ "$output" != *"bare_secret_value"* ]]
 }
 
